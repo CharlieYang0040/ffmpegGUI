@@ -17,7 +17,7 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 
 1. 이 저장소를 클론합니다:
    ```
-   git clone https://github.com/yourusername/ffmpeggui-by-lhcinema.git
+   git clone https://github.com/CharlieYang0040/ffmpegGUI
    ```
 2. 필요한 라이브러리를 설치합니다:
    ```
@@ -50,6 +50,6 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 
 ## 연락처
 
-LHCinema - [이메일 주소 또는 기타 연락처 정보]
+LHCinema - [charlieyang@lionhearts.co.kr]
 
 프로젝트 링크: https://github.com/CharlieYang0040/ffmpegGUI
