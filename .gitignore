@@ -1,5 +1,6 @@
 # 라이브러리 폴더 무시
-/libs
+/libs/*
+!/libs/.gitkeep
 
 # 가상 환경 폴더 무시
 /venv
