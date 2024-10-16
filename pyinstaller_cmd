@@ -1,4 +1,0 @@
-venv\Scripts\activate;
-pyinstaller main.py --onefile --windowed --icon=icon.png --add-data "libs/ffmpeg-7.1-full_build/bin/ffmpeg.exe;libs/ffmpeg-7.1-full_build/bin" --add-data "libs/ffmpeg-7.1-full_build/bin/ffprobe.exe;libs/ffmpeg-7.1-full_build/bin" --add-data "icon.png;."
-pyinstaller main.py --onefile --windowed --icon=icon.png --add-data "libs/ffmpeg-7.1-full_build/bin/ffmpeg.exe;libs/ffmpeg-7.1-full_build/bin" --add-data "libs/ffmpeg-7.1-full_build/bin/ffprobe.exe;libs/ffmpeg-7.1-full_build/bin" --add-data "icon.png;." --add-data "run_ffmpeg_gui.bat:."
-pyinstaller --onefile --console --add-binary "libs/ffmpeg-7.1-full_build/bin/ffmpeg.exe;libs/ffmpeg-7.1-full_build/bin" --add-binary "libs/ffmpeg-7.1-full_build/bin/ffprobe.exe;libs/ffmpeg-7.1-full_build/bin" --add-data "icon.png;." --add-data "icon.ico;." --icon="./icon.ico" main.py
