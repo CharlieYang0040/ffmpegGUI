@@ -1,8 +1,14 @@
 # FFmpegGUI by LHCinema
 
+![image](https://github.com/user-attachments/assets/9fdb9455-7917-423b-a89c-a7c580648a8a)  
+
+
 FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인코딩할 수 있는 그래픽 사용자 인터페이스(GUI) 애플리케이션입니다.
 
 ## 주요 기능
+
+![image](https://github.com/user-attachments/assets/e3d2708b-5a6b-47f3-9247-f58de98c9a82)  
+
 
 - 다중 비디오 파일 연결
 - 비디오 미리보기 기능
