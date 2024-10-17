@@ -6,20 +6,15 @@ import glob
 import subprocess
 import sys
 from typing import List, Dict, Optional
-import requests
-import shutil
-import tempfile
-import threading
-import time
+import traceback
 
-
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QListWidget, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
-    QMessageBox, QDesktopWidget, QSlider, QSpinBox, QDoubleSpinBox
+    QMessageBox, QSlider, QDoubleSpinBox
 )
-from PyQt5.QtCore import Qt, QSettings, QThread, pyqtSignal, QItemSelectionModel
-from PyQt5.QtGui import QKeySequence, QDragEnterEvent, QDropEvent, QCursor, QPixmap, QImage, QIcon
+from PySide6.QtCore import Qt, QSettings, QThread, Signal, QItemSelectionModel
+from PySide6.QtGui import QKeySequence, QDragEnterEvent, QDropEvent, QCursor, QPixmap, QImage, QIcon, QIntValidator
 
 from ffmpeg_utils import concat_videos
 from update import UpdateChecker
@@ -64,9 +59,9 @@ class DragDropListWidget(QListWidget):
             self.takeItem(self.row(item))
 
 class VideoThread(QThread):
-    frame_ready = pyqtSignal(QPixmap)
-    finished = pyqtSignal()
-    video_info_ready = pyqtSignal(int, int)
+    frame_ready = Signal(QPixmap)
+    finished = Signal()
+    video_info_ready = Signal(int, int)
 
     def __init__(self, file_path: str, parent=None):
         super().__init__(parent)
@@ -90,44 +85,28 @@ class VideoThread(QThread):
         try:
             command = [
                 FFMPEG_PATH,
-                '-i', self.file_path,
-                '-v', 'error',
-                '-select_streams', 'v:0',
-                '-count_packets', '-show_entries', 'stream=width,height',
-                '-of', 'csv=p=0'
+                '-i', self.file_path
             ]
             result = subprocess.run(command, capture_output=True, text=True)
-            output = result.stdout.strip()
-            if output:
-                self.video_width, self.video_height = map(int, output.split(','))
-                self.video_info_ready.emit(self.video_width, self.video_height)
-            else:
-                self.get_video_info_ffprobe()
-        except Exception as e:
-            print(f"비디오 정보 가져오기 오류: {str(e)}")
-            self.video_info_ready.emit(0, 0)
+            output = result.stderr  # FFmpeg는 정보를 stderr로 출력합니다
 
-    def get_video_info_ffprobe(self):
-        try:
-            ffprobe_command = [
-                os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe'),
-                '-v', 'error',
-                '-select_streams', 'v:0',
-                '-count_packets',
-                '-show_entries', 'stream=width,height',
-                '-of', 'csv=p=0',
-                self.file_path
-            ]
-            ffprobe_result = subprocess.run(ffprobe_command, capture_output=True, text=True)
-            ffprobe_output = ffprobe_result.stdout.strip()
-            if ffprobe_output:
-                self.video_width, self.video_height = map(int, ffprobe_output.split(','))
+            print(f"FFmpeg 명령어: {' '.join(command)}")
+            print(f"FFmpeg 출력: {output}")
+
+            # 정규 표현식을 사용하여 비디오 크기 정보 추출
+            import re
+            match = re.search(r'Stream.*Video.*\s(\d+)x(\d+)', output)
+            if match:
+                self.video_width, self.video_height = map(int, match.groups())
+                print(f"비디오 크기: {self.video_width}x{self.video_height}")
                 self.video_info_ready.emit(self.video_width, self.video_height)
             else:
-                print(f"비디오 정보를 가져올 수 없습니다: {self.file_path}")
+                print("비디오 크기 정보를 찾을 수 없습니다.")
                 self.video_info_ready.emit(0, 0)
         except Exception as e:
-            print(f"FFprobe를 사용한 비디오 정보 가져오기 오류: {str(e)}")
+            print(f"비디오 정보 가져오기 오류: {str(e)}")
+            print(f"예외 타입: {type(e).__name__}")
+            print(f"스택 트레이스: {traceback.format_exc()}")
             self.video_info_ready.emit(0, 0)
 
     def start_ffmpeg(self):
@@ -330,20 +309,27 @@ class FFmpegGui(QWidget):
         self.resolution_checkbox = QCheckBox("해상도 설정:")
         self.resolution_checkbox.setChecked(False)
         self.resolution_checkbox.stateChanged.connect(self.toggle_resolution)
-        self.width_spinbox = QSpinBox()
-        self.width_spinbox.setRange(1, 7680)
-        self.width_spinbox.setValue(1920)
-        self.width_spinbox.setEnabled(False)
-        self.height_spinbox = QSpinBox()
-        self.height_spinbox.setRange(1, 4320)
-        self.height_spinbox.setValue(1080)
-        self.height_spinbox.setEnabled(False)
+        
+        self.width_edit = QLineEdit()
+        self.width_edit.setValidator(QIntValidator(1, 7680))
+        self.width_edit.setText("1920")
+        self.width_edit.setFixedWidth(60)  # 너비 조정
+        self.width_edit.setEnabled(False)
+        
+        self.height_edit = QLineEdit()
+        self.height_edit.setValidator(QIntValidator(1, 4320))
+        self.height_edit.setText("1080")
+        self.height_edit.setFixedWidth(60)  # 너비 조정
+        self.height_edit.setEnabled(False)
+        
         resolution_layout.addWidget(self.resolution_checkbox)
-        resolution_layout.addWidget(self.width_spinbox)
+        resolution_layout.addWidget(self.width_edit)
         resolution_layout.addWidget(QLabel("x"))
-        resolution_layout.addWidget(self.height_spinbox)
-        self.width_spinbox.valueChanged.connect(self.update_resolution)
-        self.height_spinbox.valueChanged.connect(self.update_resolution)
+        resolution_layout.addWidget(self.height_edit)
+        
+        self.width_edit.textChanged.connect(self.update_resolution)
+        self.height_edit.textChanged.connect(self.update_resolution)
+        
         offset_layout.addLayout(resolution_layout)
 
     def create_content_layout(self, main_layout):
@@ -603,7 +589,9 @@ class FFmpegGui(QWidget):
             self.encoding_options.pop(option, None)
 
     def toggle_2f_offset(self, state):
-        self.use_2f_offset = state == Qt.Checked
+        self.use_2f_offset = state == Qt.CheckState.Checked.value
+        print(f"toggle_2f_offset 호출됨: state={state}, use_2f_offset={self.use_2f_offset}")
+
 
     def get_encoding_parameters(self):
         output_file = self.output_edit.text()
@@ -652,19 +640,20 @@ class FFmpegGui(QWidget):
             encoding_options["-s"] = f"{self.video_width}x{self.video_height}"
 
     def toggle_debug_mode(self, state):
-        is_debug = state == Qt.Checked
+        is_debug = state == Qt.CheckState.Checked.value
         self.clear_settings_button.setVisible(is_debug)
+        print(f"toggle_debug_mode 호출됨: state={state}, is_debug={is_debug}")
 
     def position_window_near_mouse(self):
         cursor_pos = QCursor.pos()
-        screen = QDesktopWidget().screenNumber(cursor_pos)
-        screen_rect = QDesktopWidget().availableGeometry(screen)
+        screen = self.screen()
+        screen_geometry = screen.availableGeometry()
 
         window_width = self.width()
         window_height = self.height()
 
-        x = max(screen_rect.left(), min(cursor_pos.x() - window_width // 2, screen_rect.right() - window_width))
-        y = max(screen_rect.top(), min(cursor_pos.y() - window_height // 2, screen_rect.bottom() - window_height))
+        x = max(screen_geometry.left(), min(cursor_pos.x() - window_width // 2, screen_geometry.right() - window_width))
+        y = max(screen_geometry.top(), min(cursor_pos.y() - window_height // 2, screen_geometry.bottom() - window_height))
 
         self.move(x, y)
 
@@ -832,17 +821,19 @@ class FFmpegGui(QWidget):
             ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
 
     def toggle_framerate(self, state):
-        self.use_custom_framerate = state == Qt.Checked
+        self.use_custom_framerate = state == Qt.CheckState.Checked.value
         self.framerate_spinbox.setEnabled(self.use_custom_framerate)
         if not self.use_custom_framerate:
             self.encoding_options.pop("-r", None)  # 프레임레이트 옵션 제거
+        print(f"toggle_framerate 호출됨: state={state}, use_custom_framerate={self.use_custom_framerate}")
 
     def toggle_resolution(self, state):
-        self.use_custom_resolution = state == Qt.Checked
-        self.width_spinbox.setEnabled(self.use_custom_resolution)
-        self.height_spinbox.setEnabled(self.use_custom_resolution)
+        self.use_custom_resolution = state == Qt.CheckState.Checked.value
+        self.width_edit.setEnabled(self.use_custom_resolution)
+        self.height_edit.setEnabled(self.use_custom_resolution)
         if not self.use_custom_resolution:
             self.encoding_options.pop("-s", None)  # 해상도 옵션 제거
+        print(f"toggle_resolution 호출됨: state={state}, use_custom_resolution={self.use_custom_resolution}")
 
     def update_framerate(self, value):
         self.framerate = value
@@ -850,7 +841,7 @@ class FFmpegGui(QWidget):
             self.encoding_options["-r"] = str(self.framerate)
 
     def update_resolution(self):
-        self.video_width = self.width_spinbox.value()
-        self.video_height = self.height_spinbox.value()
+        self.video_width = self.width_edit.text()
+        self.video_height = self.height_edit.text()
         if self.use_custom_resolution:
             self.encoding_options["-s"] = f"{self.video_width}x{self.video_height}"

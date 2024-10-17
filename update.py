@@ -6,13 +6,13 @@ import tempfile
 import threading
 import os
 import sys
-from PyQt5.QtWidgets import QMessageBox
-from PyQt5.QtCore import QCoreApplication, QObject, pyqtSignal
+from PySide6.QtWidgets import QMessageBox
+from PySide6.QtCore import QCoreApplication, QObject, Signal
 
 class UpdateChecker(QObject):
-    update_error = pyqtSignal(str)
-    update_available = pyqtSignal(str, str)
-    no_update = pyqtSignal()
+    update_error = Signal(str)
+    update_available = Signal(str, str)
+    no_update = Signal()
 
     def __init__(self):
         super().__init__()
