@@ -237,6 +237,7 @@ class FFmpegGui(QWidget):
         self.set_icon()
         # self.show_console()  # 콘솔 창을 표시하기 위해 호출
         self.hide_console()  # 실행 시 콘솔 창 숨기기
+        self.sort_ascending = True  # 정렬 방향을 저장하는 변수 추가
 
     def setup_update_checker(self):
         self.update_checker.update_error.connect(self.show_update_error)
@@ -440,8 +441,12 @@ class FFmpegGui(QWidget):
         button_layout.addWidget(self.clear_button)
 
         self.sort_button = QPushButton('이름 순 정렬')
-        self.sort_button.clicked.connect(self.sort_list_by_name)
+        self.sort_button.clicked.connect(self.toggle_sort_list)
         button_layout.addWidget(self.sort_button)
+
+        self.reverse_button = QPushButton('순서 반대로')
+        self.reverse_button.clicked.connect(self.reverse_list_order)
+        button_layout.addWidget(self.reverse_button)
 
         self.move_up_button = QPushButton('위로 이동')
         self.move_up_button.clicked.connect(self.move_item_up)
@@ -609,12 +614,21 @@ class FFmpegGui(QWidget):
         for item in self.list_widget.selectedItems():
             self.list_widget.takeItem(self.list_widget.row(item))
 
-    def sort_list_by_name(self):
+    def toggle_sort_list(self):
+        if self.sort_ascending:
+            self.sort_list_by_name(reverse=False)
+            self.sort_button.setText('이름 역순 정렬')
+        else:
+            self.sort_list_by_name(reverse=True)
+            self.sort_button.setText('이름 순 정렬')
+        self.sort_ascending = not self.sort_ascending
+
+    def sort_list_by_name(self, reverse=False):
         items = []
         for index in range(self.list_widget.count()):
             items.append(self.list_widget.item(index).text())
         
-        items.sort(key=lambda x: x.lower())  # 대소문자 구분 없이 정렬
+        items.sort(key=lambda x: x.lower(), reverse=reverse)  # 대소문자 구분 없이 정렬
         
         self.list_widget.clear()
         self.list_widget.addItems(items)
@@ -666,6 +680,16 @@ class FFmpegGui(QWidget):
         files, _ = QFileDialog.getOpenFileNames(self, '파일 선택', '', '모든 파일 (*.*)')
         if files:
             self.list_widget.addItems(map(self.process_file, files))
+
+    def reverse_list_order(self):
+        items = []
+        for index in range(self.list_widget.count()):
+            items.append(self.list_widget.item(index).text())
+        
+        items.reverse()
+        
+        self.list_widget.clear()
+        self.list_widget.addItems(items)
 
     def move_item_up(self):
         self.move_selected_items(-1)
