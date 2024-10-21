@@ -5,7 +5,7 @@ import sys
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
-    QMessageBox, QSlider, QDoubleSpinBox
+    QMessageBox, QSlider, QDoubleSpinBox, QListWidget, QListWidgetItem
 )
 from PySide6.QtCore import Qt, QSettings, QItemSelectionModel
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator
@@ -57,7 +57,6 @@ class FFmpegGui(QWidget):
             "-color_range": "limited"
         }
         self.settings = QSettings("LHCinema", "FFmpegGUI")
-        self.use_2f_offset = False
         self.video_thread = None
         self.speed = 1.0
         self.current_video_width = 0
@@ -128,7 +127,6 @@ class FFmpegGui(QWidget):
         self.offset_group = QGroupBox("편집 옵션")
         offset_layout = QVBoxLayout()
 
-        self.create_2f_offset_checkbox(offset_layout)
         self.create_framerate_control(offset_layout)
         self.create_resolution_control(offset_layout)
 
@@ -414,14 +412,20 @@ class FFmpegGui(QWidget):
         self.sort_ascending = not self.sort_ascending
 
     def sort_list_by_name(self, reverse=False):
-        items = []
-        for index in range(self.list_widget.count()):
-            items.append(self.list_widget.item(index).text())
-
-        items.sort(key=lambda x: x.lower(), reverse=reverse)  # Case-insensitive sort
-
-        self.list_widget.clear()
-        self.list_widget.addItems(items)
+        print("sort_list_by_name 함수 시작")
+        
+        # 현재 모든 파일 경로 가져오기
+        file_paths = self.list_widget.get_all_file_paths()
+        print(f"현재 아이템 수: {len(file_paths)}")
+        
+        # 파일 경로 정렬
+        sorted_file_paths = sorted(file_paths, key=lambda x: os.path.basename(x).lower(), reverse=reverse)
+        print(f"정렬된 아이템 순서: {sorted_file_paths}")
+        
+        # 정렬된 파일 경로로 리스트 위젯 업데이트
+        self.list_widget.update_items(sorted_file_paths)
+        
+        print("sort_list_by_name 함수 종료")
 
     def clear_list(self):
         reply = QMessageBox.question(self, '목록 비우기',
@@ -447,14 +451,20 @@ class FFmpegGui(QWidget):
             self.list_widget.addItems(map(process_file, files))
 
     def reverse_list_order(self):
-        items = []
-        for index in range(self.list_widget.count()):
-            items.append(self.list_widget.item(index).text())
-
-        items.reverse()
-
-        self.list_widget.clear()
-        self.list_widget.addItems(items)
+        print("reverse_list_order 함수 시작")
+        
+        # 현재 모든 파일 경로 가져오기
+        file_paths = self.list_widget.get_all_file_paths()
+        print(f"현재 아이템 수: {len(file_paths)}")
+        
+        # 파일 경로 순서 뒤집기
+        reversed_file_paths = list(reversed(file_paths))
+        print(f"뒤집힌 아이템 순서: {reversed_file_paths}")
+        
+        # 뒤집힌 파일 경로로 리스트 위젯 업데이트
+        self.list_widget.update_items(reversed_file_paths)
+        
+        print("reverse_list_order 함수 종료")
 
     def move_item_up(self):
         self.move_selected_items(-1)
@@ -496,9 +506,17 @@ class FFmpegGui(QWidget):
             QMessageBox.warning(self, "경고", "입력 파일을 추가해주세요.")
             return None
 
-        input_files = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
-        return (output_file, self.encoding_options, self.use_2f_offset,
-                self.debug_checkbox.isChecked(), input_files)
+        input_files = []
+        trim_values = []
+        for i in range(self.list_widget.count()):
+            list_item = self.list_widget.item(i)
+            item_widget = self.list_widget.itemWidget(list_item)
+            file_path = item_widget.file_path
+            trim_start, trim_end = item_widget.get_trim_values()
+            input_files.append(file_path)
+            trim_values.append((trim_start, trim_end))
+
+        return (output_file, self.encoding_options, self.debug_checkbox.isChecked(), input_files, trim_values)
 
     def browse_output(self):
         last_path = self.settings.value("last_output_path", "")
@@ -510,35 +528,39 @@ class FFmpegGui(QWidget):
     def start_encoding(self):
         params = self.get_encoding_parameters()
         if params:
-            output_file, encoding_options, use_2f_offset, debug_mode, input_files = params
+            output_file, encoding_options, debug_mode, input_files, trim_values = params
 
             self.update_encoding_options(encoding_options)
 
             try:
-                start_numbers = []
-                for input_file in input_files:
-                    if '%' in input_file:  # Image sequence
-                        start_number = get_sequence_start_number(input_file)
-                        if start_number is not None:
-                            start_numbers.append(str(start_number))
-                        else:
-                            start_numbers.append(None)
-                    else:
-                        start_numbers.append(None)
-
-                if any(start_numbers):
-                    encoding_options["-start_number"] = start_numbers
-
                 concat_videos(
                     input_files,
                     output_file,
                     encoding_options,
-                    use_2f_offset=use_2f_offset,
-                    debug_mode=debug_mode
+                    debug_mode=debug_mode,
+                    trim_values=trim_values
                 )
                 QMessageBox.information(self, "완료", "인코딩이 완료되었습니다.")
             except Exception as e:
                 QMessageBox.critical(self, "에러", f"인코딩 중 에러가 발생했습니다:\n{e}")
+
+    def get_media_duration(self, file_path):
+        # 미디어 파일의 길이를 가져오는 함수 구현
+        try:
+            import subprocess
+            command = [
+                os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe'),
+                '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                file_path
+            ]
+            result = subprocess.run(command, capture_output=True, text=True)
+            duration_str = result.stdout.strip()
+            return float(duration_str)
+        except Exception as e:
+            print(f"get_media_duration 오류: {e}")
+            return None
 
     def update_encoding_options(self, encoding_options):
         if self.use_custom_framerate:
@@ -579,9 +601,8 @@ class FFmpegGui(QWidget):
 
     def update_preview(self):
         try:
-            selected_items = self.list_widget.selectedItems()
-            if selected_items:
-                file_path = selected_items[0].text()
+            file_path = self.list_widget.get_selected_file_path()
+            if file_path:
                 self.stop_current_preview()
 
                 if is_video_file(file_path):
@@ -716,7 +737,7 @@ class FFmpegGui(QWidget):
         self.use_custom_framerate = state == Qt.CheckState.Checked.value
         self.framerate_spinbox.setEnabled(self.use_custom_framerate)
         if not self.use_custom_framerate:
-            self.encoding_options.pop("-r", None)  # Remove framerate option
+            self.encoding_options.pop("-r", None)
         print(f"toggle_framerate called: state={state}, use_custom_framerate={self.use_custom_framerate}")
 
     def toggle_resolution(self, state):
@@ -724,7 +745,7 @@ class FFmpegGui(QWidget):
         self.width_edit.setEnabled(self.use_custom_resolution)
         self.height_edit.setEnabled(self.use_custom_resolution)
         if not self.use_custom_resolution:
-            self.encoding_options.pop("-s", None)  # Remove resolution option
+            self.encoding_options.pop("-s", None)
         print(f"toggle_resolution called: state={state}, use_custom_resolution={self.use_custom_resolution}")
 
     def update_framerate(self, value):
@@ -742,3 +763,4 @@ class FFmpegGui(QWidget):
         # Save the current output path when the application closes
         self.settings.setValue("last_output_path", self.output_edit.text())
         super().closeEvent(event)
+
