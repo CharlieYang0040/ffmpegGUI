@@ -1,230 +1,28 @@
 # gui.py
 
 import os
-import re
-import glob
-import subprocess
 import sys
-from typing import List, Dict, Optional
-import traceback
-import json
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QFileDialog, QListWidget, QGroupBox,
+    QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
     QMessageBox, QSlider, QDoubleSpinBox
 )
-from PySide6.QtCore import Qt, QSettings, QThread, Signal, QItemSelectionModel
-from PySide6.QtGui import QKeySequence, QDragEnterEvent, QDropEvent, QCursor, QPixmap, QImage, QIcon, QIntValidator
+from PySide6.QtCore import Qt, QSettings, QItemSelectionModel
+from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator
 
 from ffmpeg_utils import concat_videos
 from update import UpdateChecker
-from collections import defaultdict
 
-FFMPEG_PATH = os.path.join('libs', 'ffmpeg-7.1-full_build', 'bin', 'ffmpeg.exe')
-
-class DragDropListWidget(QListWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.setDragDropMode(QAbstractItemView.InternalMove)
-
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            super().dragEnterEvent(event)
-
-    def dropEvent(self, event: QDropEvent):
-        if event.mimeData().hasUrls():
-            event.setDropAction(Qt.CopyAction)
-            event.accept()
-            links = []
-            for url in event.mimeData().urls():
-                if url.isLocalFile():
-                    file_path = str(url.toLocalFile())
-                    if os.path.isdir(file_path):
-                        links.extend(self.parse_folder(file_path))
-                    else:
-                        processed_path = self.parent().process_file(file_path)
-                        if processed_path:
-                            links.append(processed_path)
-            self.addItems(links)
-        else:
-            super().dropEvent(event)
-
-    def parse_folder(self, folder_path):
-        files = []
-        for root, _, filenames in os.walk(folder_path):
-            for filename in filenames:
-                file_path = os.path.join(root, filename)
-                if self.is_media_file(file_path):
-                    files.append(file_path)
-        
-        return self.process_image_sequences(files)
-
-    def is_media_file(self, file_path):
-        _, ext = os.path.splitext(file_path)
-        return ext.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.jpg', '.jpeg', '.png', '.bmp']
-
-    def process_image_sequences(self, files):
-        sequences = defaultdict(list)
-        processed_files = []
-
-        for file_path in files:
-            if self.is_image_file(file_path):
-                dir_path, filename = os.path.split(file_path)
-                base, frame, ext = self.parse_image_filename(filename)
-                if frame is not None:
-                    sequence_key = os.path.join(dir_path, f"{base}%04d{ext}")
-                    sequences[sequence_key].append((int(frame), file_path))
-                else:
-                    processed_files.append(file_path)
-            else:
-                processed_files.append(file_path)
-
-        for sequence, frame_files in sequences.items():
-            if len(frame_files) > 1:
-                processed_files.append(sequence)
-            else:
-                processed_files.append(frame_files[0][1])
-
-        return processed_files
-
-    def is_image_file(self, file_path):
-        _, ext = os.path.splitext(file_path)
-        return ext.lower() in ['.jpg', '.jpeg', '.png', '.bmp']
-
-    def parse_image_filename(self, file_path):
-        base, ext = os.path.splitext(os.path.basename(file_path))
-        match = re.search(r'(\d+)$', base)
-        if match:
-            frame = match.group(1)
-            base = base[:-len(frame)]
-            return base, frame, ext
-        return base, None, ext
-
-    def keyPressEvent(self, event):
-        if event.matches(QKeySequence.Delete):
-            self.remove_selected_items()
-        else:
-            super().keyPressEvent(event)
-
-    def remove_selected_items(self):
-        for item in self.selectedItems():
-            self.takeItem(self.row(item))
-
-class VideoThread(QThread):
-    frame_ready = Signal(QPixmap)
-    finished = Signal()
-    video_info_ready = Signal(int, int)
-
-    def __init__(self, file_path: str, parent=None):
-        super().__init__(parent)
-        self.file_path = file_path
-        self.is_playing = False
-        self.speed = 1.0
-        self.process: Optional[subprocess.Popen] = None
-        self.is_sequence = '%' in file_path
-        self.video_width = 0
-        self.video_height = 0
-
-    def run(self):
-        self.get_video_info()
-        self.start_ffmpeg()
-        while self.is_playing:
-            self.get_frame()
-            self.msleep(int(1000 / (30 * self.speed)))  # 30 FPS 기준
-        self.finished.emit()
-
-    def get_video_info(self):
-        try:
-            command = [
-                os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe'),
-                '-v', 'quiet',
-                '-print_format', 'json',
-                '-show_format',
-                '-show_streams',
-                self.file_path
-            ]
-            result = subprocess.run(command, capture_output=True, text=True)
-            output = result.stdout
-
-            print(f"ffprobe 명령어: {' '.join(command)}")
-            print(f"ffprobe 출력: {output}")
-
-            data = json.loads(output)
-            video_stream = next((stream for stream in data['streams'] if stream['codec_type'] == 'video'), None)
-            
-            if video_stream:
-                self.video_width = int(video_stream['width'])
-                self.video_height = int(video_stream['height'])
-                print(f"비디오 크기: {self.video_width}x{self.video_height}")
-                self.video_info_ready.emit(self.video_width, self.video_height)
-            else:
-                print("비디오 스트림을 찾을 수 없습니다.")
-                self.video_info_ready.emit(0, 0)
-        except Exception as e:
-            print(f"비디오 정보 가져오기 오류: {str(e)}")
-            print(f"예외 타입: {type(e).__name__}")
-            print(f"스택 트레이스: {traceback.format_exc()}")
-            self.video_info_ready.emit(0, 0)
-
-    def start_ffmpeg(self):
-        try:
-            command = [
-                FFMPEG_PATH,
-                '-i', self.file_path,
-                '-f', 'rawvideo',
-                '-pix_fmt', 'rgb24',
-                '-'
-            ]
-            if self.is_sequence:
-                command[1:1] = ['-framerate', '30']
-
-            self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            print(f"FFmpeg 시작 중 오류: {str(e)}")
-
-    def get_frame(self):
-        if self.is_playing and self.process:
-            frame_size = self.video_width * self.video_height * 3  # RGB24 포맷
-            raw_image = self.process.stdout.read(frame_size)
-            if len(raw_image) == frame_size:
-                image = QImage(raw_image, self.video_width, self.video_height, QImage.Format_RGB888)
-                pixmap = QPixmap.fromImage(image)
-                self.frame_ready.emit(pixmap)
-            else:
-                self.stop()
-
-    def stop(self):
-        self.is_playing = False
-        if self.process:
-            self.process.terminate()
-            self.process = None
-
-    def set_speed(self, speed: float):
-        self.speed = speed
-
-    def get_video_frame(self, time_sec: float) -> Optional[QPixmap]:
-        temp_filename = f'temp_frame_{time_sec}.png'
-        command = [
-            FFMPEG_PATH,
-            '-ss', str(time_sec),
-            '-i', self.file_path,
-            '-vframes', '1',
-            '-an',
-            temp_filename
-        ]
-        try:
-            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            pixmap = QPixmap(temp_filename)
-            os.remove(temp_filename)
-            return pixmap
-        except subprocess.CalledProcessError as e:
-            print(f"FFmpeg 에러: {e}")
-        except Exception as e:
-            print(f"get_video_frame 오류: {str(e)}")
-        return None
+from drag_drop_list_widget import DragDropListWidget
+from video_thread import VideoThread
+from utils import (
+    process_file,
+    is_video_file,
+    is_image_file,
+    get_sequence_start_number,
+    get_first_sequence_file,
+)
+from config import FFMPEG_PATH
 
 class FFmpegGui(QWidget):
     def __init__(self):
@@ -235,22 +33,14 @@ class FFmpegGui(QWidget):
         self.position_window_near_mouse()
         self.setStyleSheet(self.get_unreal_style())
         self.set_icon()
-        # self.show_console()  # 콘솔 창을 표시하기 위해 호출
-        self.hide_console()  # 실행 시 콘솔 창 숨기기
-        self.sort_ascending = True  # 정렬 방향을 저장하는 변수 추가
+        self.hide_console()  # Hide console window on startup
+        self.sort_ascending = True  # Variable to store sort order
 
     def setup_update_checker(self):
         self.update_checker.update_error.connect(self.show_update_error)
         self.update_checker.update_available.connect(self.show_update_available)
         self.update_checker.no_update.connect(self.show_no_update)
         self.update_checker.update_button = self.update_button
-
-    def show_console(self):
-        if sys.platform.startswith('win'):
-            import ctypes
-            ctypes.windll.kernel32.AllocConsole()
-            sys.stdout = open('CONOUT$', 'w')
-            sys.stderr = open('CONOUT$', 'w')
 
     def hide_console(self):
         if sys.platform.startswith('win'):
@@ -337,7 +127,7 @@ class FFmpegGui(QWidget):
     def create_offset_group(self, control_layout):
         self.offset_group = QGroupBox("편집 옵션")
         offset_layout = QVBoxLayout()
-        
+
         self.create_2f_offset_checkbox(offset_layout)
         self.create_framerate_control(offset_layout)
         self.create_resolution_control(offset_layout)
@@ -370,27 +160,27 @@ class FFmpegGui(QWidget):
         self.resolution_checkbox = QCheckBox("해상도 설정:")
         self.resolution_checkbox.setChecked(False)
         self.resolution_checkbox.stateChanged.connect(self.toggle_resolution)
-        
+
         self.width_edit = QLineEdit()
         self.width_edit.setValidator(QIntValidator(1, 7680))
         self.width_edit.setText("1920")
-        self.width_edit.setFixedWidth(60)  # 너비 조정
+        self.width_edit.setFixedWidth(60)  # Adjust width
         self.width_edit.setEnabled(False)
-        
+
         self.height_edit = QLineEdit()
         self.height_edit.setValidator(QIntValidator(1, 4320))
         self.height_edit.setText("1080")
-        self.height_edit.setFixedWidth(60)  # 너비 조정
+        self.height_edit.setFixedWidth(60)  # Adjust width
         self.height_edit.setEnabled(False)
-        
+
         resolution_layout.addWidget(self.resolution_checkbox)
         resolution_layout.addWidget(self.width_edit)
         resolution_layout.addWidget(QLabel("x"))
         resolution_layout.addWidget(self.height_edit)
-        
+
         self.width_edit.textChanged.connect(self.update_resolution)
         self.height_edit.textChanged.connect(self.update_resolution)
-        
+
         offset_layout.addLayout(resolution_layout)
 
     def create_content_layout(self, main_layout):
@@ -410,12 +200,12 @@ class FFmpegGui(QWidget):
         content_layout.addLayout(left_layout)
 
     def create_list_widget(self, left_layout):
-        # Preview 모드 체크박스 추가
+        # Preview mode checkbox
         self.preview_mode_checkbox = QCheckBox("Preview 모드")
-        self.preview_mode_checkbox.setChecked(True)  # 기본값으로 켜져 있음
+        self.preview_mode_checkbox.setChecked(True)  # Default is checked
         left_layout.addWidget(self.preview_mode_checkbox)
 
-        self.list_widget = DragDropListWidget(self)
+        self.list_widget = DragDropListWidget(self, process_file_func=process_file)
         self.list_widget.setMinimumHeight(200)
         self.list_widget.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.list_widget.itemSelectionChanged.connect(self.on_item_selection_changed)
@@ -427,7 +217,7 @@ class FFmpegGui(QWidget):
 
     def create_button_layout(self, left_layout):
         button_layout = QHBoxLayout()
-        
+
         self.add_button = QPushButton('파일 추가')
         self.add_button.clicked.connect(self.add_files)
         button_layout.addWidget(self.add_button)
@@ -523,7 +313,7 @@ class FFmpegGui(QWidget):
 
         left_layout.addLayout(debug_layout)
 
-    # 업데이트 버튼 추가
+    # Update button
     def create_update_button(self, left_layout):
         update_layout = QHBoxLayout()
         self.update_button = QPushButton('업데이트 확인')
@@ -627,67 +417,42 @@ class FFmpegGui(QWidget):
         items = []
         for index in range(self.list_widget.count()):
             items.append(self.list_widget.item(index).text())
-        
-        items.sort(key=lambda x: x.lower(), reverse=reverse)  # 대소문자 구분 없이 정렬
-        
+
+        items.sort(key=lambda x: x.lower(), reverse=reverse)  # Case-insensitive sort
+
         self.list_widget.clear()
         self.list_widget.addItems(items)
 
     def clear_list(self):
-        reply = QMessageBox.question(self, '목록 비우기', 
-                                    "정말로 목록을 비우시겠습니까?",
-                                    QMessageBox.Yes | QMessageBox.No, 
-                                    QMessageBox.No)
+        reply = QMessageBox.question(self, '목록 비우기',
+                                     "정말로 목록을 비우시겠습니까?",
+                                     QMessageBox.Yes | QMessageBox.No,
+                                     QMessageBox.No)
         if reply == QMessageBox.Yes:
             self.list_widget.clear()
-            self.preview_label.clear()  # 미리보기도 함께 지웁니다.
+            self.preview_label.clear()  # Also clear the preview
 
     def set_icon(self):
         if getattr(sys, 'frozen', False):
             base_path = sys._MEIPASS
         else:
             base_path = os.path.dirname(os.path.abspath(__file__))
-        
+
         icon_path = os.path.join(base_path, 'icon.png')
         self.setWindowIcon(QIcon(icon_path))
-
-    def hide_console(self):
-        if sys.platform.startswith('win'):
-            import ctypes
-            ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
-
-    def process_file(self, file_path: str) -> str:
-        _, ext = os.path.splitext(file_path)
-        return self.process_image_file(file_path) if ext.lower() in ['.jpg', '.jpeg', '.png'] else file_path
-
-    def process_image_file(self, file_path: str) -> str:
-        dir_path, file_name = os.path.split(file_path)
-        base_name, ext = os.path.splitext(file_name)
-
-        match = re.search(r'(\d+)$', base_name)
-        if match:
-            number_part = match.group(1)
-            prefix = base_name[:-len(number_part)]
-            pattern = f"{prefix}[0-9]*{ext}"
-            matching_files = [f for f in os.listdir(dir_path) if re.match(pattern, f)]
-
-            if len(matching_files) > 1:
-                return os.path.join(dir_path, f"{prefix}%0{len(number_part)}d{ext}")
-
-        return file_path
 
     def add_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, '파일 선택', '', '모든 파일 (*.*)')
         if files:
-            self.list_widget.addItems(map(self.process_file, files))
+            self.list_widget.addItems(map(process_file, files))
 
     def reverse_list_order(self):
         items = []
         for index in range(self.list_widget.count()):
             items.append(self.list_widget.item(index).text())
-        
+
         items.reverse()
-        
+
         self.list_widget.clear()
         self.list_widget.addItems(items)
 
@@ -701,7 +466,7 @@ class FFmpegGui(QWidget):
         selected_items = self.list_widget.selectedItems()
         if not selected_items:
             return
-        
+
         items_to_move = selected_items if direction < 0 else reversed(selected_items)
         for item in items_to_move:
             current_row = self.list_widget.row(item)
@@ -719,8 +484,7 @@ class FFmpegGui(QWidget):
 
     def toggle_2f_offset(self, state):
         self.use_2f_offset = state == Qt.CheckState.Checked.value
-        print(f"toggle_2f_offset 호출됨: state={state}, use_2f_offset={self.use_2f_offset}")
-
+        print(f"toggle_2f_offset called: state={state}, use_2f_offset={self.use_2f_offset}")
 
     def get_encoding_parameters(self):
         output_file = self.output_edit.text()
@@ -747,24 +511,24 @@ class FFmpegGui(QWidget):
         params = self.get_encoding_parameters()
         if params:
             output_file, encoding_options, use_2f_offset, debug_mode, input_files = params
-            
+
             self.update_encoding_options(encoding_options)
-            
+
             try:
                 start_numbers = []
                 for input_file in input_files:
-                    if '%' in input_file:  # 이미지 시퀀스 파일인 경우
-                        start_number = self.get_sequence_start_number(input_file)
+                    if '%' in input_file:  # Image sequence
+                        start_number = get_sequence_start_number(input_file)
                         if start_number is not None:
                             start_numbers.append(str(start_number))
                         else:
                             start_numbers.append(None)
                     else:
                         start_numbers.append(None)
-                
+
                 if any(start_numbers):
                     encoding_options["-start_number"] = start_numbers
-                
+
                 concat_videos(
                     input_files,
                     output_file,
@@ -776,23 +540,6 @@ class FFmpegGui(QWidget):
             except Exception as e:
                 QMessageBox.critical(self, "에러", f"인코딩 중 에러가 발생했습니다:\n{e}")
 
-    def get_sequence_start_number(self, sequence_path):
-        dir_path, filename = os.path.split(sequence_path)
-        base, ext = os.path.splitext(filename)
-        pattern = base.replace('%04d', r'(\d+)')
-        
-        files = os.listdir(dir_path)
-        frame_numbers = []
-        
-        for file in files:
-            match = re.match(pattern + ext, file)
-            if match:
-                frame_numbers.append(int(match.group(1)))
-        
-        if frame_numbers:
-            return min(frame_numbers)
-        return None
-
     def update_encoding_options(self, encoding_options):
         if self.use_custom_framerate:
             encoding_options["-r"] = str(self.framerate)
@@ -802,7 +549,7 @@ class FFmpegGui(QWidget):
     def toggle_debug_mode(self, state):
         is_debug = state == Qt.CheckState.Checked.value
         self.clear_settings_button.setVisible(is_debug)
-        print(f"toggle_debug_mode 호출됨: state={state}, is_debug={is_debug}")
+        print(f"toggle_debug_mode called: state={state}, is_debug={is_debug}")
 
     def position_window_near_mouse(self):
         cursor_pos = QCursor.pos()
@@ -836,28 +583,23 @@ class FFmpegGui(QWidget):
             if selected_items:
                 file_path = selected_items[0].text()
                 self.stop_current_preview()
-                
-                if self.is_video_file(file_path):
+
+                if is_video_file(file_path):
                     self.show_video_preview(file_path)
-                elif self.is_image_file(file_path):
+                elif is_image_file(file_path):
                     self.show_image_preview(file_path)
                 else:
-                    print(f"지원되지 않는 파일 형식: {file_path}")
+                    print(f"Unsupported file format: {file_path}")
             else:
                 self.preview_label.clear()
         except Exception as e:
-            print(f"update_preview 오류: {str(e)}")
+            print(f"update_preview error: {str(e)}")
 
     def stop_current_preview(self):
         if self.video_thread:
             self.video_thread.stop()
             self.video_thread.wait()
-
-    def is_video_file(self, file_path):
-        return file_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')) or '%' in file_path
-
-    def is_image_file(self, file_path):
-        return file_path.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))
+            self.video_thread = None  # Reset the video thread
 
     def show_video_preview(self, file_path: str):
         self.video_thread = VideoThread(file_path)
@@ -912,17 +654,17 @@ class FFmpegGui(QWidget):
 
         if video_width > 0 and video_height > 0:
             aspect_ratio = video_width / video_height
-            
+
             if aspect_ratio > 1:
                 new_width = min(video_width, max_width)
                 new_height = int(new_width / aspect_ratio)
             else:
                 new_height = min(video_height, max_height)
                 new_width = int(new_height * aspect_ratio)
-            
+
             new_width = min(new_width, max_width)
             new_height = min(new_height, max_height)
-            
+
             return pixmap.scaled(new_width, new_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         return pixmap
 
@@ -953,11 +695,11 @@ class FFmpegGui(QWidget):
             self.preview_label.setPixmap(scaled_pixmap)
 
     def show_image_preview(self, file_path: str):
-        # 시퀀스 파일 처리
+        # Handle sequence files
         if '%' in file_path:
-            file_path = self.get_first_sequence_file(file_path)
+            file_path = get_first_sequence_file(file_path)
             if not file_path:
-                print(f"시퀀스 파일을 찾을 수 없습니다: {file_path}")
+                print(f"Sequence file not found: {file_path}")
                 return
 
         if os.path.exists(file_path):
@@ -966,34 +708,24 @@ class FFmpegGui(QWidget):
                 scaled_pixmap = self.resize_keeping_aspect_ratio(pixmap, self.preview_label.width(), self.preview_label.height())
                 self.preview_label.setPixmap(scaled_pixmap)
             else:
-                print(f"이미지를 로드할 수 없습니다: {file_path}")
+                print(f"Unable to load image: {file_path}")
         else:
-            print(f"파일이 존재하지 않습니다: {file_path}")
-
-    def get_first_sequence_file(self, file_path: str) -> str:
-        pattern = file_path.replace('%04d', '*')
-        files = sorted(glob.glob(pattern))
-        return files[0] if files else ""
-
-    def hide_console(self):
-        if sys.platform.startswith('win'):
-            import ctypes
-            ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+            print(f"File does not exist: {file_path}")
 
     def toggle_framerate(self, state):
         self.use_custom_framerate = state == Qt.CheckState.Checked.value
         self.framerate_spinbox.setEnabled(self.use_custom_framerate)
         if not self.use_custom_framerate:
-            self.encoding_options.pop("-r", None)  # 프레임레이트 옵션 제거
-        print(f"toggle_framerate 호출됨: state={state}, use_custom_framerate={self.use_custom_framerate}")
+            self.encoding_options.pop("-r", None)  # Remove framerate option
+        print(f"toggle_framerate called: state={state}, use_custom_framerate={self.use_custom_framerate}")
 
     def toggle_resolution(self, state):
         self.use_custom_resolution = state == Qt.CheckState.Checked.value
         self.width_edit.setEnabled(self.use_custom_resolution)
         self.height_edit.setEnabled(self.use_custom_resolution)
         if not self.use_custom_resolution:
-            self.encoding_options.pop("-s", None)  # 해상도 옵션 제거
-        print(f"toggle_resolution 호출됨: state={state}, use_custom_resolution={self.use_custom_resolution}")
+            self.encoding_options.pop("-s", None)  # Remove resolution option
+        print(f"toggle_resolution called: state={state}, use_custom_resolution={self.use_custom_resolution}")
 
     def update_framerate(self, value):
         self.framerate = value
@@ -1007,6 +739,6 @@ class FFmpegGui(QWidget):
             self.encoding_options["-s"] = f"{self.video_width}x{self.video_height}"
 
     def closeEvent(self, event):
-        # 애플리케이션이 종료될 때 현재 출력 경로를 저장합니다.
+        # Save the current output path when the application closes
         self.settings.setValue("last_output_path", self.output_edit.text())
         super().closeEvent(event)
