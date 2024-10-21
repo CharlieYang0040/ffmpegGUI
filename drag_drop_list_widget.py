@@ -24,13 +24,15 @@ class ListWidgetItem(QWidget):
         layout.addWidget(self.label)
 
         self.trim_start_spinbox = QSpinBox()
-        self.trim_start_spinbox.setPrefix("앞 자르기: ")
+        self.trim_start_spinbox.setPrefix("앞: ")
         self.trim_start_spinbox.setRange(0, 100000)
+        self.trim_start_spinbox.setFixedWidth(100)
         layout.addWidget(self.trim_start_spinbox)
 
         self.trim_end_spinbox = QSpinBox()
-        self.trim_end_spinbox.setPrefix("뒤 자르기: ")
+        self.trim_end_spinbox.setPrefix("뒤: ")
         self.trim_end_spinbox.setRange(0, 100000)
+        self.trim_end_spinbox.setFixedWidth(100)
         layout.addWidget(self.trim_end_spinbox)
 
         self.setLayout(layout)
