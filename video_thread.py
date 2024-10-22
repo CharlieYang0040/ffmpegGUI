@@ -166,8 +166,8 @@ class VideoThread(QThread):
     def set_speed(self, speed: float):
         print(f"set_speed() 호출됨: {speed}")
         self.speed = speed
-        if speed > 2.0:
-            self.frame_skip = int(speed - 2)
+        if speed > 1.0:
+            self.frame_skip = int(speed)
         else:
             self.frame_skip = 0
 

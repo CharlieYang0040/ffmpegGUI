@@ -110,7 +110,7 @@ class FFmpegGui(QWidget):
         speed_layout = QVBoxLayout()
         speed_label = QLabel("재생 속도:")
         self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(25, 400)
+        self.speed_slider.setRange(0, 400)
         self.speed_slider.setValue(100)
         self.speed_slider.setTickPosition(QSlider.TicksBelow)
         self.speed_slider.setTickInterval(50)
@@ -657,6 +657,12 @@ class FFmpegGui(QWidget):
 
     def toggle_play(self):
         print("toggle_play 호출됨")
+        selected_item = self.list_widget.currentItem()
+        if not selected_item:
+            print("선택된 아이템이 없습니다.")
+            QMessageBox.warning(self, "경고", "재생할 파일을 선택해주세요.")
+            return
+
         if self.video_thread:
             print(f"비디오 스레드 상태: is_playing = {self.video_thread.is_playing}")
             if not self.video_thread.is_playing:
@@ -706,7 +712,7 @@ class FFmpegGui(QWidget):
 
     def change_speed(self):
         print("change_speed 호출됨")
-        self.speed = self.speed_slider.value() / 25
+        self.speed = self.speed_slider.value() / 100
         self.speed_value_label.setText(f"{self.speed:.1f}x")
         if self.video_thread:
             self.video_thread.set_speed(self.speed)
