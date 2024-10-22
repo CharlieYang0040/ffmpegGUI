@@ -623,10 +623,7 @@ class FFmpegGui(QWidget):
             self.video_thread = None  # Reset the video thread
 
     def show_video_preview(self, file_path: str):
-        self.video_thread = VideoThread(file_path)
-        self.video_thread.frame_ready.connect(self.update_video_frame)
-        self.video_thread.finished.connect(self.on_video_finished)
-        self.video_thread.video_info_ready.connect(self.set_video_info)
+        self.create_video_thread()
         self.play_button.setEnabled(True)
 
         self.video_thread.get_video_info()
@@ -637,33 +634,79 @@ class FFmpegGui(QWidget):
         else:
             self.preview_label.clear()
 
+    def show_image_preview(self, file_path: str):
+        if '%' in file_path:
+            file_path = get_first_sequence_file(file_path)
+            if not file_path:
+                print(f"시퀀스 파일을 찾을 수 없습니다: {file_path}")
+                return
+
+        if os.path.exists(file_path):
+            pixmap = QPixmap(file_path)
+            if not pixmap.isNull():
+                scaled_pixmap = self.resize_keeping_aspect_ratio(pixmap, self.preview_label.width(), self.preview_label.height())
+                self.preview_label.setPixmap(scaled_pixmap)
+            else:
+                print(f"이미지를 로드할 수 없습니다: {file_path}")
+        else:
+            print(f"파일이 존재하지 않습니다: {file_path}")
+
     def set_video_info(self, width: int, height: int):
         self.current_video_width = width
         self.current_video_height = height
 
     def toggle_play(self):
+        print("toggle_play 호출됨")
         if self.video_thread:
+            print(f"비디오 스레드 상태: is_playing = {self.video_thread.is_playing}")
             if not self.video_thread.is_playing:
+                print("재생 시작")
                 self.start_video_playback()
             else:
+                print("재생 정지")
                 self.stop_video_playback()
+        else:
+            print("비디오 스레드 생성")
+            self.create_video_thread()
+            self.start_video_playback()
+
+    def create_video_thread(self):
+        file_path = self.list_widget.get_selected_file_path()
+        if file_path:
+            self.video_thread = VideoThread(file_path)
+            self.video_thread.frame_ready.connect(self.update_video_frame)
+            self.video_thread.finished.connect(self.on_video_finished)
+            self.video_thread.video_info_ready.connect(self.set_video_info)
 
     def start_video_playback(self):
+        print("start_video_playback 호출됨")
+        if not self.video_thread:
+            self.create_video_thread()
+        
         self.video_thread.is_playing = True
         current_speed = self.speed_slider.value() / 100
+        print(f"현재 재생 속도: {current_speed}")
         self.video_thread.set_speed(current_speed)
         self.video_thread.start()
+        print("비디오 스레드 시작됨")
         self.play_button.setText('정지')
+        print("재생 버튼 텍스트 변경: '정지'")
 
     def stop_video_playback(self):
-        self.video_thread.stop()
-        self.play_button.setText('재생')
+        print("stop_video_playback 호출됨")
+        if self.video_thread:
+            self.video_thread.stop()
+            self.play_button.setText('재생')
 
     def on_video_finished(self):
-        self.play_button.setText('재생')
+        print("on_video_finished 호출됨")
+        if self.video_thread:
+            self.video_thread.stop()
+            self.play_button.setText('재생')
 
     def change_speed(self):
-        self.speed = self.speed_slider.value() / 100
+        print("change_speed 호출됨")
+        self.speed = self.speed_slider.value() / 25
         self.speed_value_label.setText(f"{self.speed:.1f}x")
         if self.video_thread:
             self.video_thread.set_speed(self.speed)
@@ -714,24 +757,6 @@ class FFmpegGui(QWidget):
                 self.current_video_height
             )
             self.preview_label.setPixmap(scaled_pixmap)
-
-    def show_image_preview(self, file_path: str):
-        # Handle sequence files
-        if '%' in file_path:
-            file_path = get_first_sequence_file(file_path)
-            if not file_path:
-                print(f"Sequence file not found: {file_path}")
-                return
-
-        if os.path.exists(file_path):
-            pixmap = QPixmap(file_path)
-            if not pixmap.isNull():
-                scaled_pixmap = self.resize_keeping_aspect_ratio(pixmap, self.preview_label.width(), self.preview_label.height())
-                self.preview_label.setPixmap(scaled_pixmap)
-            else:
-                print(f"Unable to load image: {file_path}")
-        else:
-            print(f"File does not exist: {file_path}")
 
     def toggle_framerate(self, state):
         self.use_custom_framerate = state == Qt.CheckState.Checked.value
