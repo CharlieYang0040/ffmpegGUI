@@ -46,6 +46,10 @@ def get_video_properties(input_file: str) -> Dict[str, str]:
         return {}
 
 def create_trimmed_video(input_file: str, trim_start: int, trim_end: int, index: int, encoding_options: Dict[str, str], target_resolution: str, target_sar: str, target_dar: str, debug_mode: bool) -> str:
+    # trim_start와 trim_end가 모두 0이면 원본 파일을 그대로 반환
+    if trim_start == 0 and trim_end == 0:
+        return input_file
+
     temp_output = f'temp_trimmed_{index}.mp4'
 
     try:
@@ -83,11 +87,12 @@ def create_trimmed_video(input_file: str, trim_start: int, trim_end: int, index:
         # encoding_options에서 키 이름 변경
         encoding_options_modified = {k.replace('-', '_'): v for k, v in encoding_options.items()}
         stream = ffmpeg.output(stream, temp_output, **encoding_options_modified)
+        stream = stream.overwrite_output()
 
         if debug_mode:
             print("트림 명령어:", ' '.join(ffmpeg.compile(stream)))
         
-        ffmpeg.run(stream, overwrite_output=True)
+        ffmpeg.run(stream)
 
         if os.path.getsize(temp_output) > 0:
             return temp_output
@@ -155,19 +160,23 @@ def check_video_properties(input_files: List[str], target_properties: Dict[str, 
             QMessageBox.warning(None, "속성 불일치 경고", warning_message)
             raise ValueError("속성 불일치로 인해 작업이 중지되었습니다.")
 
-def process_video_files(video_files: List[Tuple[str, int, int]], encoding_options: Dict[str, str], target_properties: Dict[str, str], debug_mode: bool) -> Tuple[str, List[str]]:
+def process_video_files(video_files: List[Tuple[str, int, int]], encoding_options: Dict[str, str], target_properties: Dict[str, str], debug_mode: bool, idx: int) -> Tuple[List[str], List[str]]:
     temp_video_files = []
     temp_files_to_remove = []
 
-    for idx, (input_file, trim_start, trim_end) in enumerate(video_files):
-        temp_file = create_trimmed_video(
-            input_file, trim_start, trim_end, idx, encoding_options,
-            f"{target_properties['width']}x{target_properties['height']}",
-            target_properties['sar'], target_properties['dar'], debug_mode
-        )
-        temp_video_files.append(temp_file)
-        if temp_file != input_file:
-            temp_files_to_remove.append(temp_file)
+    for file_idx, (input_file, trim_start, trim_end) in enumerate(video_files):
+        # trim_start와 trim_end가 모두 0이면 원본 파일을 그대로 사용
+        if trim_start == 0 and trim_end == 0:
+            temp_video_files.append(input_file)
+        else:
+            temp_file = create_trimmed_video(
+                input_file, trim_start, trim_end, f"{idx}_{file_idx}", encoding_options,
+                f"{target_properties['width']}x{target_properties['height']}",
+                target_properties['sar'], target_properties['dar'], debug_mode
+            )
+            temp_video_files.append(temp_file)
+            if temp_file != input_file:
+                temp_files_to_remove.append(temp_file)
 
     if temp_video_files:
         file_list_path = create_temp_file_list(temp_video_files)
@@ -178,42 +187,33 @@ def process_video_files(video_files: List[Tuple[str, int, int]], encoding_option
             with open(file_list_path, 'r', encoding='utf-8') as f:
                 print(f.read())
 
-        video_output = 'temp_video_concat.mp4'
+        video_output = f'temp_video_concat_{idx}.mp4'
         stream = ffmpeg.input(file_list_path, f='concat', safe=0)
 
         # 필터 적용
-        width, height = target_properties['width'], target_properties['height']
-        stream = stream.filter('scale', width=width, height=height)
-        
-        if target_properties['sar'] != '1:1':
-            stream = stream.filter('setsar', sar=target_properties['sar'])
-        
-        if target_properties['dar'] != 'N/A':
-            dar_num, dar_den = map(int, target_properties['dar'].split(':'))
-            stream = stream.filter('setdar', dar=f'{dar_num}/{dar_den}')
+        stream = apply_filters(stream, target_properties)
 
         encoding_options_modified = {k.replace('-', '_'): v for k, v in encoding_options.items()}
+        # '_r' 옵션을 'r'로 수정
+        if '_r' in encoding_options_modified:
+            encoding_options_modified['r'] = encoding_options_modified.pop('_r')
         stream = ffmpeg.output(stream, video_output, **encoding_options_modified)
+        stream = stream.overwrite_output()
 
         if debug_mode:
             print("비디오 파일 concat 명령어:", ' '.join(ffmpeg.compile(stream)))
 
-        ffmpeg.run(stream, overwrite_output=True)
+        ffmpeg.run(stream)
         temp_files_to_remove.append(video_output)
-        return video_output, temp_files_to_remove
+        return [video_output], temp_files_to_remove
     
-    return None, temp_files_to_remove
+    return temp_video_files, temp_files_to_remove
 
-def process_image_sequences(image_sequences: List[Tuple[str, int, int]], encoding_options: Dict[str, str], target_properties: Dict[str, str], debug_mode: bool) -> Tuple[str, List[str]]:
-    if not image_sequences:
-        return None, []
-
+def process_image_sequences(image_sequences: List[Tuple[str, int, int]], encoding_options: Dict[str, str], target_properties: Dict[str, str], debug_mode: bool, idx: int) -> Tuple[List[str], List[str]]:
     temp_files_to_remove = []
-    input_commands = []
-    filter_complex_parts = []
-    filter_index = 0
+    processed_files = []
 
-    for idx, (input_file, trim_start, trim_end) in enumerate(image_sequences):
+    for seq_idx, (input_file, trim_start, trim_end) in enumerate(image_sequences):
         pattern = input_file.replace('\\', '/')
         glob_pattern = re.sub(r'%\d*d', '*', pattern)
         image_files = sorted(glob.glob(glob_pattern))
@@ -224,8 +224,6 @@ def process_image_sequences(image_sequences: List[Tuple[str, int, int]], encodin
             continue
 
         total_frames = len(image_files)
-
-        # 시작 프레임 번호 추출
         frame_number_pattern = re.compile(r'(\d+)\.(\w+)$')
         first_image = os.path.basename(image_files[0])
         match = frame_number_pattern.search(first_image)
@@ -243,70 +241,42 @@ def process_image_sequences(image_sequences: List[Tuple[str, int, int]], encodin
                 print(f"트림 후 남은 프레임이 없습니다: '{input_file}'")
             continue
 
-        # 입력 명령어 생성
-        input_commands.extend([
+        # 이미지 시퀀스 출력 파일 지정
+        image_output = f'temp_image_sequence_{idx}_{seq_idx}.mp4'
+        temp_files_to_remove.append(image_output)
+
+        # FFmpeg 명령어 생성
+        args = [
+            'ffmpeg',
+            '-framerate', str(encoding_options.get('r', 30)),
             '-start_number', str(new_start_frame),
-            '-i', input_file.replace('\\', '/')
-        ])
+            '-i', input_file.replace('\\', '/'),
+            '-frames:v', str(new_total_frames),
+            '-vf', f"scale={target_properties['width']}:{target_properties['height']}"
+        ]
 
-        # 필터 생성
-        filter_params = {
-            'width': target_properties['width'],
-            'height': target_properties['height']
-        }
         if target_properties['sar'] != '1:1':
-            filter_params['sar'] = target_properties['sar']
+            args.extend(['-vf', f"setsar={target_properties['sar']}"])
         if target_properties['dar'] != 'N/A':
-            filter_params['dar'] = target_properties['dar']
+            args.extend(['-vf', f"setdar={target_properties['dar']}"])
 
-        filter_chain = (
-            f"[{filter_index}:v]trim=start_frame=0:end_frame={new_total_frames},"
-            f"scale={target_properties['width']}:{target_properties['height']}"
-        )
-        if target_properties['sar'] != '1:1':
-            filter_chain += f",setsar={target_properties['sar']}"
-        if target_properties['dar'] != 'N/A':
-            filter_chain += f",setdar={target_properties['dar']}"
-        filter_chain += f"[v{filter_index}];"
+        # encoding_options에서 키 이름 변경
+        for k, v in encoding_options.items():
+            if k.startswith('-'):
+                args.extend([k, str(v)])
+            else:
+                args.extend([f'-{k}', str(v)])
 
-        filter_complex_parts.append(filter_chain)
-        filter_index += 1
+        args.append(image_output)
 
-    if filter_index == 0:
-        return None, temp_files_to_remove
+        if debug_mode:
+            print("이미지 시퀀스 처리 명령어:", ' '.join(args))
 
-    # 필터 복합 생성
-    concat_inputs = ''.join([f"[v{i}]" for i in range(filter_index)])
-    filter_complex = ''.join(filter_complex_parts) + f"{concat_inputs}concat=n={filter_index}:v=1:a=0 [v]"
+        # FFmpeg 실행
+        subprocess.run(args, check=True)
+        processed_files.append(image_output)
 
-    # 이미지 시퀀스 출력 파일 지정
-    image_output = 'temp_image_concat.mp4'
-    temp_files_to_remove.append(image_output)
-
-    # FFmpeg 명령어 생성
-    args = [
-        'ffmpeg',
-        *input_commands,
-        '-filter_complex', filter_complex,
-        '-map', '[v]'
-    ]
-
-    # encoding_options에서 키 이름 변경
-    for k, v in encoding_options.items():
-        if k.startswith('-'):
-            args.extend([k, str(v)])
-        else:
-            args.extend([f'-{k}', str(v)])
-
-    args.append(image_output)
-
-    if debug_mode:
-        print("이미지 시퀀스 concat 명령어:", ' '.join(args))
-
-    # FFmpeg 실행
-    subprocess.run(args, check=True)
-
-    return image_output, temp_files_to_remove
+    return processed_files, temp_files_to_remove
 
 def concat_video_and_image(video_output: str, image_output: str, output_file: str, encoding_options: Dict[str, str], target_properties: Dict[str, str], debug_mode: bool) -> str:
     final_file_list = create_temp_file_list([video_output, image_output])
@@ -328,11 +298,12 @@ def concat_video_and_image(video_output: str, image_output: str, output_file: st
     # encoding_options에서 키 이름 변경
     encoding_options_modified = {k.replace('-', '_'): v for k, v in encoding_options.items()}
     stream = ffmpeg.output(stream, output_file, **encoding_options_modified)
+    stream = stream.overwrite_output()
 
     if debug_mode:
         print("최종 concat 명령어:", ' '.join(ffmpeg.compile(stream)))
 
-    ffmpeg.run(stream, overwrite_output=True)
+    ffmpeg.run(stream)
 
     os.remove(final_file_list)
     return output_file
@@ -344,40 +315,47 @@ def concat_videos(input_files: List[str], output_file: str, encoding_options: Di
     # 전역 트림 값을 각 파일의 트림 값에 적용
     trim_values = [(ts + global_trim_start, te + global_trim_end) for ts, te in trim_values]
 
-    # 비디오 파일과 이미지 시퀀스 파일을 분리
-    video_files = [(f, ts, te) for f, (ts, te) in zip(input_files, trim_values) if '%' not in f]
-    image_sequences = [(f, ts, te) for f, (ts, te) in zip(input_files, trim_values) if '%' in f]
-
     target_properties = get_target_properties(input_files, encoding_options, debug_mode)
     if not target_properties:
         return
 
-    check_video_properties([f for f, _, _ in video_files], target_properties, debug_mode)
+    check_video_properties([f for f in input_files if '%' not in f], target_properties, debug_mode)
 
     temp_files_to_remove = []
+    processed_files = []
 
-    # 비디오 파일 처리
-    video_output, video_temp_files = process_video_files(video_files, encoding_options, target_properties, debug_mode)
-    temp_files_to_remove.extend(video_temp_files)
+    for idx, ((input_file, trim_start, trim_end), trim_value) in enumerate(zip(zip(input_files, *zip(*trim_values)), trim_values)):
+        if '%' in input_file:
+            # 이미지 시퀀스 처리
+            output, temp_files = process_image_sequences([(input_file, trim_start, trim_end)], encoding_options, target_properties, debug_mode, idx)
+        else:
+            # 비디오 파일 처리
+            output, temp_files = process_video_files([(input_file, trim_start, trim_end)], encoding_options, target_properties, debug_mode, idx)
+        
+        processed_files.extend(output)
+        temp_files_to_remove.extend(temp_files)
 
-    # 이미지 시퀀스 처리
-    image_output, image_temp_files = process_image_sequences(image_sequences, encoding_options, target_properties, debug_mode)
-    temp_files_to_remove.extend(image_temp_files)
-
-    # 최종 출력 생성
-    if video_output and image_output:
-        final_output = concat_video_and_image(video_output, image_output, output_file, encoding_options, target_properties, debug_mode)
-        temp_files_to_remove.extend([video_output, image_output])
-    elif video_output:
-        shutil.move(video_output, output_file)
-        final_output = output_file
-    elif image_output:
-        shutil.move(image_output, output_file)
-        final_output = output_file
-    else:
+    if not processed_files:
         if debug_mode:
             print("처리할 파일이 없습니다.")
         return
+
+    # 최종 출력 생성
+    if len(processed_files) > 1:
+        final_file_list = create_temp_file_list(processed_files)
+        temp_files_to_remove.append(final_file_list)
+
+        stream = ffmpeg.input(final_file_list, f='concat', safe=0)
+        stream = apply_filters(stream, target_properties)
+        stream = apply_encoding_options(stream, encoding_options, output_file)
+        stream = stream.overwrite_output()
+
+        if debug_mode:
+            print("최종 concat 명령어:", ' '.join(ffmpeg.compile(stream)))
+
+        ffmpeg.run(stream)
+    else:
+        shutil.move(processed_files[0], output_file)
 
     # 임시 파일 정리
     for temp_file in temp_files_to_remove:
@@ -387,4 +365,24 @@ def concat_videos(input_files: List[str], output_file: str, encoding_options: Di
     if debug_mode:
         print("인코딩이 완료되었습니다.")
 
-    return final_output
+    return output_file
+
+# 새로운 헬퍼 함수들
+def apply_filters(stream, target_properties):
+    width, height = target_properties['width'], target_properties['height']
+    stream = stream.filter('scale', width=width, height=height)
+    
+    if target_properties['sar'] != '1:1':
+        stream = stream.filter('setsar', sar=target_properties['sar'])
+    
+    if target_properties['dar'] != 'N/A':
+        dar_num, dar_den = map(int, target_properties['dar'].split(':'))
+        stream = stream.filter('setdar', dar=f'{dar_num}/{dar_den}')
+    
+    return stream
+
+def apply_encoding_options(stream, encoding_options, output_file):
+    encoding_options_modified = {k.replace('-', '_'): v for k, v in encoding_options.items()}
+    if '_r' in encoding_options_modified:
+        encoding_options_modified['r'] = encoding_options_modified.pop('_r')
+    return ffmpeg.output(stream, output_file, **encoding_options_modified)

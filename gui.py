@@ -573,14 +573,25 @@ class FFmpegGui(QWidget):
             self.update_encoding_options(encoding_options)
 
             try:
+                # list_widget의 순서대로 input_files와 trim_values를 정렬
+                ordered_input_files = []
+                ordered_trim_values = []
+                for i in range(self.list_widget.count()):
+                    item = self.list_widget.item(i)
+                    file_path = item.data(Qt.UserRole)
+                    item_widget = self.list_widget.itemWidget(item)
+                    trim_start, trim_end = item_widget.get_trim_values()
+                    ordered_input_files.append(file_path)
+                    ordered_trim_values.append((trim_start, trim_end))
+
                 concat_videos(
-                    input_files,
+                    ordered_input_files,
                     output_file,
                     encoding_options,
                     debug_mode=debug_mode,
-                    trim_values=trim_values,
-                    global_trim_start=self.global_trim_start,  # 추가
-                    global_trim_end=self.global_trim_end  # 추가
+                    trim_values=ordered_trim_values,
+                    global_trim_start=self.global_trim_start,
+                    global_trim_end=self.global_trim_end
                 )
                 QMessageBox.information(self, "완료", "인코딩이 완료되었습니다.")
             except Exception as e:

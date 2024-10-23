@@ -2,7 +2,8 @@
 
 from PySide6.QtWidgets import QListWidget, QAbstractItemView, QListWidgetItem, QWidget, QHBoxLayout, QLabel, QSpinBox
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QKeySequence, QDragEnterEvent, QDropEvent, QEnterEvent
+from PySide6.QtCore import QEvent
 import os
 
 from utils import (
@@ -15,6 +16,8 @@ class ListWidgetItem(QWidget):
     def __init__(self, file_path, parent=None):
         super().__init__(parent)
         self.file_path = file_path
+        self.is_selected = False
+        self.is_hovered = False
 
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -37,8 +40,30 @@ class ListWidgetItem(QWidget):
 
         self.setLayout(layout)
 
+        self.setMouseTracking(True)  # 마우스 추적 활성화
+
     def get_trim_values(self):
         return self.trim_start_spinbox.value(), self.trim_end_spinbox.value()
+
+    def setSelected(self, selected):
+        self.is_selected = selected
+        self.update_style()
+
+    def enterEvent(self, event: QEnterEvent):
+        self.is_hovered = True
+        self.update_style()
+
+    def leaveEvent(self, event: QEvent):  # QLeaveEvent 대신 QEvent 사용
+        self.is_hovered = False
+        self.update_style()
+
+    def update_style(self):
+        if self.is_selected:
+            self.setStyleSheet("background-color: #3a3a3a;")
+        elif self.is_hovered:
+            self.setStyleSheet("background-color: #2a2a2a;")
+        else:
+            self.setStyleSheet("")
 
 class DragDropListWidget(QListWidget):
     def __init__(self, parent=None, process_file_func=None):
@@ -96,15 +121,12 @@ class DragDropListWidget(QListWidget):
             item_widget = ListWidgetItem(file_path)
             list_item = QListWidgetItem(self)
             list_item.setSizeHint(item_widget.sizeHint())
-            list_item.setData(Qt.UserRole, file_path)  # 파일 경로를 아이템 데이터로 저장
+            list_item.setData(Qt.UserRole, file_path)
             self.addItem(list_item)
             self.setItemWidget(list_item, item_widget)
 
     def update_items(self, new_file_paths):
-        # 기존 아이템 모두 제거
         self.clear()
-        
-        # 새로운 파일 경로로 아이템 추가
         self.add_items(new_file_paths)
 
     def get_all_file_paths(self):
@@ -120,3 +142,16 @@ class DragDropListWidget(QListWidget):
         if selected_items:
             return selected_items[0].data(Qt.UserRole)
         return None
+
+    def selectionChanged(self, selected, deselected):
+        super().selectionChanged(selected, deselected)
+        for index in deselected.indexes():
+            item = self.item(index.row())
+            widget = self.itemWidget(item)
+            if widget:
+                widget.setSelected(False)
+        for index in selected.indexes():
+            item = self.item(index.row())
+            widget = self.itemWidget(item)
+            if widget:
+                widget.setSelected(True)

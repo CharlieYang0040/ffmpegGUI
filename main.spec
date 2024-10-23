@@ -4,7 +4,7 @@
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[('libs/ffmpeg-7.1-full_build/bin/ffmpeg.exe', 'libs/ffmpeg-7.1-full_build/bin'), ('libs/ffmpeg-7.1-full_build/bin/ffprobe.exe', 'libs/ffmpeg-7.1-full_build/bin')],
+    binaries=[],
     datas=[('icon.png', '.'), ('icon.ico', '.')],
     hiddenimports=[],
     hookspath=[],
