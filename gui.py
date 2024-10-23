@@ -5,9 +5,10 @@ import sys
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
-    QMessageBox, QSlider, QDoubleSpinBox, QListWidget, QListWidgetItem, QSpinBox
+    QMessageBox, QSlider, QDoubleSpinBox, QListWidget, QListWidgetItem, QSpinBox,
+    QProgressBar, QDialog, QVBoxLayout
 )
-from PySide6.QtCore import Qt, QSettings, QItemSelectionModel
+from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator
 
 import ffmpeg
@@ -23,6 +24,36 @@ from utils import (
     get_sequence_start_number,
     get_first_sequence_file,
 )
+
+class EncodingProgressDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("인코딩 진행 상황")
+        self.setFixedSize(300, 100)
+
+        layout = QVBoxLayout()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        layout.addWidget(self.progress_bar)
+
+        self.setLayout(layout)
+
+    def update_progress(self, value):
+        self.progress_bar.setValue(value)
+
+class EncodingThread(QThread):
+    progress_updated = Signal(int)
+    encoding_finished = Signal()
+
+    def __init__(self, concat_videos_func, *args, **kwargs):
+        super().__init__()
+        self.concat_videos_func = concat_videos_func
+        self.args = args
+        self.kwargs = kwargs
+
+    def run(self):
+        self.concat_videos_func(*self.args, **self.kwargs, progress_callback=self.progress_updated.emit)
+        self.encoding_finished.emit()
 
 class FFmpegGui(QWidget):
     def __init__(self):
@@ -573,29 +604,38 @@ class FFmpegGui(QWidget):
             self.update_encoding_options(encoding_options)
 
             try:
-                # list_widget의 순서대로 input_files와 trim_values를 정렬
-                ordered_input_files = []
-                ordered_trim_values = []
+                # ordered input 로직 추가
+                ordered_input = []
                 for i in range(self.list_widget.count()):
                     item = self.list_widget.item(i)
-                    file_path = item.data(Qt.UserRole)
                     item_widget = self.list_widget.itemWidget(item)
+                    file_path = item_widget.file_path
                     trim_start, trim_end = item_widget.get_trim_values()
-                    ordered_input_files.append(file_path)
-                    ordered_trim_values.append((trim_start, trim_end))
+                    ordered_input.append((file_path, trim_start, trim_end))
 
-                concat_videos(
-                    ordered_input_files,
+                self.progress_dialog = EncodingProgressDialog(self)
+                self.progress_dialog.show()
+
+                self.encoding_thread = EncodingThread(
+                    concat_videos,
+                    [item[0] for item in ordered_input],  # input_files
                     output_file,
                     encoding_options,
                     debug_mode=debug_mode,
-                    trim_values=ordered_trim_values,
+                    trim_values=[(item[1], item[2]) for item in ordered_input],  # trim_values
                     global_trim_start=self.global_trim_start,
                     global_trim_end=self.global_trim_end
                 )
-                QMessageBox.information(self, "완료", "인코딩이 완료되었습니다.")
+                self.encoding_thread.progress_updated.connect(self.progress_dialog.update_progress)
+                self.encoding_thread.encoding_finished.connect(self.on_encoding_finished)
+                self.encoding_thread.start()
+
             except Exception as e:
                 QMessageBox.critical(self, "에러", f"인코딩 중 에러가 발생했습니다:\n{e}")
+
+    def on_encoding_finished(self):
+        self.progress_dialog.close()
+        QMessageBox.information(self, "완료", "인코딩이 완료되었습니다.")
 
     def get_media_duration(self, file_path):
         try:

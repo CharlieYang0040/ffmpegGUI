@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from typing import List, Dict, Tuple
 import ffmpeg
+import time
 
 if getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
@@ -308,7 +309,7 @@ def concat_video_and_image(video_output: str, image_output: str, output_file: st
     os.remove(final_file_list)
     return output_file
 
-def concat_videos(input_files: List[str], output_file: str, encoding_options: Dict[str, str], debug_mode: bool = False, trim_values: List[Tuple[int, int]] = None, global_trim_start: int = 0, global_trim_end: int = 0):
+def concat_videos(input_files: List[str], output_file: str, encoding_options: Dict[str, str], debug_mode: bool = False, trim_values: List[Tuple[int, int]] = None, global_trim_start: int = 0, global_trim_end: int = 0, progress_callback=None):
     if trim_values is None:
         trim_values = [(0, 0)] * len(input_files)
 
@@ -324,6 +325,7 @@ def concat_videos(input_files: List[str], output_file: str, encoding_options: Di
     temp_files_to_remove = []
     processed_files = []
 
+    total_files = len(input_files)
     for idx, ((input_file, trim_start, trim_end), trim_value) in enumerate(zip(zip(input_files, *zip(*trim_values)), trim_values)):
         if '%' in input_file:
             # 이미지 시퀀스 처리
@@ -334,6 +336,10 @@ def concat_videos(input_files: List[str], output_file: str, encoding_options: Di
         
         processed_files.extend(output)
         temp_files_to_remove.extend(temp_files)
+
+        if progress_callback:
+            progress = int((idx + 1) / total_files * 50)  # 50%까지 진행
+            progress_callback(progress)
 
     if not processed_files:
         if debug_mode:
@@ -353,7 +359,19 @@ def concat_videos(input_files: List[str], output_file: str, encoding_options: Di
         if debug_mode:
             print("최종 concat 명령어:", ' '.join(ffmpeg.compile(stream)))
 
-        ffmpeg.run(stream)
+        process = ffmpeg.run_async(stream, pipe_stdout=True, pipe_stderr=True)
+        
+        # 진행 상황 모니터링
+        while True:
+            output = process.stderr.readline().decode()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                progress = parse_ffmpeg_progress(output)
+                if progress is not None and progress_callback:
+                    progress_callback(50 + int(progress / 2))  # 50%에서 100%까지 진행
+        
+        process.wait()
     else:
         shutil.move(processed_files[0], output_file)
 
@@ -365,7 +383,19 @@ def concat_videos(input_files: List[str], output_file: str, encoding_options: Di
     if debug_mode:
         print("인코딩이 완료되었습니다.")
 
+    if progress_callback:
+        progress_callback(100)  # 완료
+
     return output_file
+
+def parse_ffmpeg_progress(output):
+    if "time=" in output:
+        time_parts = output.split("time=")[1].split()[0].split(":")
+        if len(time_parts) == 3:
+            hours, minutes, seconds = map(float, time_parts)
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+            return min(int(total_seconds / 3600 * 100), 100)  # 최대 100%
+    return None
 
 # 새로운 헬퍼 함수들
 def apply_filters(stream, target_properties):
