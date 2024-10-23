@@ -1,8 +1,8 @@
 # drag_drop_list_widget.py
 
-from PySide6.QtWidgets import QListWidget, QAbstractItemView, QListWidgetItem, QWidget, QHBoxLayout, QLabel, QSpinBox
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QDragEnterEvent, QDropEvent, QEnterEvent
+from PySide6.QtWidgets import QListWidget, QAbstractItemView, QListWidgetItem, QWidget, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QApplication
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QKeySequence, QDragEnterEvent, QDropEvent, QEnterEvent, QPainter, QFont, QColor
 from PySide6.QtCore import QEvent
 import os
 
@@ -72,6 +72,11 @@ class DragDropListWidget(QListWidget):
         self.setDragDropMode(QAbstractItemView.InternalMove)
         self.process_file_func = process_file_func or process_file
 
+        self.setViewportMargins(0, 0, 0, 0)
+        self.placeholder_text = "파일 또는 폴더를 드래그 하여 추가하세요."
+        self.placeholder_subtext = "이미지 시퀀스 파일은 한 장만 드래그 하세요."
+        self.placeholder_visible = True
+        
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.accept()
@@ -115,6 +120,7 @@ class DragDropListWidget(QListWidget):
     def remove_selected_items(self):
         for item in self.selectedItems():
             self.takeItem(self.row(item))
+        self.placeholder_visible = self.count() == 0
 
     def add_items(self, file_paths):
         for file_path in file_paths:
@@ -124,10 +130,12 @@ class DragDropListWidget(QListWidget):
             list_item.setData(Qt.UserRole, file_path)
             self.addItem(list_item)
             self.setItemWidget(list_item, item_widget)
+        self.placeholder_visible = self.count() == 0
 
     def update_items(self, new_file_paths):
         self.clear()
         self.add_items(new_file_paths)
+        self.placeholder_visible = self.count() == 0
 
     def get_all_file_paths(self):
         file_paths = []
@@ -155,3 +163,47 @@ class DragDropListWidget(QListWidget):
             widget = self.itemWidget(item)
             if widget:
                 widget.setSelected(True)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.placeholder_visible and self.count() == 0:
+            painter = QPainter(self.viewport())
+            painter.save()
+            
+            # 더 어두운 색상 설정
+            col = self.palette().placeholderText().color()
+            darker_col = QColor(col.red() // 3, col.green() // 3, col.blue() // 3)
+            painter.setPen(darker_col)
+            
+            # 메인 텍스트 그리기
+            main_font = QApplication.font()
+            main_font.setPointSize(14)
+            main_font.setBold(True)
+            painter.setFont(main_font)
+            
+            fm = painter.fontMetrics()
+            main_text_rect = fm.boundingRect(self.viewport().rect(), Qt.AlignCenter, self.placeholder_text)
+            
+            painter.drawText(main_text_rect, Qt.AlignCenter, self.placeholder_text)
+            
+            # 서브 텍스트 그리기
+            sub_font = QApplication.font()
+            sub_font.setPointSize(10)
+            painter.setFont(sub_font)
+            
+            fm = painter.fontMetrics()
+            sub_text_rect = fm.boundingRect(self.viewport().rect(), Qt.AlignCenter, self.placeholder_subtext)
+            sub_text_rect.moveTop(main_text_rect.bottom() + 1)  # 메인 텍스트 아래에 위치
+            
+            painter.drawText(sub_text_rect, Qt.AlignCenter, self.placeholder_subtext)
+            
+            painter.restore()
+
+    def clear(self):
+        super().clear()
+        self.placeholder_visible = True
+        self.viewport().update()  # 뷰포트를 다시 그리도록 요청
+
+    def update(self):
+        super().update()
+        # 추가적인 업데이트 로직이 있다면 여기에 작성
