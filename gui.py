@@ -5,11 +5,12 @@ import sys
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
-    QMessageBox, QSlider, QDoubleSpinBox, QListWidget, QListWidgetItem
+    QMessageBox, QSlider, QDoubleSpinBox, QListWidget, QListWidgetItem, QSpinBox
 )
 from PySide6.QtCore import Qt, QSettings, QItemSelectionModel
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator
 
+import ffmpeg
 from ffmpeg_utils import concat_videos
 from update import UpdateChecker
 
@@ -22,7 +23,6 @@ from utils import (
     get_sequence_start_number,
     get_first_sequence_file,
 )
-from config import FFMPEG_PATH
 
 class FFmpegGui(QWidget):
     def __init__(self):
@@ -35,6 +35,8 @@ class FFmpegGui(QWidget):
         self.set_icon()
         self.hide_console()  # Hide console window on startup
         self.sort_ascending = True  # Variable to store sort order
+        self.global_trim_start = 0
+        self.global_trim_end = 0
 
     def setup_update_checker(self):
         self.update_checker.update_error.connect(self.show_update_error)
@@ -49,12 +51,12 @@ class FFmpegGui(QWidget):
 
     def init_attributes(self):
         self.encoding_options = {
-            "-c:v": "libx264",
-            "-pix_fmt": "yuv420p",
-            "-colorspace": "bt709",
-            "-color_primaries": "bt709",
-            "-color_trc": "bt709",
-            "-color_range": "limited"
+            "c:v": "libx264",
+            "pix_fmt": "yuv420p",
+            "colorspace": "bt709",
+            "color_primaries": "bt709",
+            "color_trc": "bt709",
+            "color_range": "limited"
         }
         self.settings = QSettings("LHCinema", "FFmpegGUI")
         self.video_thread = None
@@ -110,7 +112,7 @@ class FFmpegGui(QWidget):
         speed_layout = QVBoxLayout()
         speed_label = QLabel("재생 속도:")
         self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(0, 400)
+        self.speed_slider.setRange(20, 800)
         self.speed_slider.setValue(100)
         self.speed_slider.setTickPosition(QSlider.TicksBelow)
         self.speed_slider.setTickInterval(50)
@@ -129,6 +131,7 @@ class FFmpegGui(QWidget):
 
         self.create_framerate_control(offset_layout)
         self.create_resolution_control(offset_layout)
+        self.create_global_trim_control(offset_layout)  # 새로운 함수 추가
 
         self.offset_group.setLayout(offset_layout)
         control_layout.addWidget(self.offset_group)
@@ -180,6 +183,43 @@ class FFmpegGui(QWidget):
         self.height_edit.textChanged.connect(self.update_resolution)
 
         offset_layout.addLayout(resolution_layout)
+
+    def create_global_trim_control(self, offset_layout):
+        global_trim_layout = QVBoxLayout()  # QHBoxLayout에서 QVBoxLayout으로 변경
+        self.global_trim_checkbox = QCheckBox("전체 앞뒤 트림:")
+        self.global_trim_checkbox.setChecked(False)
+        self.global_trim_checkbox.stateChanged.connect(self.toggle_global_trim)
+
+        self.global_trim_start_spinbox = QSpinBox()
+        self.global_trim_start_spinbox.setRange(0, 9999)
+        self.global_trim_start_spinbox.setValue(0)
+        self.global_trim_start_spinbox.setEnabled(False)
+        self.global_trim_start_spinbox.valueChanged.connect(self.update_global_trim_start)
+
+        self.global_trim_end_spinbox = QSpinBox()
+        self.global_trim_end_spinbox.setRange(0, 9999)
+        self.global_trim_end_spinbox.setValue(0)
+        self.global_trim_end_spinbox.setEnabled(False)
+        self.global_trim_end_spinbox.valueChanged.connect(self.update_global_trim_end)
+
+        global_trim_layout.addWidget(self.global_trim_checkbox)
+        
+        spinbox_layout = QHBoxLayout()
+        
+        start_layout = QVBoxLayout()
+        start_layout.addWidget(QLabel("시작:"))
+        start_layout.addWidget(self.global_trim_start_spinbox)
+        
+        end_layout = QVBoxLayout()
+        end_layout.addWidget(QLabel("끝:"))
+        end_layout.addWidget(self.global_trim_end_spinbox)
+        
+        spinbox_layout.addLayout(start_layout)
+        spinbox_layout.addLayout(end_layout)
+        
+        global_trim_layout.addLayout(spinbox_layout)
+
+        offset_layout.addLayout(global_trim_layout)
 
     def create_content_layout(self, main_layout):
         content_layout = QHBoxLayout()
@@ -251,12 +291,12 @@ class FFmpegGui(QWidget):
         options_layout = QVBoxLayout()
 
         encoding_options = [
-            ("-c:v", ["libx264", "libx265", "none"]),
-            ("-pix_fmt", ["yuv420p", "yuv422p", "yuv444p", "none"]),
-            ("-colorspace", ["bt709", "bt2020nc", "none"]),
-            ("-color_primaries", ["bt709", "bt2020", "none"]),
-            ("-color_trc", ["bt709", "bt2020-10", "none"]),
-            ("-color_range", ["limited", "full", "none"])
+            ("c:v", ["libx264", "libx265", "none"]),
+            ("pix_fmt", ["yuv420p", "yuv422p", "yuv444p", "none"]),
+            ("colorspace", ["bt709", "bt2020nc", "none"]),
+            ("color_primaries", ["bt709", "bt2020", "none"]),
+            ("color_trc", ["bt709", "bt2020-10", "none"]),
+            ("color_range", ["limited", "full", "none"])
         ]
 
         self.option_widgets = {}
@@ -538,26 +578,19 @@ class FFmpegGui(QWidget):
                     output_file,
                     encoding_options,
                     debug_mode=debug_mode,
-                    trim_values=trim_values
+                    trim_values=trim_values,
+                    global_trim_start=self.global_trim_start,  # 추가
+                    global_trim_end=self.global_trim_end  # 추가
                 )
                 QMessageBox.information(self, "완료", "인코딩이 완료되었습니다.")
             except Exception as e:
                 QMessageBox.critical(self, "에러", f"인코딩 중 에러가 발생했습니다:\n{e}")
 
     def get_media_duration(self, file_path):
-        # 미디어 파일의 길이를 가져오는 함수 구현
         try:
-            import subprocess
-            command = [
-                os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe'),
-                '-v', 'error',
-                '-show_entries', 'format=duration',
-                '-of', 'default=noprint_wrappers=1:nokey=1',
-                file_path
-            ]
-            result = subprocess.run(command, capture_output=True, text=True)
-            duration_str = result.stdout.strip()
-            return float(duration_str)
+            probe = ffmpeg.probe(file_path)
+            duration = float(probe['streams'][0]['duration'])
+            return duration
         except Exception as e:
             print(f"get_media_duration 오류: {e}")
             return None
@@ -663,28 +696,26 @@ class FFmpegGui(QWidget):
             QMessageBox.warning(self, "경고", "재생할 파일을 선택해주세요.")
             return
 
-        if self.video_thread:
-            print(f"비디오 스레드 상태: is_playing = {self.video_thread.is_playing}")
-            if not self.video_thread.is_playing:
-                print("재생 시작")
-                self.start_video_playback()
-            else:
-                print("재생 정지")
-                self.stop_video_playback()
-        else:
-            print("비디오 스레드 생성")
-            self.create_video_thread()
+        if not self.video_thread or not self.video_thread.is_playing:
             self.start_video_playback()
+        else:
+            self.stop_video_playback()
 
     def create_video_thread(self):
         file_path = self.list_widget.get_selected_file_path()
         if file_path:
+            if self.video_thread:
+                self.stop_video_playback()
             self.video_thread = VideoThread(file_path)
             self.video_thread.frame_ready.connect(self.update_video_frame)
             self.video_thread.finished.connect(self.on_video_finished)
             self.video_thread.video_info_ready.connect(self.set_video_info)
 
     def start_video_playback(self):
+        if self.video_thread and self.video_thread.isRunning():
+            self.video_thread.reset()
+            self.video_thread.terminate()
+            self.video_thread.wait()
         print("start_video_playback 호출됨")
         if not self.video_thread:
             self.create_video_thread()
@@ -692,30 +723,40 @@ class FFmpegGui(QWidget):
         self.video_thread.is_playing = True
         current_speed = self.speed_slider.value() / 100
         print(f"현재 재생 속도: {current_speed}")
-        self.video_thread.set_speed(current_speed)
+        self.video_thread.set_speed(current_speed*1.5)
         self.video_thread.start()
         print("비디오 스레드 시작됨")
         self.play_button.setText('정지')
         print("재생 버튼 텍스트 변경: '정지'")
 
     def stop_video_playback(self):
-        print("stop_video_playback 호출됨")
-        if self.video_thread:
-            self.video_thread.stop()
-            self.play_button.setText('재생')
+        if not self.video_thread or not self.video_thread.is_playing:
+            return
+        self.video_thread.stop()
+        self.video_thread.wait()  # 스레드가 완전히 종료될 때까지 대기
+        self.update_ui_after_stop()
+        print("재생 정지")
 
     def on_video_finished(self):
+        if self.video_thread.is_playing:
+            return
         print("on_video_finished 호출됨")
-        if self.video_thread:
-            self.video_thread.stop()
-            self.play_button.setText('재생')
+        self.stop_video_playback()
+        self.update_ui_after_stop()
+        self.video_thread.reset()  # 스레드 상태 초기화
+
+    def update_ui_after_stop(self):
+        print("update_ui_after_stop 호출됨")
+        self.video_thread.is_playing = False
+        self.play_button.setText('재생')
+        # UI 업데이트 로직
 
     def change_speed(self):
-        print("change_speed 호출됨")
+        # print("change_speed 호출됨")
         self.speed = self.speed_slider.value() / 100
         self.speed_value_label.setText(f"{self.speed:.1f}x")
         if self.video_thread:
-            self.video_thread.set_speed(self.speed)
+            self.video_thread.set_speed(self.speed*1.5)
 
     def resize_keeping_aspect_ratio(self, pixmap: QPixmap, max_width: int, max_height: int, video_width: int = 0, video_height: int = 0) -> QPixmap:
         if video_width <= 0 or video_height <= 0:
@@ -790,8 +831,22 @@ class FFmpegGui(QWidget):
         if self.use_custom_resolution:
             self.encoding_options["-s"] = f"{self.video_width}x{self.video_height}"
 
+    def toggle_global_trim(self, state):
+        is_enabled = state == Qt.CheckState.Checked.value
+        self.global_trim_start_spinbox.setEnabled(is_enabled)
+        self.global_trim_end_spinbox.setEnabled(is_enabled)
+        print(f"toggle_global_trim called: state={state}, is_enabled={is_enabled}")
+
+    def update_global_trim_start(self, value):
+        self.global_trim_start = value
+        print(f"Global trim start updated: {self.global_trim_start}")
+
+    def update_global_trim_end(self, value):
+        self.global_trim_end = value
+        print(f"Global trim end updated: {self.global_trim_end}")
+
     def closeEvent(self, event):
         # Save the current output path when the application closes
         self.settings.setValue("last_output_path", self.output_edit.text())
+        self.stop_video_playback()
         super().closeEvent(event)
-

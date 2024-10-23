@@ -1,13 +1,13 @@
-# video_thread.py
-
-import os
-import subprocess
-from typing import Optional
+import ffmpeg
+import numpy as np
 from PySide6.QtCore import QThread, Signal, QByteArray
 from PySide6.QtGui import QPixmap, QImage
+from concurrent.futures import ThreadPoolExecutor
+import cv2
+import subprocess
+import os
 import glob
-
-from config import FFMPEG_PATH
+from PIL import Image
 
 class VideoThread(QThread):
     frame_ready = Signal(QPixmap)
@@ -18,186 +18,295 @@ class VideoThread(QThread):
         super().__init__(parent)
         self.file_path = file_path
         self.is_playing = False
+        self.is_stopping = False
         self.speed = 1.0
-        self.process: Optional[subprocess.Popen] = None
-        self.is_sequence = '%' in file_path
-        self.video_width = 0
-        self.video_height = 0
-        self.sequence_files = []
+        self.preview_width = 640
+        self.preview_height = 0
+        self.image_files = []
+        self.process = None
+        self.thread_pool = ThreadPoolExecutor(max_workers=4)
+        
+        try:
+            if '%' in self.file_path:  # 이미지 시퀀스 처리
+                self.process_image_sequence()
+            else:
+                probe = ffmpeg.probe(self.file_path)
+                self.video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+        except Exception as e:
+            print(f"Error processing file: {e}")
+            self.process_fallback()
+
+        self.width = int(self.video_info['width'])
+        self.height = int(self.video_info['height'])
+        if self.preview_height == 0:
+            self.preview_height = int(self.height * (self.preview_width / self.width))
+        self.frame_rate = eval(self.video_info.get('r_frame_rate', '30/1'))
+        duration = float(self.video_info.get('duration', '0'))
+        self.total_frames = int(duration * self.frame_rate) if duration > 0 else len(self.image_files)
         self.current_frame = 0
-        self.frame_buffer = QByteArray()
-        self.frame_size = 0
-        self.frame_skip = 0
+        self.thread_pool = ThreadPoolExecutor(max_workers=4)
+
+    def process_image_sequence(self):
+        base_path = self.file_path.split('%')[0]
+        pattern = os.path.basename(self.file_path).replace('%04d', '*')
+        self.image_files = sorted(glob.glob(os.path.join(os.path.dirname(base_path), pattern)))
+        
+        if not self.image_files:
+            raise ValueError("No image files found in the sequence")
+        
+        with Image.open(self.image_files[0]) as img:
+            width, height = img.size
+        
+        self.video_info = {
+            'width': str(width),
+            'height': str(height),
+            'r_frame_rate': '30/1',  # 기본 프레임 레이트
+            'duration': str(len(self.image_files) / 30)  # 대략적인 지속 시간
+        }
+
+    def process_fallback(self):
+        # 단일 이미지 파일 처리
+        try:
+            with Image.open(self.file_path) as img:
+                width, height = img.size
+            self.video_info = {
+                'width': str(width),
+                'height': str(height),
+                'r_frame_rate': '1/1',
+                'duration': '1'
+            }
+            self.image_files = [self.file_path]
+        except Exception as e:
+            print(f"Error processing image: {e}")
+            # 기본값 설정
+            self.video_info = {
+                'width': '640',
+                'height': '480',
+                'r_frame_rate': '30/1',
+                'duration': '0'
+            }
+            self.image_files = []
+
+    def get_image_size(self, file_path):
+        # PIL을 사용하여 이미지 크기 가져오기
+        with Image.open(file_path) as img:
+            return img.size
 
     def run(self):
-        print("VideoThread.run() 시작")
-        self.get_video_info()
-        print("비디오 파일 재생 시작")
-        self.start_ffmpeg()
-        frame_count = 0
-        while self.is_playing and self.process:
-            if frame_count % (self.frame_skip + 1) == 0:
-                self.get_frame()
+        try:
+            self.video_info_ready.emit(self.width, self.height)
+            
+            if '%' in self.file_path or len(self.image_files) > 0:
+                self.process_image_sequence_frames()
             else:
-                self.skip_frame()
-            frame_count += 1
-            self.msleep(int(33.33 / self.speed))  # 약 30 FPS에 해당하는 지연 시간
-        print("VideoThread.run() 종료")
+                self.process_video_frames()
+        finally:
+            if not self.is_stopping:
+                self.stop()
+                self.is_playing = False
+                self.finished.emit()
+
+    def process_image_sequence_frames(self):
+        if self.preview_height == 0:
+            self.preview_height = int(self.height * (self.preview_width / self.width))
+
+        for image_file in self.image_files:
+            if not self.is_playing:
+                break
+            
+            img = Image.open(image_file)
+            img.thumbnail((self.preview_width, self.preview_height), Image.LANCZOS)
+            
+            # PIL 이미지를 numpy 배열로 변환
+            np_img = np.array(img)
+            
+            # RGB에서 BGR로 변환 (만약 필요하다면)
+            # np_img = np_img[:, :, ::-1].copy()
+            
+            height, width, channel = np_img.shape
+            bytes_per_line = 3 * width
+            
+            q_image = QImage(np_img.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_image)
+            
+            self.frame_ready.emit(pixmap)
+            self.current_frame += 1
+            self.msleep(int(1000 / (self.frame_rate * self.speed)))
+
         self.finished.emit()
 
-    def get_video_info(self):
-        print(f"get_video_info() 시작: is_sequence={self.is_sequence}")
-        if self.is_sequence:
-            self.get_sequence_info()
-        else:
-            try:
-                command = [
-                    FFMPEG_PATH,
-                    '-i', self.file_path,
-                    '-v', 'error',
-                    '-select_streams', 'v:0',
-                    '-count_packets', '-show_entries', 'stream=width,height',
-                    '-of', 'csv=p=0'
-                ]
-                result = subprocess.run(command, capture_output=True, text=True)
-                output = result.stdout.strip()
-                if output:
-                    self.video_width, self.video_height = map(int, output.split(','))
-                    self.video_info_ready.emit(self.video_width, self.video_height)
-                else:
-                    self.get_video_info_ffprobe()
-            except Exception as e:
-                print(f"비디오 정보 가져오기 오류: {str(e)}")
-                self.video_info_ready.emit(0, 0)
-
-    def get_video_info_ffprobe(self):
-        print("get_video_info_ffprobe() 시작")
+    def process_video_frames(self):
         try:
-            ffprobe_command = [
-                os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe'),
-                '-v', 'error',
-                '-select_streams', 'v:0',
-                '-count_packets',
-                '-show_entries', 'stream=width,height',
-                '-of', 'csv=p=0',
-                self.file_path
-            ]
-            ffprobe_result = subprocess.run(ffprobe_command, capture_output=True, text=True)
-            ffprobe_output = ffprobe_result.stdout.strip()
-            if ffprobe_output:
-                self.video_width, self.video_height = map(int, ffprobe_output.split(','))
-                self.video_info_ready.emit(self.video_width, self.video_height)
-            else:
-                print(f"비디오 정보를 가져올 수 없습니다: {self.file_path}")
-                self.video_info_ready.emit(0, 0)
+            self.process = (
+                ffmpeg
+                .input(self.file_path)
+                .output('pipe:', format='rawvideo', pix_fmt='rgb24')
+                .run_async(pipe_stdout=True, pipe_stdin=True)
+            )
+
+            while self.is_playing and self.current_frame < self.total_frames:
+                in_bytes = self.process.stdout.read(self.width * self.height * 3)
+                if not in_bytes:
+                    break
+
+                self.thread_pool.submit(self.process_frame, in_bytes)
+                
+                self.current_frame += 1
+                self.msleep(int(1000 / (self.frame_rate * self.speed)))
+
+                if self.current_frame >= self.total_frames - 1:
+                    break  # 마지막 프레임에 도달하면 루프를 빠져나갑니다.
+
+        except ffmpeg.Error as e:
+            print(f"FFmpeg 에러: {e.stderr.decode()}")
         except Exception as e:
-            print(f"FFprobe를 사용한 비디오 정보 가져오기 오류: {str(e)}")
-            self.video_info_ready.emit(0, 0)
+            print(f"예상치 못한 에러: {e}")
+        finally:
+            self.stop()
 
-    def get_sequence_info(self):
-        print("get_sequence_info() 시작")
-        self.get_sequence_files()
-        if self.sequence_files:
-            pixmap = QPixmap(self.sequence_files[0])
-            if not pixmap.isNull():
-                self.video_width = pixmap.width()
-                self.video_height = pixmap.height()
-                self.video_info_ready.emit(self.video_width, self.video_height)
-            else:
-                self.video_info_ready.emit(0, 0)
-        else:
-            self.video_info_ready.emit(0, 0)
-
-    def get_sequence_files(self):
-        pattern = self.file_path.replace('%04d', '*')
-        self.sequence_files = sorted(glob.glob(pattern))
-
-    def start_ffmpeg(self):
-        print("start_ffmpeg() 시작")
-        try:
-            command = [
-                FFMPEG_PATH,
-                '-i', self.file_path,
-                '-f', 'rawvideo',
-                '-pix_fmt', 'rgb24',
-                '-'
-            ]
-            if self.is_sequence:
-                command[1:1] = ['-framerate', '30']
-
-            self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            print(f"FFmpeg 시작 중 오류: {str(e)}")
-            print(f"FFmpeg 오류 출력: {self.process.stderr.read().decode('utf-8')}")
-
-    def get_frame(self):
-        if self.is_playing and self.process:
-            if self.frame_size == 0:
-                self.frame_size = self.video_width * self.video_height * 3  # RGB24 포맷
-
-            try:
-                while len(self.frame_buffer) < self.frame_size:
-                    data = self.process.stdout.read(4096)  # 작은 청크로 읽기
-                    if not data:
-                        print("프레임 데이터를 더 이상 읽을 수 없습니다.")
-                        self.stop()
-                        return
-                    self.frame_buffer.append(data)
-
-                raw_image = self.frame_buffer[:self.frame_size]
-                self.frame_buffer = self.frame_buffer[self.frame_size:]
-
-                image = QImage(raw_image, self.video_width, self.video_height, QImage.Format_RGB888)
-                pixmap = QPixmap.fromImage(image)
-                self.frame_ready.emit(pixmap)
-            except Exception as e:
-                print(f"프레임 읽기 오류: {str(e)}")
-                self.stop()
+    def process_frame(self, in_bytes):
+        np_array = np.frombuffer(in_bytes, np.uint8).reshape([self.height, self.width, 3])
+        # BGR에서 RGB로의 변환을 제거합니다.
+        frame = np_array  # cv2.cvtColor(np_array, cv2.COLOR_RGB2BGR) 대신 사용
+        
+        if self.preview_height == 0:
+            self.preview_height = int(self.height * (self.preview_width / self.width))
+        
+        resized_frame = cv2.resize(frame, (self.preview_width, self.preview_height))
+        
+        height, width, channel = resized_frame.shape
+        bytes_per_line = 3 * width
+        q_image = QImage(resized_frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_image)
+        
+        self.frame_ready.emit(pixmap)
 
     def stop(self):
-        print("stop() 호출됨")
+        if self.is_stopping:
+            return
+        self.is_stopping = True
         self.is_playing = False
+        print("VideoThread stop 호출됨")
         if self.process:
-            self.process.terminate()
-            self.process = None
+            try:
+                # 프로세스 종료 요청
+                self.process.terminate()
+                # 최대 5초 동안 프로세스가 종료되기를 기다림
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # 5초 후에도 종료되지 않으면 강제 종료
+                self.process.kill()
+            except Exception as e:
+                print(f"프로세스 종료 중 오류 발생: {e}")
+            finally:
+                self.process = None
+        self.is_stopping = False
+        print("VideoThread stop 완료")
+
+    def reset(self):
+        self.is_playing = False
+        self.is_stopping = False
         self.current_frame = 0
-        self.frame_buffer.clear()
+        if self.process:
+            self.process.kill()
+            self.process = None
 
     def set_speed(self, speed: float):
-        print(f"set_speed() 호출됨: {speed}")
         self.speed = speed
-        if speed > 1.0:
-            self.frame_skip = int(speed)
-        else:
-            self.frame_skip = 0
 
-    def get_video_frame(self, time_sec: float) -> Optional[QPixmap]:
-        print(f"get_video_frame() 시작: time_sec={time_sec}")
-        temp_filename = f'temp_frame_{time_sec}.png'
-        command = [
-            FFMPEG_PATH,
-            '-ss', str(time_sec),
-            '-i', self.file_path,
-            '-vframes', '1',
-            '-an',
-            temp_filename
-        ]
+    def get_video_info(self):
+        return {
+            'width': self.width,
+            'height': self.height,
+            'frame_rate': self.frame_rate,
+            'total_frames': self.total_frames
+        }
+    def get_video_frame(self, frame_number):
+        if '%' in self.file_path or self.image_files:  # 이미지 시퀀스인 경우
+            if 0 <= frame_number < len(self.image_files):
+                img = Image.open(self.image_files[frame_number])
+                img = self.resize_image(img, self.preview_width, self.preview_height)
+                
+                np_img = np.array(img)
+                height, width, channel = np_img.shape
+                bytes_per_line = 3 * width
+                
+                q_image = QImage(np_img.data, width, height, bytes_per_line, QImage.Format_RGB888)
+                return QPixmap.fromImage(q_image)
+            return None
+        
+        # 비디오 파일 처리
         try:
-            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            pixmap = QPixmap(temp_filename)
-            os.remove(temp_filename)
-            return pixmap
-        except subprocess.CalledProcessError as e:
-            print(f"FFmpeg 에러: {e}")
-        except Exception as e:
-            print(f"get_video_frame 오류: {str(e)}")
-        return None
+            out, _ = (
+                ffmpeg
+                .input(self.file_path)
+                .filter('select', f'gte(n,{frame_number})')
+                .output('pipe:', format='rawvideo', pix_fmt='rgb24', vframes=1)
+                .run(capture_stdout=True)
+            )
 
-    def skip_frame(self):
-        if self.is_playing and self.process:
-            skip_size = self.frame_size * (self.frame_skip)
-            try:
-                self.process.stdout.read(skip_size)
-            except Exception as e:
-                print(f"프레임 스킵 오류: {str(e)}")
-                self.stop()
+            frame = np.frombuffer(out, np.uint8).reshape([self.height, self.width, 3])
+            
+            resized_frame = self.resize_frame(frame, self.preview_width, self.preview_height)
+            
+            height, width, channel = resized_frame.shape
+            bytes_per_line = 3 * width
+            q_image = QImage(resized_frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_image)
+            
+            return pixmap
+        except Exception as e:
+            print(f"프레임 가져오기 오류: {e}")
+            return None
+    def resize_image(self, img, target_width, target_height):
+        # 이미지의 종횡비 유지하면서 리사이즈
+        img_width, img_height = img.size
+        aspect_ratio = img_width / img_height
+        target_ratio = target_width / target_height
+
+        if aspect_ratio > target_ratio:
+            # 이미지가 더 넓은 경우
+            new_width = target_width
+            new_height = int(target_width / aspect_ratio)
+        else:
+            # 이미지가 더 높은 경우
+            new_height = target_height
+            new_width = int(target_height * aspect_ratio)
+
+        img = img.resize((new_width, new_height), Image.LANCZOS)
+        
+        # 빈 이미지 생성 (검은색 배경)
+        background = Image.new('RGB', (target_width, target_height), (0, 0, 0))
+        
+        # 리사이즈된 이미지를 중앙에 붙이기
+        offset = ((target_width - new_width) // 2, (target_height - new_height) // 2)
+        background.paste(img, offset)
+        
+        return background
+
+    def resize_frame(self, frame, target_width, target_height):
+        # 프레임의 종횡비 유지하면서 리사이즈
+        img_height, img_width = frame.shape[:2]
+        aspect_ratio = img_width / img_height
+        target_ratio = target_width / target_height
+
+        if aspect_ratio > target_ratio:
+            # 이미지가 더 넓은 경우
+            new_width = target_width
+            new_height = int(target_width / aspect_ratio)
+        else:
+            # 이미지가 더 높은 경우
+            new_height = target_height
+            new_width = int(target_height * aspect_ratio)
+
+        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+        
+        # 빈 프레임 생성 (검은색 배경)
+        background = np.zeros((target_height, target_width, 3), dtype=np.uint8)
+        
+        # 리사이즈된 프레임을 중앙에 붙이기
+        y_offset = (target_height - new_height) // 2
+        x_offset = (target_width - new_width) // 2
+        background[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = resized_frame
+        
+        return background
