@@ -5,7 +5,7 @@ import traceback
 from PySide6.QtWidgets import QApplication
 from gui import FFmpegGui
 
-__version__ = '1.0.2'
+__version__ = '1.0.3'
 
 if __name__ == '__main__':
     try:
