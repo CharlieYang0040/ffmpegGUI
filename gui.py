@@ -76,8 +76,8 @@ class FFmpegGui(QWidget):
         self.create_top_layout(main_layout)
         self.create_content_layout(main_layout)
 
-        self.setGeometry(100, 100, 650, 600)
-        self.setMinimumWidth(650)
+        self.setGeometry(100, 100, 750, 600)
+        self.setMinimumWidth(750)
 
     def create_top_layout(self, main_layout):
         top_layout = QHBoxLayout()
@@ -89,7 +89,7 @@ class FFmpegGui(QWidget):
 
     def create_preview_area(self, top_layout):
         self.preview_label = QLabel(alignment=Qt.AlignCenter)
-        self.preview_label.setFixedSize(360, 240)
+        self.preview_label.setFixedSize(470, 270)
         self.preview_label.setStyleSheet("background-color: #1a1a1a; border: 1px solid #3a3a3a;")
         top_layout.addWidget(self.preview_label, 1)
 
@@ -104,7 +104,7 @@ class FFmpegGui(QWidget):
         top_layout.addLayout(control_layout)
 
     def create_play_button(self, control_layout):
-        self.play_button = QPushButton('재생')
+        self.play_button = QPushButton('▶️ 재생')
         self.play_button.clicked.connect(self.toggle_play)
         control_layout.addWidget(self.play_button)
 
@@ -163,13 +163,13 @@ class FFmpegGui(QWidget):
         self.resolution_checkbox.stateChanged.connect(self.toggle_resolution)
 
         self.width_edit = QLineEdit()
-        self.width_edit.setValidator(QIntValidator(1, 7680))
+        self.width_edit.setValidator(QIntValidator(320, 9999))
         self.width_edit.setText("1920")
         self.width_edit.setFixedWidth(60)  # Adjust width
         self.width_edit.setEnabled(False)
 
         self.height_edit = QLineEdit()
-        self.height_edit.setValidator(QIntValidator(1, 4320))
+        self.height_edit.setValidator(QIntValidator(240, 9999))
         self.height_edit.setText("1080")
         self.height_edit.setFixedWidth(60)  # Adjust width
         self.height_edit.setEnabled(False)
@@ -256,31 +256,31 @@ class FFmpegGui(QWidget):
     def create_button_layout(self, left_layout):
         button_layout = QHBoxLayout()
 
-        self.add_button = QPushButton('파일 추가')
+        self.add_button = QPushButton('➕ 파일 추가')
         self.add_button.clicked.connect(self.add_files)
         button_layout.addWidget(self.add_button)
 
-        self.remove_button = QPushButton('파일 제거')
+        self.remove_button = QPushButton('➖ 파일 제거')
         self.remove_button.clicked.connect(self.remove_selected_files)
         button_layout.addWidget(self.remove_button)
 
-        self.clear_button = QPushButton('목록 비우기')
+        self.clear_button = QPushButton('🗑️ 목록 비우기')
         self.clear_button.clicked.connect(self.clear_list)
         button_layout.addWidget(self.clear_button)
 
-        self.sort_button = QPushButton('이름 순 정렬')
+        self.sort_button = QPushButton('🔠 이름 순 정렬')
         self.sort_button.clicked.connect(self.toggle_sort_list)
         button_layout.addWidget(self.sort_button)
 
-        self.reverse_button = QPushButton('순서 반대로')
+        self.reverse_button = QPushButton('🔃 순서 반대로')
         self.reverse_button.clicked.connect(self.reverse_list_order)
         button_layout.addWidget(self.reverse_button)
 
-        self.move_up_button = QPushButton('위로 이동')
+        self.move_up_button = QPushButton('🔼 위로 이동')
         self.move_up_button.clicked.connect(self.move_item_up)
         button_layout.addWidget(self.move_up_button)
 
-        self.move_down_button = QPushButton('아래로 이동')
+        self.move_down_button = QPushButton('🔽 아래로 이동')
         self.move_down_button.clicked.connect(self.move_item_down)
         button_layout.addWidget(self.move_down_button)
 
@@ -332,7 +332,7 @@ class FFmpegGui(QWidget):
         left_layout.addLayout(output_layout)
 
     def create_encode_button(self, left_layout):
-        self.encode_button = QPushButton('인코딩 시작')
+        self.encode_button = QPushButton('🎬 인코딩 시작')
         self.encode_button.clicked.connect(self.start_encoding)
         left_layout.addWidget(self.encode_button)
 
@@ -354,7 +354,7 @@ class FFmpegGui(QWidget):
     # Update button
     def create_update_button(self, left_layout):
         update_layout = QHBoxLayout()
-        self.update_button = QPushButton('업데이트 확인')
+        self.update_button = QPushButton('🔄 업데이트 확인')
         self.update_button.clicked.connect(self.update_checker.check_for_updates)
         update_layout.addWidget(self.update_button)
         left_layout.addLayout(update_layout)
@@ -445,10 +445,10 @@ class FFmpegGui(QWidget):
     def toggle_sort_list(self):
         if self.sort_ascending:
             self.sort_list_by_name(reverse=False)
-            self.sort_button.setText('이름 역순 정렬')
+            self.sort_button.setText('🔠 이름 역순 정렬')
         else:
             self.sort_list_by_name(reverse=True)
-            self.sort_button.setText('이름 순 정렬')
+            self.sort_button.setText('🔠 이름 순 정렬')
         self.sort_ascending = not self.sort_ascending
 
     def sort_list_by_name(self, reverse=False):
@@ -737,7 +737,7 @@ class FFmpegGui(QWidget):
         self.video_thread.set_speed(current_speed*1.5)
         self.video_thread.start()
         print("비디오 스레드 시작됨")
-        self.play_button.setText('정지')
+        self.play_button.setText('⏹️ 정지')
         print("재생 버튼 텍스트 변경: '정지'")
 
     def stop_video_playback(self):
@@ -759,7 +759,7 @@ class FFmpegGui(QWidget):
     def update_ui_after_stop(self):
         print("update_ui_after_stop 호출됨")
         self.video_thread.is_playing = False
-        self.play_button.setText('재생')
+        self.play_button.setText('▶️ 재생')
         # UI 업데이트 로직
 
     def change_speed(self):
