@@ -3,7 +3,7 @@
 !/libs/.gitkeep
 
 # 가상 환경 폴더 무시
-/venv
+/ffmpegGUI_venv
 
 # 빌드 폴더 무시
 /build
