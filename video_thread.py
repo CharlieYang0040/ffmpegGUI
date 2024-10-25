@@ -8,6 +8,16 @@ import subprocess
 import os
 import glob
 from PIL import Image
+import json
+from typing import Dict
+import time
+
+# FFmpeg 경로를 전역 변수로 설정
+FFMPEG_PATH = r'\\192.168.2.215\Share_151\art\ffmpeg-7.1\bin\ffmpeg.exe'
+
+def set_ffmpeg_path(path: str):
+    global FFMPEG_PATH
+    FFMPEG_PATH = path
 
 class VideoThread(QThread):
     frame_ready = Signal(QPixmap)
@@ -30,8 +40,7 @@ class VideoThread(QThread):
             if '%' in self.file_path:  # 이미지 시퀀스 처리
                 self.process_image_sequence()
             else:
-                probe = ffmpeg.probe(self.file_path)
-                self.video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+                self.video_info = self.get_video_properties(self.file_path)
         except Exception as e:
             print(f"Error processing file: {e}")
             self.process_fallback()
@@ -45,6 +54,27 @@ class VideoThread(QThread):
         self.total_frames = int(duration * self.frame_rate) if duration > 0 else len(self.image_files)
         self.current_frame = 0
         self.thread_pool = ThreadPoolExecutor(max_workers=4)
+
+    def get_video_properties(self, input_file: str) -> Dict[str, str]:
+        ffprobe_path = os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe.exe')
+        try:
+            probe_args = [ffprobe_path, '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', '-i', input_file]
+            result = subprocess.run(probe_args, capture_output=True, text=True)
+            if result.returncode != 0:
+                print("FFprobe 오류:", result.stderr)
+                return {}
+            
+            probe = json.loads(result.stdout)
+            video_stream = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+            return {
+                'width': str(video_stream['width']),
+                'height': str(video_stream['height']),
+                'r_frame_rate': video_stream.get('r_frame_rate', '30/1'),
+                'duration': probe['format'].get('duration', '0')
+            }
+        except Exception as e:
+            print(f"비디오 속성 가져오기 오류: {e}")
+            return {}
 
     def process_image_sequence(self):
         base_path = self.file_path.split('%')[0]
@@ -110,28 +140,44 @@ class VideoThread(QThread):
         if self.preview_height == 0:
             self.preview_height = int(self.height * (self.preview_width / self.width))
 
-        for image_file in self.image_files:
-            if not self.is_playing:
-                break
-            
-            img = Image.open(image_file)
-            img.thumbnail((self.preview_width, self.preview_height), Image.LANCZOS)
-            
-            # PIL 이미지를 numpy 배열로 변환
-            np_img = np.array(img)
-            
-            # RGB에서 BGR로 변환 (만약 필요하다면)
-            # np_img = np_img[:, :, ::-1].copy()
-            
-            height, width, channel = np_img.shape
-            bytes_per_line = 3 * width
-            
-            q_image = QImage(np_img.data, width, height, bytes_per_line, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(q_image)
-            
-            self.frame_ready.emit(pixmap)
-            self.current_frame += 1
-            self.msleep(int(1000 / (self.frame_rate * self.speed)))
+        frame_time = 1.0 / self.frame_rate
+        adjusted_frame_time = frame_time / self.speed
+        last_frame_time = time.time()
+        frame_index = 0
+
+        while frame_index < len(self.image_files) and self.is_playing:
+            current_time = time.time()
+            elapsed_time = current_time - last_frame_time
+
+            if elapsed_time >= adjusted_frame_time:
+                image_file = self.image_files[frame_index]
+                
+                # PNG 이미지를 RGBA 모드로 열기
+                img = Image.open(image_file).convert("RGBA")
+                img.thumbnail((self.preview_width, self.preview_height), Image.LANCZOS)
+                
+                # RGBA 이미지를 numpy 배열로 변환
+                np_img = np.array(img)
+                
+                height, width, channel = np_img.shape
+                bytes_per_line = 4 * width
+                
+                # RGBA 형식으로 QImage 생성
+                q_image = QImage(np_img.data, width, height, bytes_per_line, QImage.Format_RGBA8888)
+                pixmap = QPixmap.fromImage(q_image)
+                
+                self.frame_ready.emit(pixmap)
+                
+                # 다음 프레임 계산
+                frames_to_skip = int(elapsed_time / adjusted_frame_time)
+                frame_index += max(1, frames_to_skip)
+                self.current_frame = frame_index
+                
+                last_frame_time = current_time
+
+            else:
+                # 다음 프레임 시간까지 대기
+                time.sleep(max(0, adjusted_frame_time - elapsed_time))
 
         self.finished.emit()
 
@@ -141,7 +187,7 @@ class VideoThread(QThread):
                 ffmpeg
                 .input(self.file_path)
                 .output('pipe:', format='rawvideo', pix_fmt='rgb24')
-                .run_async(pipe_stdout=True, pipe_stdin=True)
+                .run_async(pipe_stdout=True, pipe_stdin=True, cmd=FFMPEG_PATH)
             )
 
             while self.is_playing and self.current_frame < self.total_frames:
@@ -213,6 +259,8 @@ class VideoThread(QThread):
 
     def set_speed(self, speed: float):
         self.speed = speed
+        if hasattr(self, 'frame_rate'):
+            self.adjusted_frame_time = (1.0 / self.frame_rate) / self.speed
 
     def get_video_info(self):
         return {
@@ -242,7 +290,7 @@ class VideoThread(QThread):
                 .input(self.file_path)
                 .filter('select', f'gte(n,{frame_number})')
                 .output('pipe:', format='rawvideo', pix_fmt='rgb24', vframes=1)
-                .run(capture_stdout=True)
+                .run(capture_stdout=True, cmd=FFMPEG_PATH)
             )
 
             frame = np.frombuffer(out, np.uint8).reshape([self.height, self.width, 3])
@@ -310,3 +358,5 @@ class VideoThread(QThread):
         background[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = resized_frame
         
         return background
+
+

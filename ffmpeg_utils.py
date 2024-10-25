@@ -8,11 +8,19 @@ import subprocess
 from typing import List, Dict, Tuple
 import ffmpeg
 import time
+import json
 
 if getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
 else:
     base_path = os.path.dirname(os.path.abspath(__file__))
+
+# 전역 변수로 ffmpeg_path 설정
+FFMPEG_PATH = r'\\192.168.2.215\Share_151\art\ffmpeg-7.1\bin\ffmpeg.exe'
+
+def set_ffmpeg_path(path: str):
+    global FFMPEG_PATH
+    FFMPEG_PATH = path
 
 def create_temp_file_list(temp_files: List[str]) -> str:
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as file_list:
@@ -21,7 +29,7 @@ def create_temp_file_list(temp_files: List[str]) -> str:
             file_list.write(f"file '{absolute_path}'\n")
     return file_list.name
 
-def get_video_properties(input_file: str) -> Dict[str, str]:
+def get_video_properties(input_file: str, debug_mode: bool = False) -> Dict[str, str]:
     """비디오 파일 또는 이미지 파일의 해상도와 SAR, DAR 값을 반환합니다."""
     if '%' in input_file:
         # 이미지 시퀀스인 경우
@@ -34,8 +42,21 @@ def get_video_properties(input_file: str) -> Dict[str, str]:
     else:
         probe_input = input_file
 
+    # ffprobe.exe 경로 설정
+    ffprobe_path = os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe.exe')
+
     try:
-        probe = ffmpeg.probe(probe_input)
+        probe_args = [ffprobe_path, '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', '-i', probe_input]
+        if debug_mode:
+            print("FFprobe 명령어:", ' '.join(probe_args))
+        
+        result = subprocess.run(probe_args, capture_output=True, text=True)
+        if result.returncode != 0:
+            if debug_mode:
+                print("FFprobe 오류:", result.stderr)
+            return {}
+        
+        probe = json.loads(result.stdout)
         video_stream = next(s for s in probe['streams'] if s['codec_type'] == 'video')
         return {
             'width': video_stream['width'],
@@ -43,7 +64,17 @@ def get_video_properties(input_file: str) -> Dict[str, str]:
             'sar': video_stream.get('sample_aspect_ratio', '1:1'),
             'dar': video_stream.get('display_aspect_ratio', 'N/A')
         }
-    except ffmpeg.Error:
+    except subprocess.CalledProcessError as e:
+        if debug_mode:
+            print(f"FFprobe 실행 중 오류 발생: {e}")
+        return {}
+    except json.JSONDecodeError as e:
+        if debug_mode:
+            print(f"JSON 파싱 오류: {e}")
+        return {}
+    except Exception as e:
+        if debug_mode:
+            print(f"예상치 못한 오류 발생: {e}")
         return {}
 
 def create_trimmed_video(input_file: str, trim_start: int, trim_end: int, index: int, encoding_options: Dict[str, str], target_resolution: str, target_sar: str, target_dar: str, debug_mode: bool) -> str:
@@ -118,7 +149,7 @@ def get_target_properties(input_files: List[str], encoding_options: Dict[str, st
                 print("처리할 파일이 없습니다.")
             return {}
 
-        target_properties = get_video_properties(first_input_file)
+        target_properties = get_video_properties(first_input_file, debug_mode)
         if target_properties.get('width') and target_properties.get('height'):
             target_resolution = f"{target_properties['width']}x{target_properties['height']}"
             if debug_mode:
@@ -204,7 +235,7 @@ def process_video_files(video_files: List[Tuple[str, int, int]], encoding_option
         if debug_mode:
             print("비디오 파일 concat 명령어:", ' '.join(ffmpeg.compile(stream)))
 
-        ffmpeg.run(stream)
+        ffmpeg.run(stream, cmd=FFMPEG_PATH)
         temp_files_to_remove.append(video_output)
         return [video_output], temp_files_to_remove
     
@@ -248,7 +279,7 @@ def process_image_sequences(image_sequences: List[Tuple[str, int, int]], encodin
 
         # FFmpeg 명령어 생성
         args = [
-            'ffmpeg',
+            FFMPEG_PATH,
             '-framerate', str(encoding_options.get('r', 30)),
             '-start_number', str(new_start_frame),
             '-i', input_file.replace('\\', '/'),
@@ -359,7 +390,7 @@ def concat_videos(input_files: List[str], output_file: str, encoding_options: Di
         if debug_mode:
             print("최종 concat 명령어:", ' '.join(ffmpeg.compile(stream)))
 
-        process = ffmpeg.run_async(stream, pipe_stdout=True, pipe_stderr=True)
+        process = ffmpeg.run_async(stream, cmd=FFMPEG_PATH, pipe_stdout=True, pipe_stderr=True)
         
         # 진행 상황 모니터링
         while True:
@@ -416,3 +447,4 @@ def apply_encoding_options(stream, encoding_options, output_file):
     if '_r' in encoding_options_modified:
         encoding_options_modified['r'] = encoding_options_modified.pop('_r')
     return ffmpeg.output(stream, output_file, **encoding_options_modified)
+

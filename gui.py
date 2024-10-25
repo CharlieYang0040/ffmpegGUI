@@ -64,7 +64,7 @@ class FFmpegGui(QWidget):
         self.position_window_near_mouse()
         self.setStyleSheet(self.get_unreal_style())
         self.set_icon()
-        self.hide_console()  # Hide console window on startup
+        # self.hide_console()  # Hide console window on startup
         self.sort_ascending = True  # Variable to store sort order
         self.global_trim_start = 0
         self.global_trim_end = 0
