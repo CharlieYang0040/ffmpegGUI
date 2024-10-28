@@ -1055,20 +1055,21 @@ class FFmpegGui(QWidget):
         self.use_custom_resolution = state == Qt.CheckState.Checked.value
         self.width_edit.setEnabled(self.use_custom_resolution)
         self.height_edit.setEnabled(self.use_custom_resolution)
-        if not self.use_custom_resolution:
+        self.update_resolution()  # 상태 변경 시 항상 해상도 업데이트
+
+    def update_resolution(self):
+        if self.use_custom_resolution:
+            width = self.width_edit.text()
+            height = self.height_edit.text()
+            if width and height:
+                self.encoding_options["-s"] = f"{width}x{height}"
+        else:
             self.encoding_options.pop("-s", None)
-        print(f"toggle_resolution called: state={state}, use_custom_resolution={self.use_custom_resolution}")
 
     def update_framerate(self, value):
         self.framerate = value
         if self.use_custom_framerate:
             self.encoding_options["-r"] = str(self.framerate)
-
-    def update_resolution(self):
-        self.video_width = self.width_edit.text()
-        self.video_height = self.height_edit.text()
-        if self.use_custom_resolution:
-            self.encoding_options["-s"] = f"{self.video_width}x{self.video_height}"
 
     def toggle_global_trim(self, state):
         is_enabled = state == Qt.CheckState.Checked.value

@@ -140,33 +140,33 @@ def create_trimmed_video(input_file: str, trim_start: int, trim_end: int, index:
             print(f"트림 중 에러 발생 {input_file}: {e}")
         return input_file
 
-def get_target_properties(input_files: List[str], encoding_options: Dict[str, str], debug_mode: bool) -> Dict[str, str]:
+def get_target_properties(input_files: List[str], encoding_options: Dict[str, str], debug_mode: bool):
+    # 커스텀 해상도 설정이 있는 경우
     if "-s" in encoding_options:
         target_resolution = encoding_options["-s"]
         width, height = target_resolution.split('x')
-        target_properties = {'width': width, 'height': height}
-    else:
-        first_input_file = input_files[0] if input_files else None
-        if not first_input_file:
-            if debug_mode:
-                print("처리할 파일이 없습니다.")
-            return {}
+        target_properties = {
+            'width': width,
+            'height': height,
+            'sar': '1:1',  # 커스텀 해상도에서는 기본값 사용
+            'dar': 'N/A'
+        }
+        if debug_mode:
+            print(f"커스텀 해상도 사용: {width}x{height}")
+        return target_properties
 
-        target_properties = get_video_properties(first_input_file, debug_mode)
-        if target_properties.get('width') and target_properties.get('height'):
-            target_resolution = f"{target_properties['width']}x{target_properties['height']}"
-            if debug_mode:
-                print(f"타겟 해상도는 {target_resolution}입니다.")
-        else:
-            if debug_mode:
-                print(f"'{first_input_file}'의 해상도를 가져올 수 없습니다.")
-            return {}
+    # 커스텀 해상도가 없는 경우 첫 번째 파일의 속성 사용
+    first_input_file = input_files[0] if input_files else None
+    if not first_input_file:
+        if debug_mode:
+            print("처리할 파일이 없습니다.")
+        return {}
 
-    target_properties['sar'] = target_properties.get('sar', '1:1')
-    target_properties['dar'] = target_properties.get('dar', 'N/A')
-    if debug_mode:
-        print(f"타겟 SAR: {target_properties['sar']}")
-        print(f"타겟 DAR: {target_properties['dar']}")
+    target_properties = get_video_properties(first_input_file, debug_mode)
+    if not target_properties:
+        if debug_mode:
+            print(f"'{first_input_file}'의 속성을 가져올 수 없습니다.")
+        return {}
 
     return target_properties
 
@@ -179,21 +179,16 @@ def check_video_properties(input_files: List[str], target_properties: Dict[str, 
         input_height = props.get('height')
         input_resolution = f"{input_width}x{input_height}" if input_width and input_height else 'Unknown'
 
-        mismatches = []
+        # 해상도 불일치는 디버그 모드에서만 정보 출력
         if input_width != target_properties['width'] or input_height != target_properties['height']:
-            mismatches.append(f"해상도 불일치: {input_resolution} != {target_properties['width']}x{target_properties['height']}")
-        if input_sar != target_properties['sar']:
-            mismatches.append(f"SAR 불일치: {input_sar} != {target_properties['sar']}")
-        if input_dar != target_properties['dar']:
-            mismatches.append(f"DAR 불일치: {input_dar} != {target_properties['dar']}")
-
-        if mismatches:
-            warning_message = f"경고: 파일 '{input_file}'의 속성이 타겟과 일치하지 않습니다:\n"
-            for mismatch in mismatches:
-                warning_message += f"  {mismatch}\n"
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(None, "속성 불일치 경고", warning_message)
-            raise ValueError("속성 불일치로 인해 작업이 중지되었습니다.")
+            if debug_mode:
+                print(f"해상도 불일치 (자동으로 조정됨): {input_resolution} -> {target_properties['width']}x{target_properties['height']}")
+        
+        # SAR과 DAR 불일치도 디버그 모드에서만 정보 출력
+        if input_sar != target_properties['sar'] and debug_mode:
+            print(f"SAR 불일치 (자동으로 조정됨): {input_sar} -> {target_properties['sar']}")
+        if input_dar != target_properties['dar'] and debug_mode:
+            print(f"DAR 불일치 (자동으로 조정됨): {input_dar} -> {target_properties['dar']}")
 
 def apply_debug_options(encoding_options: Dict[str, str]):
     """디버그 모드에 따라 verbosity 옵션 적용"""
@@ -302,6 +297,20 @@ def process_image_sequences(image_sequences: List[Tuple[str, int, int]], encodin
         image_output = f'temp_image_sequence_{idx}_{seq_idx}.mp4'
         temp_files_to_remove.append(image_output)
 
+        # 필터 체인 구성
+        width, height = target_properties['width'], target_properties['height']
+        filter_chain = [
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease",
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
+        ]
+        
+        if target_properties['sar'] != '1:1':
+            filter_chain.append(f"setsar={target_properties['sar']}")
+        if target_properties['dar'] != 'N/A':
+            filter_chain.append(f"setdar={target_properties['dar']}")
+        
+        filter_str = ','.join(filter_chain)
+
         # FFmpeg 명령어 생성
         args = [
             FFMPEG_PATH,
@@ -309,13 +318,8 @@ def process_image_sequences(image_sequences: List[Tuple[str, int, int]], encodin
             '-start_number', str(new_start_frame),
             '-i', input_file.replace('\\', '/'),
             '-frames:v', str(new_total_frames),
-            '-vf', f"scale={target_properties['width']}:{target_properties['height']}"
+            '-vf', filter_str
         ]
-
-        if target_properties['sar'] != '1:1':
-            args.extend(['-vf', f"setsar={target_properties['sar']}"])
-        if target_properties['dar'] != 'N/A':
-            args.extend(['-vf', f"setdar={target_properties['dar']}"])
 
         # encoding_options에서 키 이름 변경
         for k, v in encoding_options.items():
@@ -463,7 +467,11 @@ def parse_ffmpeg_progress(output):
 # 새로운 헬퍼 함수들
 def apply_filters(stream, target_properties):
     width, height = target_properties['width'], target_properties['height']
-    stream = stream.filter('scale', width=width, height=height)
+    # scale 필터 수정: force_original_aspect_ratio=decrease 옵션 추가
+    stream = stream.filter('scale', width=width, height=height, force_original_aspect_ratio='decrease')
+    
+    # pad 필터 추가: 남는 공간을 검은색으로 채움
+    stream = stream.filter('pad', width=width, height=height, x='(ow-iw)/2', y='(oh-ih)/2', color='black')
     
     if target_properties['sar'] != '1:1':
         stream = stream.filter('setsar', sar=target_properties['sar'])
