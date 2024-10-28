@@ -1,3 +1,5 @@
+# ffmpeg_utils.py
+
 import os
 import sys
 import tempfile
@@ -9,6 +11,7 @@ from typing import List, Dict, Tuple
 import ffmpeg
 import time
 import json
+from utils import get_debug_mode, debug_print
 
 if getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
@@ -16,7 +19,7 @@ else:
     base_path = os.path.dirname(os.path.abspath(__file__))
 
 # 전역 변수로 ffmpeg_path 설정
-FFMPEG_PATH = r'\\192.168.2.215\Share_151\art\ffmpeg-7.1\bin\ffmpeg.exe'
+FFMPEG_PATH = None
 
 def set_ffmpeg_path(path: str):
     global FFMPEG_PATH
@@ -192,7 +195,24 @@ def check_video_properties(input_files: List[str], target_properties: Dict[str, 
             QMessageBox.warning(None, "속성 불일치 경고", warning_message)
             raise ValueError("속성 불일치로 인해 작업이 중지되었습니다.")
 
+def apply_debug_options(encoding_options: Dict[str, str]):
+    """디버그 모드에 따라 verbosity 옵션 적용"""
+    debug_mode = get_debug_mode()  # 함수 호출
+    # print(f"디버그 모드: {debug_mode}")
+    
+    if not debug_mode:
+        # 디버그 모드가 꺼져있으면 quiet 모드 적용
+        encoding_options['v'] = 'quiet'
+    else:
+        # 디버그 모드가 켜져있으면 quiet 모드 제거
+        encoding_options.pop('v', None)
+    return encoding_options
+
 def process_video_files(video_files: List[Tuple[str, int, int]], encoding_options: Dict[str, str], target_properties: Dict[str, str], debug_mode: bool, idx: int) -> Tuple[List[str], List[str]]:
+    # encoding_options 복사 후 디버그 옵션 적용
+    encoding_options = encoding_options.copy()
+    encoding_options = apply_debug_options(encoding_options)
+    
     temp_video_files = []
     temp_files_to_remove = []
 
@@ -225,7 +245,8 @@ def process_video_files(video_files: List[Tuple[str, int, int]], encoding_option
         # 필터 적용
         stream = apply_filters(stream, target_properties)
 
-        encoding_options_modified = {k.replace('-', '_'): v for k, v in encoding_options.items()}
+        # encoding_options에서 키 이름 변경 (하이픈 제거)
+        encoding_options_modified = {k.lstrip('-'): v for k, v in encoding_options.items()}
         # '_r' 옵션을 'r'로 수정
         if '_r' in encoding_options_modified:
             encoding_options_modified['r'] = encoding_options_modified.pop('_r')
@@ -242,6 +263,10 @@ def process_video_files(video_files: List[Tuple[str, int, int]], encoding_option
     return temp_video_files, temp_files_to_remove
 
 def process_image_sequences(image_sequences: List[Tuple[str, int, int]], encoding_options: Dict[str, str], target_properties: Dict[str, str], debug_mode: bool, idx: int) -> Tuple[List[str], List[str]]:
+    # encoding_options 복사 후 디버그 옵션 적용
+    encoding_options = encoding_options.copy()
+    apply_debug_options(encoding_options)
+    
     temp_files_to_remove = []
     processed_files = []
 
@@ -341,6 +366,10 @@ def concat_video_and_image(video_output: str, image_output: str, output_file: st
     return output_file
 
 def concat_videos(input_files: List[str], output_file: str, encoding_options: Dict[str, str], debug_mode: bool = False, trim_values: List[Tuple[int, int]] = None, global_trim_start: int = 0, global_trim_end: int = 0, progress_callback=None):
+    # encoding_options 복사 후 디버그 옵션 적용
+    encoding_options = encoding_options.copy()
+    encoding_options = apply_debug_options(encoding_options)
+    
     if trim_values is None:
         trim_values = [(0, 0)] * len(input_files)
 
@@ -384,11 +413,14 @@ def concat_videos(input_files: List[str], output_file: str, encoding_options: Di
 
         stream = ffmpeg.input(final_file_list, f='concat', safe=0)
         stream = apply_filters(stream, target_properties)
-        stream = apply_encoding_options(stream, encoding_options, output_file)
+        
+        # encoding_options에서 키 이름 변경
+        encoding_options_modified = {k.lstrip('-'): v for k, v in encoding_options.items()}
+        stream = ffmpeg.output(stream, output_file, **encoding_options_modified)
         stream = stream.overwrite_output()
 
         if debug_mode:
-            print("최종 concat 명령어:", ' '.join(ffmpeg.compile(stream)))
+            debug_print("최종 concat 명령어:", ' '.join(ffmpeg.compile(stream)))
 
         process = ffmpeg.run_async(stream, cmd=FFMPEG_PATH, pipe_stdout=True, pipe_stderr=True)
         

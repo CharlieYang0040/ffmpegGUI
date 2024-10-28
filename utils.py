@@ -4,6 +4,28 @@ import os
 import re
 import glob
 from collections import defaultdict
+from PySide6.QtCore import QSettings
+
+# 설정에서 디버그 모드 상태 로드
+settings = QSettings('LHCinema', 'ffmpegGUI')
+DEBUG_MODE = settings.value('debug_mode', False, type=bool)
+
+def get_debug_mode():
+    """현재 디버그 모드 상태 반환"""
+    return DEBUG_MODE
+
+def set_debug_mode(value: bool):
+    """디버그 모드 설정 및 저장"""
+    global DEBUG_MODE
+    DEBUG_MODE = value
+    settings.setValue('debug_mode', value)
+    print(f"[utils.py] DEBUG_MODE 설정됨: {DEBUG_MODE}")  # 디버그용
+    return DEBUG_MODE  # 설정된 값 반환
+
+def debug_print(*args, **kwargs):
+    """디버그 모드일 때만 print 실행"""
+    if get_debug_mode():
+        print(*args, **kwargs)
 
 def is_media_file(file_path):
     _, ext = os.path.splitext(file_path)
@@ -91,3 +113,15 @@ def get_first_sequence_file(sequence_pattern):
     pattern = sequence_pattern.replace('%04d', '*')
     files = sorted(glob.glob(pattern))
     return files[0] if files else ""
+
+def format_drag_to_output(file_path):
+    print(f"[format_drag_to_output] 입력 파일: {file_path}")
+
+    dir_path, filename = os.path.split(file_path)
+
+    base_name = os.path.splitext(filename)[0]
+    base_name = re.sub(r'%\d*d', '', base_name)
+    base_name = base_name.rstrip('.')
+    
+    print(f"[format_drag_to_output] 변환된 이름: {base_name}")
+    return base_name

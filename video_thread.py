@@ -1,3 +1,5 @@
+# video_thread.py
+
 import ffmpeg
 import numpy as np
 from PySide6.QtCore import QThread, Signal, QByteArray
@@ -11,9 +13,10 @@ from PIL import Image
 import json
 from typing import Dict
 import time
+from utils import get_debug_mode, debug_print
 
 # FFmpeg 경로를 전역 변수로 설정
-FFMPEG_PATH = r'\\192.168.2.215\Share_151\art\ffmpeg-7.1\bin\ffmpeg.exe'
+FFMPEG_PATH = None
 
 def set_ffmpeg_path(path: str):
     global FFMPEG_PATH
@@ -42,8 +45,16 @@ class VideoThread(QThread):
             else:
                 self.video_info = self.get_video_properties(self.file_path)
         except Exception as e:
-            print(f"Error processing file: {e}")
+            debug_print(f"Error processing file: {e}")
             self.process_fallback()
+
+        # FFmpeg 명령어 옵션 설정
+        self.ffmpeg_options = {}
+        if not get_debug_mode():
+            self.ffmpeg_options['v'] = 'quiet'
+        
+        debug_print(f"디버그 모드: {get_debug_mode()}")
+        debug_print(f"FFmpeg 옵션: {self.ffmpeg_options}")
 
         self.width = int(self.video_info['width'])
         self.height = int(self.video_info['height'])
@@ -185,7 +196,7 @@ class VideoThread(QThread):
         try:
             self.process = (
                 ffmpeg
-                .input(self.file_path)
+                .input(self.file_path, **self.ffmpeg_options)
                 .output('pipe:', format='rawvideo', pix_fmt='rgb24')
                 .run_async(pipe_stdout=True, pipe_stdin=True, cmd=FFMPEG_PATH)
             )
@@ -232,7 +243,7 @@ class VideoThread(QThread):
             return
         self.is_stopping = True
         self.is_playing = False
-        print("VideoThread stop 호출됨")
+        debug_print("VideoThread stop 호출됨")
         if self.process:
             try:
                 # 프로세스 종료 요청
@@ -247,7 +258,7 @@ class VideoThread(QThread):
             finally:
                 self.process = None
         self.is_stopping = False
-        print("VideoThread stop 완료")
+        debug_print("VideoThread stop 완료")
 
     def reset(self):
         self.is_playing = False
@@ -285,16 +296,27 @@ class VideoThread(QThread):
         
         # 비디오 파일 처리
         try:
-            out, _ = (
+            # FFmpeg 옵션 설정
+            ffmpeg_options = {}
+            if not get_debug_mode():
+                ffmpeg_options['v'] = 'quiet'
+            
+            # FFmpeg 스트림 생성
+            stream = (
                 ffmpeg
-                .input(self.file_path)
+                .input(self.file_path, **ffmpeg_options)  # 입력에 옵션 적용
                 .filter('select', f'gte(n,{frame_number})')
                 .output('pipe:', format='rawvideo', pix_fmt='rgb24', vframes=1)
-                .run(capture_stdout=True, cmd=FFMPEG_PATH)
             )
+            
+            # 디버그 모드일 때 명령어 출력
+            if get_debug_mode():
+                debug_print(f"프레임 추출 명령어: {' '.join(ffmpeg.compile(stream))}")
+            
+            # 스트림 실행
+            out, _ = stream.run(capture_stdout=True, cmd=FFMPEG_PATH)
 
             frame = np.frombuffer(out, np.uint8).reshape([self.height, self.width, 3])
-            
             resized_frame = self.resize_frame(frame, self.preview_width, self.preview_height)
             
             height, width, channel = resized_frame.shape

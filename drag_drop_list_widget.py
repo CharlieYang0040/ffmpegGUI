@@ -1,77 +1,29 @@
 # drag_drop_list_widget.py
 
-from PySide6.QtWidgets import QListWidget, QAbstractItemView, QListWidgetItem, QWidget, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QApplication
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QKeySequence, QDragEnterEvent, QDropEvent, QEnterEvent, QPainter, QFont, QColor
-from PySide6.QtCore import QEvent
+from PySide6.QtWidgets import QListWidget, QAbstractItemView, QListWidgetItem, QApplication
+from PySide6.QtCore import Qt, QMimeData, QEvent
+from PySide6.QtGui import QKeySequence, QDragEnterEvent, QDropEvent, QPainter, QFont, QColor, QDrag
 import os
-
+from commands import *
+from list_widget_item import ListWidgetItem
 from utils import (
     is_media_file,
     process_image_sequences,
     process_file,
+    format_drag_to_output,
+    debug_print
 )
-
-class ListWidgetItem(QWidget):
-    def __init__(self, file_path, parent=None):
-        super().__init__(parent)
-        self.file_path = file_path
-        self.is_selected = False
-        self.is_hovered = False
-
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self.label = QLabel(os.path.basename(file_path))
-        self.label.setToolTip(file_path)
-        layout.addWidget(self.label)
-
-        self.trim_start_spinbox = QSpinBox()
-        self.trim_start_spinbox.setPrefix("앞: ")
-        self.trim_start_spinbox.setRange(0, 100000)
-        self.trim_start_spinbox.setFixedWidth(100)
-        layout.addWidget(self.trim_start_spinbox)
-
-        self.trim_end_spinbox = QSpinBox()
-        self.trim_end_spinbox.setPrefix("뒤: ")
-        self.trim_end_spinbox.setRange(0, 100000)
-        self.trim_end_spinbox.setFixedWidth(100)
-        layout.addWidget(self.trim_end_spinbox)
-
-        self.setLayout(layout)
-
-        self.setMouseTracking(True)  # 마우스 추적 활성화
-
-    def get_trim_values(self):
-        return self.trim_start_spinbox.value(), self.trim_end_spinbox.value()
-
-    def setSelected(self, selected):
-        self.is_selected = selected
-        self.update_style()
-
-    def enterEvent(self, event: QEnterEvent):
-        self.is_hovered = True
-        self.update_style()
-
-    def leaveEvent(self, event: QEvent):  # QLeaveEvent 대신 QEvent 사용
-        self.is_hovered = False
-        self.update_style()
-
-    def update_style(self):
-        if self.is_selected:
-            self.setStyleSheet("background-color: #3a3a3a;")
-        elif self.is_hovered:
-            self.setStyleSheet("background-color: #2a2a2a;")
-        else:
-            self.setStyleSheet("")
 
 class DragDropListWidget(QListWidget):
     def __init__(self, parent=None, process_file_func=None):
         super().__init__(parent)
+        debug_print("[DragDropListWidget] 초기화됨")
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.InternalMove)
         self.process_file_func = process_file_func or process_file
-
+        self.old_order = []  # 드래그 시작 전 순서 저장
+        self.drag_start_position = None  # 드래그 시작 위치 저장 변수 추가
+        
         self.setViewportMargins(0, 0, 0, 0)
         self.placeholder_text = "파일 또는 폴더를 드래그 하여 추가하세요."
         self.placeholder_subtext = "이미지 시퀀스 파일은 한 장만 드래그 하세요."
@@ -83,8 +35,30 @@ class DragDropListWidget(QListWidget):
         else:
             super().dragEnterEvent(event)
 
+    def startDrag(self, supportedActions):
+        self.old_order = self.get_all_file_paths()
+        debug_print(f"[startDrag] 드래그 시작. 이전 순서: {self.old_order}")
+        
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        
+        current_item = self.currentItem()
+        if current_item:
+            file_path = current_item.data(Qt.UserRole)
+            debug_print(f"[startDrag] 드래그 중인 파일: {file_path}")
+            file_name = os.path.basename(format_drag_to_output(file_path))
+            mime_data.setText(file_name)
+            mime_data.setData("application/x-qabstractitemmodeldatalist", b'')
+        
+        drag.setMimeData(mime_data)
+        result = drag.exec_(Qt.MoveAction)
+        debug_print(f"[startDrag] 드래그 작업 완료. 결과: {result}")
+
     def dropEvent(self, event: QDropEvent):
+        debug_print("[dropEvent] 드롭 이벤트 시작")
         if event.mimeData().hasUrls():
+            debug_print("[dropEvent] 외부 파일 드롭")
+            # 외부 파일 드롭 처리
             event.setDropAction(Qt.CopyAction)
             event.accept()
             links = []
@@ -97,9 +71,47 @@ class DragDropListWidget(QListWidget):
                         processed_path = self.process_file_func(file_path)
                         if processed_path:
                             links.append(processed_path)
-            self.add_items(links)
+            
+            # AddItemsCommand 생성 및 실행
+            if links and hasattr(self.parent(), 'execute_command'):
+                command = AddItemsCommand(self, links)
+                self.parent().execute_command(command)
+                
+                # 자동 네이밍이 활성화되어 있는지 확인
+                if hasattr(self.parent(), 'auto_naming_checkbox') and self.parent().auto_naming_checkbox.isChecked():
+                    # 첫 번째 파일의 이름으로 출력 경로 설정
+                    first_file = links[0]
+                    # utils.py의 format_drag_to_output 함수를 사용하여 파일명 포맷팅
+                    output_name = format_drag_to_output(first_file)
+                    
+                    # 현재 출력 경로의 디렉토리 유지
+                    current_dir = os.path.dirname(self.parent().output_edit.text())
+                    if not current_dir:  # 디렉토리가 비어있으면 기본값 사용
+                        current_dir = os.path.expanduser("~")
+                    
+                    # 새로운 출력 경로 생성
+                    new_output_path = os.path.join(current_dir, f"{output_name}.mp4")
+                    
+                    # 출력 경로 변경을 위한 Command 생성 및 실행
+                    command = ChangeOutputPathCommand(
+                        self.parent().output_edit,  # 출력 경로 QLineEdit
+                        self.parent().output_edit.text(),  # 이전 경로
+                        new_output_path  # 새로운 경로
+                    )
+                    self.parent().execute_command(command)
         else:
+            debug_print("[dropEvent] 내부 아이템 드롭")
+            event.setDropAction(Qt.MoveAction)
             super().dropEvent(event)
+            new_order = self.get_all_file_paths()
+            debug_print(f"[dropEvent] 새로운 순서: {new_order}")
+            if self.old_order != new_order and hasattr(self.parent(), 'execute_command'):
+                debug_print("[dropEvent] 순서 변경 명령 실행")
+                command = ReorderItemsCommand(self, self.old_order, new_order)
+                self.parent().execute_command(command)
+                # 순서 변경 후 아이템 다시 표시
+                debug_print("[dropEvent] 아이템 목록 업데이트")
+                self.update_items(new_order)
 
     def parse_folder(self, folder_path):
         files = []
@@ -110,17 +122,6 @@ class DragDropListWidget(QListWidget):
                     files.append(file_path)
         
         return process_image_sequences(files)
-
-    def keyPressEvent(self, event):
-        if event.matches(QKeySequence.Delete):
-            self.remove_selected_items()
-        else:
-            super().keyPressEvent(event)
-
-    def remove_selected_items(self):
-        for item in self.selectedItems():
-            self.takeItem(self.row(item))
-        self.placeholder_visible = self.count() == 0
 
     def add_items(self, file_paths):
         for file_path in file_paths:
@@ -133,9 +134,18 @@ class DragDropListWidget(QListWidget):
         self.placeholder_visible = self.count() == 0
 
     def update_items(self, new_file_paths):
+        debug_print("[update_items] 아이템 목록 업데이트 시작")
         self.clear()
-        self.add_items(new_file_paths)
+        for file_path in new_file_paths:
+            debug_print(f"[update_items] 아이템 추가: {file_path}")
+            item_widget = ListWidgetItem(file_path)
+            list_item = QListWidgetItem(self)
+            list_item.setSizeHint(item_widget.sizeHint())
+            list_item.setData(Qt.UserRole, file_path)
+            self.addItem(list_item)
+            self.setItemWidget(list_item, item_widget)
         self.placeholder_visible = self.count() == 0
+        debug_print("[update_items] 아이템 목록 업데이트 완료")
 
     def get_all_file_paths(self):
         file_paths = []
@@ -207,3 +217,29 @@ class DragDropListWidget(QListWidget):
     def update(self):
         super().update()
         # 추가적인 업데이트 로직이 있다면 여기에 작성
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_start_position = event.pos()
+            debug_print(f"[mousePressEvent] 마우스 누름 위치: {event.pos()}")
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        if not self.drag_start_position:
+            return
+        
+        distance = (event.pos() - self.drag_start_position).manhattanLength()
+        debug_print(f"[mouseMoveEvent] 드래그 거리: {distance}")
+        
+        if distance < QApplication.startDragDistance():
+            return
+
+        current_item = self.currentItem()
+        if not current_item:
+            debug_print("[mouseMoveEvent] 선택된 아이템 없음")
+            return
+
+        debug_print("[mouseMoveEvent] 드래그 시작 조건 충족")
+        self.startDrag(Qt.MoveAction)
