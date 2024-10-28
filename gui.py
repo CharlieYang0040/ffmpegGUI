@@ -1091,12 +1091,12 @@ class FFmpegGui(QWidget):
         super().closeEvent(event)
 
     def execute_command(self, command: Command):
-        print("[execute_command] 명령 실행")
+        debug_print("[execute_command] 명령 실행")
         command.execute()
         self.undo_stack.append(command)
         self.redo_stack.clear()
         self.update_undo_redo_buttons()
-        print("[execute_command] 완료")
+        debug_print("[execute_command] 완료")
 
     def undo(self):
         print("[undo] 실행 취소 시작")
@@ -1143,12 +1143,12 @@ class FFmpegGui(QWidget):
                 self.output_edit.setText(new_output_path)
 
     def remove_selected_files(self):
-        print("[remove_selected_files] 시작")
+        debug_print("[remove_selected_files] 시작")
         selected_items = self.list_widget.selectedItems()
         if selected_items:
             command = RemoveItemsCommand(self.list_widget, selected_items)
             self.execute_command(command)
-        print("[remove_selected_files] 종료")
+        debug_print("[remove_selected_files] 종료")
 
     def keyPressEvent(self, event):
         if event.matches(QKeySequence.Delete):
@@ -1157,7 +1157,7 @@ class FFmpegGui(QWidget):
             super().keyPressEvent(event)
 
     def clear_list(self):
-        print("[clear_list] 시작")
+        debug_print("[clear_list] 시작")
         reply = QMessageBox.question(
             self, '목록 비우기',
             "정말로 목록을 비우시겠습니까?",
@@ -1169,4 +1169,4 @@ class FFmpegGui(QWidget):
                 command = ClearListCommand(self.list_widget)
                 self.execute_command(command)
                 self.preview_label.clear()
-        print("[clear_list] 종료")
+        debug_print("[clear_list] 종료")
