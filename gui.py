@@ -31,7 +31,7 @@ from utils import (
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
-
+logging.basicConfig(level=logging.INFO)
 
 from PySide6.QtCore import QTimer, QTime
 
@@ -147,6 +147,12 @@ class FFmpegGui(QWidget):
                 self.default_ffmpeg_path = r"\\192.168.2.215\Share_151\art\ffmpeg-7.1\bin\ffmpeg.exe"
 
             ffmpeg_path = self.settings.value("ffmpeg_path", self.default_ffmpeg_path)
+            
+            # ffmpeg_path가 비어있거나 None인 경우 기본값으로 초기화
+            if not ffmpeg_path or ffmpeg_path.strip() == "":
+                logger.info("FFmpeg 경로가 비어있어 기본값으로 초기화합니다.")
+                ffmpeg_path = self.default_ffmpeg_path
+                self.settings.setValue("ffmpeg_path", ffmpeg_path)
 
             if not os.path.exists(ffmpeg_path):
                 logger.info(f"FFmpeg 경로를 찾을 수 없습니다: {ffmpeg_path}")
