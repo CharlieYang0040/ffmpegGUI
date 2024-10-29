@@ -6,17 +6,17 @@ import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
-    QMessageBox, QSlider, QDoubleSpinBox, QListWidgetItem, QSpinBox,
+    QMessageBox, QSlider, QDoubleSpinBox, QSpinBox,
     QProgressBar, QDialog
 )
 from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread, QTimer, QTime
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator, QShortcut, QKeySequence
 
-import ffmpeg
-from ffmpeg_utils import process_all_media  # 업데이트된 함수 임포트
+from ffmpeg_utils import process_all_media
 from update import UpdateChecker
-from commands import *
+from commands import RemoveItemsCommand, ReorderItemsCommand, ClearListCommand, AddItemsCommand, Command
 from drag_drop_list_widget import DragDropListWidget
+from droppable_line_edit import DroppableLineEdit
 from video_thread import VideoThread
 from utils import (
     process_file,
@@ -29,7 +29,6 @@ from utils import (
 )
 
 # 로깅 설정
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -426,9 +425,8 @@ class FFmpegGui(QWidget):
     def create_output_layout(self, left_layout):
         output_layout = QHBoxLayout()
         self.output_label = QLabel("출력 경로:")
-        self.output_edit = QLineEdit()
+        self.output_edit = DroppableLineEdit(self)
         self.output_edit.setText(self.settings.value("last_output_path", ""))
-        self.output_edit.setAcceptDrops(True)
 
         self.output_browse = QPushButton("찾아보기")
         self.output_browse.clicked.connect(self.browse_output)
@@ -770,7 +768,9 @@ class FFmpegGui(QWidget):
         is_checked = state == Qt.CheckState.Checked.value
         set_debug_mode(is_checked)
         self.clear_settings_button.setVisible(is_checked)
-        logger.setLevel(logging.DEBUG if is_checked else logging.INFO)
+        # 모든 모듈의 로거 레벨을 동기화
+        from utils import set_logger_level
+        set_logger_level(is_checked)
 
     def position_window_near_mouse(self):
         cursor_pos = QCursor.pos()
@@ -1005,6 +1005,7 @@ class FFmpegGui(QWidget):
 
     def closeEvent(self, event):
         self.settings.setValue("last_output_path", self.output_edit.text())
+        self.settings.setValue("ffmpeg_path", self.ffmpeg_edit.text())
         self.stop_video_playback()
         super().closeEvent(event)
 

@@ -1,5 +1,6 @@
 # utils.py
 
+import logging
 import os
 import re
 import glob
@@ -9,6 +10,9 @@ from PySide6.QtCore import QSettings
 # 설정에서 디버그 모드 상태 로드
 settings = QSettings('LHCinema', 'ffmpegGUI')
 DEBUG_MODE = settings.value('debug_mode', False, type=bool)
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
 
 def get_debug_mode():
     """현재 디버그 모드 상태 반환"""
@@ -22,10 +26,40 @@ def set_debug_mode(value: bool):
     print(f"[utils.py] DEBUG_MODE 설정됨: {DEBUG_MODE}")  # 디버그용
     return DEBUG_MODE  # 설정된 값 반환
 
-def debug_print(*args, **kwargs):
-    """디버그 모드일 때만 print 실행"""
-    if get_debug_mode():
-        print(*args, **kwargs)
+def set_logger_level(is_debug: bool):
+    """모든 관련 모듈의 로거 레벨을 설정합니다."""
+    import logging
+    import sys
+    
+    # 기본 로그 포맷 설정
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # 콘솔 핸들러 설정
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    
+    # 모든 관련 모듈의 로거를 가져옵니다
+    loggers = [
+        logging.getLogger('__main__'),  # 메인 모듈
+        logging.getLogger('video_thread'),  # video_thread.py
+        logging.getLogger('ffmpeg_utils'),  # ffmpeg_utils.py
+        logging.getLogger('drag_drop_list_widget'),  # drag_drop_list_widget.py
+        logging.getLogger('commands'),  # commands.py
+        logging.getLogger('droppable_line_edit'),  # droppable_line_edit.py
+        logging.getLogger('update'),  # update.py
+        logging.getLogger('gui'),  # gui.py
+        logging.getLogger('utils')  # utils.py
+    ]
+    
+    level = logging.DEBUG if is_debug else logging.INFO
+    for logger in loggers:
+        # 기존 핸들러 제거
+        logger.handlers.clear()
+        # 새로운 핸들러 추가
+        logger.addHandler(console_handler)
+        logger.setLevel(level)
+        # 상위 로거로 전파하지 않음
+        logger.propagate = False
 
 def is_media_file(file_path):
     _, ext = os.path.splitext(file_path)
@@ -115,7 +149,7 @@ def get_first_sequence_file(sequence_pattern):
     return files[0] if files else ""
 
 def format_drag_to_output(file_path):
-    debug_print(f"[format_drag_to_output] 입력 파일: {file_path}")
+    logger.debug(f"[format_drag_to_output] 입력 파일: {file_path}")
 
     dir_path, filename = os.path.split(file_path)
 
@@ -123,5 +157,5 @@ def format_drag_to_output(file_path):
     base_name = re.sub(r'%\d*d', '', base_name)
     base_name = base_name.rstrip('.')
     
-    debug_print(f"[format_drag_to_output] 변환된 이름: {base_name}")
+    logger.debug(f"[format_drag_to_output] 변환된 이름: {base_name}")
     return base_name

@@ -8,19 +8,27 @@ from concurrent.futures import ThreadPoolExecutor
 import cv2
 import subprocess
 import os
+import logging
 import glob
 from PIL import Image
 import json
 from typing import Dict
 import time
-from utils import get_debug_mode, debug_print
+from utils import get_debug_mode
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
 
 # FFmpeg 경로를 전역 변수로 설정
 FFMPEG_PATH = None
+FFPROBE_PATH = None
 
 def set_ffmpeg_path(path: str):
     global FFMPEG_PATH
+    global FFPROBE_PATH
     FFMPEG_PATH = path
+    FFPROBE_PATH = os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe.exe')
+
 
 class VideoThread(QThread):
     frame_ready = Signal(QPixmap)
@@ -45,7 +53,7 @@ class VideoThread(QThread):
             else:
                 self.video_info = self.get_video_properties(self.file_path)
         except Exception as e:
-            debug_print(f"Error processing file: {e}")
+            logger.debug(f"Error processing file: {e}")
             self.process_fallback()
 
         # FFmpeg 명령어 옵션 설정
@@ -53,8 +61,8 @@ class VideoThread(QThread):
         if not get_debug_mode():
             self.ffmpeg_options['v'] = 'quiet'
         
-        debug_print(f"디버그 모드: {get_debug_mode()}")
-        debug_print(f"FFmpeg 옵션: {self.ffmpeg_options}")
+        logger.debug(f"디버그 모드: {get_debug_mode()}")
+        logger.debug(f"FFmpeg 옵션: {self.ffmpeg_options}")
 
         self.width = int(self.video_info['width'])
         self.height = int(self.video_info['height'])
@@ -67,7 +75,7 @@ class VideoThread(QThread):
         self.thread_pool = ThreadPoolExecutor(max_workers=4)
 
     def get_video_properties(self, input_file: str) -> Dict[str, str]:
-        ffprobe_path = os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe.exe')
+        ffprobe_path = FFPROBE_PATH
         try:
             probe_args = [ffprobe_path, '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', '-i', input_file]
             result = subprocess.run(probe_args, capture_output=True, text=True)
@@ -243,7 +251,7 @@ class VideoThread(QThread):
             return
         self.is_stopping = True
         self.is_playing = False
-        debug_print("VideoThread stop 호출됨")
+        logger.debug("VideoThread stop 호출됨")
         if self.process:
             try:
                 # 프로세스 종료 요청
@@ -258,7 +266,7 @@ class VideoThread(QThread):
             finally:
                 self.process = None
         self.is_stopping = False
-        debug_print("VideoThread stop 완료")
+        logger.debug("VideoThread stop 완료")
 
     def reset(self):
         self.is_playing = False
@@ -311,7 +319,7 @@ class VideoThread(QThread):
             
             # 디버그 모드일 때 명령어 출력
             if get_debug_mode():
-                debug_print(f"프레임 추출 명령어: {' '.join(ffmpeg.compile(stream))}")
+                logger.debug(f"프레임 추출 명령어: {' '.join(ffmpeg.compile(stream))}")
             
             # 스트림 실행
             out, _ = stream.run(capture_stdout=True, cmd=FFMPEG_PATH)

@@ -2,8 +2,12 @@
 
 import sys
 import traceback
+import logging
 from PySide6.QtWidgets import QApplication
 from gui import FFmpegGui
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
 
 __version__ = '1.1.0'
 
