@@ -9,7 +9,7 @@ import shutil
 from typing import List, Dict, Tuple
 import ffmpeg
 import logging
-
+from utils import get_debug_mode
 # 로깅 설정
 logger = logging.getLogger(__name__)
 
@@ -115,13 +115,13 @@ def process_media_files(
     for file_idx, (input_file, trim_start, trim_end) in enumerate(media_files):
         try:
             if is_image_sequence(input_file):
-                logger.debug(f"이미지 시퀀스 처리: {input_file}")
+                logger.info(f"이미지 시퀀스 처리: {input_file}")
                 output_file = process_image_sequence(
                     input_file, trim_start, trim_end, encoding_options,
                     target_properties, debug_mode, idx, file_idx
                 )
             else:
-                logger.debug(f"비디오 파일 처리: {input_file}")
+                logger.info(f"비디오 파일 처리: {input_file}")
                 output_file = process_video_file(
                     input_file, trim_start, trim_end, encoding_options,
                     target_properties, debug_mode, idx, file_idx
@@ -135,7 +135,7 @@ def process_media_files(
         # 진행률 업데이트
         if progress_callback:
             progress = int((file_idx + 1) / total_files * 75)
-            logger.debug(f"진행률 업데이트: {progress}% (파일 {file_idx + 1}/{total_files})")
+            logger.info(f"진행률: {progress}% (파일 {file_idx + 1}/{total_files})")
             progress_callback(progress)
 
     return processed_files, temp_files_to_remove
@@ -320,7 +320,7 @@ def check_media_properties(
         input_resolution = f"{input_width}x{input_height}" if input_width and input_height else 'Unknown'
 
         if input_width != target_properties['width'] or input_height != target_properties['height']:
-            logger.debug(
+            logger.info(
                 f"해상도 불일치 (자동으로 조정됨): {input_resolution} -> {target_properties['width']}x{target_properties['height']}"
             )
 
@@ -357,7 +357,7 @@ def concat_media_files(
     stream = stream.overwrite_output()
 
     if debug_mode:
-        logger.debug(f"최종 합치기 명령어: {' '.join(ffmpeg.compile(stream))}")
+        logger.info(f"최종 합치기 명령어: {' '.join(ffmpeg.compile(stream))}")
 
     process = ffmpeg.run_async(stream, cmd=FFMPEG_PATH, pipe_stdout=True, pipe_stderr=True)
 
@@ -406,17 +406,18 @@ def process_all_media(
     """
     모든 미디어 파일을 처리하고 하나의 파일로 합칩니다.
     """
-    # 디버그 모드 설정
-    if debug_mode:
-        logger.setLevel(logging.DEBUG)
-    else:
-        logger.setLevel(logging.INFO)
 
     if trim_values is None:
         trim_values = [(0, 0)] * len(input_files)
 
     # 전역 트림 값을 각 파일의 트림 값에 적용
     trim_values = [(ts + global_trim_start, te + global_trim_end) for ts, te in trim_values]
+
+    # 디버그 모드일 때 -v quiet 옵션 제거, 아닐 때 추가
+    if debug_mode:
+        encoding_options.pop('v', None)  # 'v' 키가 있다면 제거
+    else:
+        encoding_options['v'] = 'quiet'
 
     # 타겟 속성 결정
     target_properties = get_target_properties(input_files, encoding_options, debug_mode)

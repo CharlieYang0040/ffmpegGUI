@@ -23,13 +23,12 @@ def set_debug_mode(value: bool):
     global DEBUG_MODE
     DEBUG_MODE = value
     settings.setValue('debug_mode', value)
-    print(f"[utils.py] DEBUG_MODE 설정됨: {DEBUG_MODE}")  # 디버그용
-    return DEBUG_MODE  # 설정된 값 반환
+    logger.info(f"DEBUG_MODE 설정됨: {DEBUG_MODE}")
+    return DEBUG_MODE
 
 def set_logger_level(is_debug: bool):
     """모든 관련 모듈의 로거 레벨을 설정합니다."""
     import logging
-    import sys
     
     # 기본 로그 포맷 설정
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -93,6 +92,7 @@ def process_image_sequences(files):
             if frame is not None:
                 sequence_key = os.path.join(dir_path, f"{base}%0{len(frame)}d{ext}")
                 sequences[sequence_key].append((int(frame), file_path))
+                logger.info(f"이미지 시퀀스 발견: {sequence_key}")
             else:
                 processed_files.append(file_path)
         else:
@@ -101,6 +101,7 @@ def process_image_sequences(files):
     for sequence, frame_files in sequences.items():
         if len(frame_files) > 1:
             processed_files.append(sequence)
+            logger.info(f"이미지 시퀀스 처리 완료: {sequence} ({len(frame_files)}개 파일)")
         else:
             processed_files.append(frame_files[0][1])
 
@@ -149,13 +150,12 @@ def get_first_sequence_file(sequence_pattern):
     return files[0] if files else ""
 
 def format_drag_to_output(file_path):
-    logger.debug(f"[format_drag_to_output] 입력 파일: {file_path}")
+    logger.info(f"드래그 출력 형식 변환: {file_path}")
 
     dir_path, filename = os.path.split(file_path)
-
     base_name = os.path.splitext(filename)[0]
     base_name = re.sub(r'%\d*d', '', base_name)
     base_name = base_name.rstrip('.')
     
-    logger.debug(f"[format_drag_to_output] 변환된 이름: {base_name}")
+    logger.info(f"변환된 출력 이름: {base_name}")
     return base_name

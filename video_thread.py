@@ -2,7 +2,7 @@
 
 import ffmpeg
 import numpy as np
-from PySide6.QtCore import QThread, Signal, QByteArray
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QPixmap, QImage
 from concurrent.futures import ThreadPoolExecutor
 import cv2
@@ -49,11 +49,13 @@ class VideoThread(QThread):
         
         try:
             if '%' in self.file_path:  # 이미지 시퀀스 처리
+                logger.info(f"이미지 시퀀스 처리 시작: {self.file_path}")
                 self.process_image_sequence()
             else:
+                logger.info(f"비디오 파일 처리 시작: {self.file_path}")
                 self.video_info = self.get_video_properties(self.file_path)
         except Exception as e:
-            logger.debug(f"Error processing file: {e}")
+            logger.error(f"Error processing file: {e}")
             self.process_fallback()
 
         # FFmpeg 명령어 옵션 설정
@@ -103,6 +105,8 @@ class VideoThread(QThread):
         if not self.image_files:
             raise ValueError("No image files found in the sequence")
         
+        logger.info(f"이미지 시퀀스 로드 완료: {len(self.image_files)}개 파일")
+        
         with Image.open(self.image_files[0]) as img:
             width, height = img.size
         
@@ -146,8 +150,10 @@ class VideoThread(QThread):
             self.video_info_ready.emit(self.width, self.height)
             
             if '%' in self.file_path or len(self.image_files) > 0:
+                logger.info("이미지 시퀀스 처리 시작")
                 self.process_image_sequence_frames()
             else:
+                logger.info("비디오 프레임 처리 시작")
                 self.process_video_frames()
         finally:
             if not self.is_stopping:
@@ -251,13 +257,14 @@ class VideoThread(QThread):
             return
         self.is_stopping = True
         self.is_playing = False
-        logger.debug("VideoThread stop 호출됨")
+        logger.info("VideoThread 정지 요청")
         if self.process:
             try:
                 # 프로세스 종료 요청
                 self.process.terminate()
                 # 최대 5초 동안 프로세스가 종료되기를 기다림
                 self.process.wait(timeout=5)
+                logger.info("FFmpeg 프로세스 정상 종료")
             except subprocess.TimeoutExpired:
                 # 5초 후에도 종료되지 않으면 강제 종료
                 self.process.kill()
@@ -266,7 +273,7 @@ class VideoThread(QThread):
             finally:
                 self.process = None
         self.is_stopping = False
-        logger.debug("VideoThread stop 완료")
+        logger.info("VideoThread 정지 완료")
 
     def reset(self):
         self.is_playing = False

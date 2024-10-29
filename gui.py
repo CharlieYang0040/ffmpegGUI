@@ -25,7 +25,8 @@ from utils import (
     get_first_sequence_file,
     format_drag_to_output,
     get_debug_mode,
-    set_debug_mode
+    set_debug_mode,
+    set_logger_level
 )
 
 # 로깅 설정
@@ -148,7 +149,7 @@ class FFmpegGui(QWidget):
             ffmpeg_path = self.settings.value("ffmpeg_path", self.default_ffmpeg_path)
 
             if not os.path.exists(ffmpeg_path):
-                logger.warning(f"FFmpeg 경로를 찾을 수 없습니다: {ffmpeg_path}")
+                logger.info(f"FFmpeg 경로를 찾을 수 없습니다: {ffmpeg_path}")
                 if getattr(sys, 'frozen', False):
                     ffmpeg_path = self.default_ffmpeg_path
 
@@ -157,6 +158,7 @@ class FFmpegGui(QWidget):
             from ffmpeg_utils import set_ffmpeg_path as set_ffmpeg_utils_path
             set_video_thread_path(ffmpeg_path)
             set_ffmpeg_utils_path(ffmpeg_path)
+            logger.info(f"FFmpeg 경로가 설정되었습니다: {ffmpeg_path}")
 
         except Exception as e:
             logger.error(f"FFmpeg 경로 초기화 중 오류 발생: {e}")
@@ -169,7 +171,8 @@ class FFmpegGui(QWidget):
         redo_shortcut.activated.connect(self.redo)
 
     def init_ui(self):
-        self.setWindowTitle('ffmpegGUI by LHCinema')
+        windowTitle = 'ffmpegGUI by LHCinema'
+        self.setWindowTitle(windowTitle)
         main_layout = QVBoxLayout(self)
 
         self.create_top_layout(main_layout)
@@ -179,6 +182,18 @@ class FFmpegGui(QWidget):
         self.setMinimumWidth(750)
 
         self.debug_checkbox.setChecked(get_debug_mode())
+        set_logger_level(self.debug_checkbox.isChecked())
+        print(windowTitle)
+        logger.info(f"UI 초기화 완료")
+        self.print_settings_info()
+
+    def print_settings_info(self):
+        """설정 값들의 정보를 로깅"""
+        all_keys = self.settings.allKeys()
+        logger.info("현재 설정 값 목록:")
+        for key in all_keys:
+            value = self.settings.value(key)
+            logger.info(f"{key}: {value}")
 
     def create_top_layout(self, main_layout):
         top_layout = QHBoxLayout()
@@ -710,10 +725,13 @@ class FFmpegGui(QWidget):
         ffmpeg_path = self.ffmpeg_edit.text()
         set_video_thread_path(ffmpeg_path)
         set_ffmpeg_utils_path(ffmpeg_path)
+        logger.info(f"인코딩 시작: FFmpeg 경로 = {ffmpeg_path}")
 
         params = self.get_encoding_parameters()
         if params:
             output_file, encoding_options, debug_mode, input_files, trim_values = params
+            logger.info(f"인코딩 옵션: {encoding_options}")
+            logger.info(f"출력 파일: {output_file}")
 
             self.update_encoding_options(encoding_options)
 
@@ -768,8 +786,7 @@ class FFmpegGui(QWidget):
         is_checked = state == Qt.CheckState.Checked.value
         set_debug_mode(is_checked)
         self.clear_settings_button.setVisible(is_checked)
-        # 모든 모듈의 로거 레벨을 동기화
-        from utils import set_logger_level
+        logger.info(f"디버그 모드 {'활성화' if is_checked else '비활성화'}")
         set_logger_level(is_checked)
 
     def position_window_near_mouse(self):
@@ -804,6 +821,7 @@ class FFmpegGui(QWidget):
             file_path = self.list_widget.get_selected_file_path()
             if file_path:
                 self.stop_current_preview()
+                logger.info(f"미리보기 업데이트: {file_path}")
 
                 if is_video_file(file_path):
                     self.show_video_preview(file_path)

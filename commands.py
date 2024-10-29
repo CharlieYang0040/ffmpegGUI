@@ -36,15 +36,14 @@ class RemoveItemsCommand(Command):
         logger.debug("[RemoveItemsCommand] 초기화")
         self.list_widget = list_widget
         self.items = items
-        # 아이템의 위치와 파일 경로 저장
         self.item_data = [(self.list_widget.row(item), item.data(Qt.UserRole)) for item in items]
-        logger.debug(f"[RemoveItemsCommand] 제거할 아이템: {self.item_data}")
+        logger.info(f"[RemoveItemsCommand] {len(items)}개 아이템 제거 예정")
 
     def execute(self):
-        logger.debug("[RemoveItemsCommand] execute 실행")
+        logger.info("[RemoveItemsCommand] 아이템 제거 시작")
         for item in self.items:
             self.list_widget.takeItem(self.list_widget.row(item))
-        logger.debug("[RemoveItemsCommand] 아이템 제거 완료")
+        logger.info(f"[RemoveItemsCommand] {len(self.items)}개 아이템 제거 완료")
 
     def undo(self):
         logger.debug("[RemoveItemsCommand] undo 실행")
@@ -61,16 +60,15 @@ class ClearListCommand(Command):
     def __init__(self, list_widget: QListWidget):
         logger.debug("[ClearListCommand] 초기화")
         self.list_widget = list_widget
-        # 현재 모든 아이템의 파일 경로 저장
         self.file_paths = [self.list_widget.item(i).data(Qt.UserRole) 
                           for i in range(self.list_widget.count())]
-        logger.debug(f"[ClearListCommand] 저장된 아이템: {self.file_paths}")
+        logger.info(f"[ClearListCommand] {len(self.file_paths)}개 아이템 초기화 예정")
 
     def execute(self):
-        logger.debug("[ClearListCommand] execute 실행")
+        logger.info("[ClearListCommand] 목록 초기화 시작")
         self.list_widget.clear()
         self.list_widget.placeholder_visible = True
-        logger.debug("[ClearListCommand] 목록 비우기 완료")
+        logger.info("[ClearListCommand] 목록 초기화 완료")
 
     def undo(self):
         logger.debug("[ClearListCommand] undo 실행")
@@ -88,13 +86,12 @@ class ReorderItemsCommand(Command):
     def __init__(self, list_widget: QListWidget, old_order: List[str], new_order: List[str]):
         logger.debug("[ReorderItemsCommand] 초기화")
         self.list_widget = list_widget
-        self.old_order = old_order.copy()  # 복사본 생성
-        self.new_order = new_order.copy()  # 복사본 생성
-        logger.debug(f"[ReorderItemsCommand] 이전 순서: {self.old_order}")
-        logger.debug(f"[ReorderItemsCommand] 새로운 순서: {self.new_order}")
+        self.old_order = old_order.copy()
+        self.new_order = new_order.copy()
+        logger.info(f"[ReorderItemsCommand] {len(new_order)}개 아이템 재정렬 예정")
 
     def execute(self):
-        logger.debug("[ReorderItemsCommand] execute 실행")
+        logger.info("[ReorderItemsCommand] 아이템 재정렬 시작")
         self._apply_order(self.new_order)
 
     def undo(self):
@@ -102,13 +99,10 @@ class ReorderItemsCommand(Command):
         self._apply_order(self.old_order)
 
     def _apply_order(self, order: List[str]):
-        logger.debug(f"[ReorderItemsCommand] 순서 적용: {order}")
-        # 리스트 위젯 초기화
+        logger.info(f"[ReorderItemsCommand] 아이템 재정렬 시작")
         self.list_widget.clear()
         
-        # 새로운 순서로 아이템 추가
         for file_path in order:
-            # 항상 새로운 위젯 생성
             item_widget = ListWidgetItem(file_path)
             list_item = QListWidgetItem(self.list_widget)
             list_item.setSizeHint(item_widget.sizeHint())
@@ -116,7 +110,7 @@ class ReorderItemsCommand(Command):
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, item_widget)
         
-        logger.debug("[ReorderItemsCommand] 순서 적용 완료")
+        logger.info("[ReorderItemsCommand] 아이템 재정렬 완료")
 
 class ChangeOutputPathCommand(Command):
     def __init__(self, output_edit, old_path: str, new_path: str):
@@ -124,8 +118,7 @@ class ChangeOutputPathCommand(Command):
         self.output_edit = output_edit
         self.old_path = old_path
         self.new_path = new_path
-        logger.debug(f"[ChangeOutputPathCommand] 이전 경로: {old_path}")
-        logger.debug(f"[ChangeOutputPathCommand] 새 경로: {new_path}")
+        logger.info(f"[ChangeOutputPathCommand] 출력 경로 변경: {old_path} -> {new_path}")
 
     def execute(self):
         logger.debug("[ChangeOutputPathCommand] execute 실행")

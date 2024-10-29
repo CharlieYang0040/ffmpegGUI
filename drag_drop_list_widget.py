@@ -48,19 +48,19 @@ class DragDropListWidget(QListWidget):
         current_item = self.currentItem()
         if current_item:
             file_path = current_item.data(Qt.UserRole)
-            logger.debug(f"[startDrag] 드래그 중인 파일: {file_path}")
+            logger.info(f"[startDrag] 드래그 중인 파일: {file_path}")
             file_name = os.path.basename(format_drag_to_output(file_path))
             mime_data.setText(file_name)
             mime_data.setData("application/x-qabstractitemmodeldatalist", b'')
         
         drag.setMimeData(mime_data)
         result = drag.exec_(Qt.MoveAction)
-        logger.debug(f"[startDrag] 드래그 작업 완료. 결과: {result}")
+        logger.info(f"[startDrag] 드래그 작업 완료")
 
     def dropEvent(self, event: QDropEvent):
         logger.debug("[dropEvent] 드롭 이벤트 시작")
         if event.mimeData().hasUrls():
-            logger.debug("[dropEvent] 외부 파일 드롭")
+            logger.info("[dropEvent] 외부 파일 드롭 처리 시작")
             # 외부 파일 드롭 처리
             event.setDropAction(Qt.CopyAction)
             event.accept()
@@ -79,6 +79,7 @@ class DragDropListWidget(QListWidget):
             if links and hasattr(self.parent(), 'execute_command'):
                 command = AddItemsCommand(self, links)
                 self.parent().execute_command(command)
+                logger.info(f"[dropEvent] {len(links)}개 파일 추가됨")
                 
                 # 자동 네이밍이 활성화되어 있는지 확인
                 if hasattr(self.parent(), 'auto_naming_checkbox') and self.parent().auto_naming_checkbox.isChecked():
@@ -103,17 +104,16 @@ class DragDropListWidget(QListWidget):
                     )
                     self.parent().execute_command(command)
         else:
-            logger.debug("[dropEvent] 내부 아이템 드롭")
+            logger.info("[dropEvent] 내부 아이템 재정렬")
             event.setDropAction(Qt.MoveAction)
             super().dropEvent(event)
             new_order = self.get_all_file_paths()
-            logger.debug(f"[dropEvent] 새로운 순서: {new_order}")
+            
             if self.old_order != new_order and hasattr(self.parent(), 'execute_command'):
-                logger.debug("[dropEvent] 순서 변경 명령 실행")
+                logger.info("[dropEvent] 아이템 순서 변경 실행")
                 command = ReorderItemsCommand(self, self.old_order, new_order)
                 self.parent().execute_command(command)
-                # 순서 변경 후 아이템 다시 표시
-                logger.debug("[dropEvent] 아이템 목록 업데이트")
+                logger.info("[dropEvent] 아이템 목록 업데이트 완료")
                 self.update_items(new_order)
 
     def parse_folder(self, folder_path):
@@ -148,7 +148,7 @@ class DragDropListWidget(QListWidget):
             self.addItem(list_item)
             self.setItemWidget(list_item, item_widget)
         self.placeholder_visible = self.count() == 0
-        logger.debug("[update_items] 아이템 목록 업데이트 완료")
+        logger.info(f"[update_items] {len(new_file_paths)}개 아이템 업데이트 완료")
 
     def get_all_file_paths(self):
         file_paths = []
@@ -244,5 +244,5 @@ class DragDropListWidget(QListWidget):
             logger.debug("[mouseMoveEvent] 선택된 아이템 없음")
             return
 
-        logger.debug("[mouseMoveEvent] 드래그 시작 조건 충족")
+        logger.info("[mouseMoveEvent] 드래그 시작")
         self.startDrag(Qt.MoveAction)

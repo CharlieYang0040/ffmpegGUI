@@ -1,7 +1,7 @@
 # list_widget_item.py
 
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QSpinBox
-from PySide6.QtCore import Qt, QEvent
+from PySide6.QtCore import QEvent
 import os
 
 
