@@ -115,7 +115,7 @@ def get_first_sequence_file(sequence_pattern):
     return files[0] if files else ""
 
 def format_drag_to_output(file_path):
-    print(f"[format_drag_to_output] 입력 파일: {file_path}")
+    debug_print(f"[format_drag_to_output] 입력 파일: {file_path}")
 
     dir_path, filename = os.path.split(file_path)
 
@@ -123,5 +123,5 @@ def format_drag_to_output(file_path):
     base_name = re.sub(r'%\d*d', '', base_name)
     base_name = base_name.rstrip('.')
     
-    print(f"[format_drag_to_output] 변환된 이름: {base_name}")
+    debug_print(f"[format_drag_to_output] 변환된 이름: {base_name}")
     return base_name
