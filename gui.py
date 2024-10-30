@@ -821,6 +821,7 @@ class FFmpegGui(QWidget):
             QMessageBox.information(self, '설정 초기화', '모든 설정이 초기화되었습니다.')
             self.output_edit.clear()
             self.ffmpeg_edit.clear()
+            self.ffmpeg_edit.setText(self.settings.value("ffmpeg_path", self.default_ffmpeg_path))
 
     def update_preview(self):
         try:
