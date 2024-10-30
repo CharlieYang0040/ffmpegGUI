@@ -129,11 +129,11 @@ class UpdateChecker(QObject):
                 current_dir = os.path.dirname(os.path.abspath(__file__))
 
             # 대상 파일 경로 설정
-            target_path = os.path.join(current_dir, 'update.exe')
+            target_path = os.path.join(current_dir, 'ffmpegGUI.exe')
             
             # 파일이 이미 존재하는 경우 _new 붙이기
             if os.path.exists(target_path):
-                base_name = 'update'
+                base_name = 'ffmpegGUI'
                 target_path = os.path.join(current_dir, f'{base_name}_new.exe')
                 
             # 임시 파일을 대상 경로로 이동

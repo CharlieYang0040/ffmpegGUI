@@ -187,8 +187,8 @@ class FFmpegManager:
         
         if getattr(sys, 'frozen', False):
             # 실행 파일로 패키징된 경우
-            meipass_ffmpeg = os.path.join(sys._MEIPASS, "ffmpeg.exe")
-            meipass_ffprobe = os.path.join(sys._MEIPASS, "ffprobe.exe")
+            meipass_ffmpeg = os.path.join(sys._MEIPASS, "libs", "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe")
+            meipass_ffprobe = os.path.join(sys._MEIPASS, "libs", "ffmpeg-7.1-full_build", "bin", "ffprobe.exe")
             
             if os.path.exists(meipass_ffmpeg) and os.path.exists(meipass_ffprobe):
                 shutil.copy2(meipass_ffmpeg, self.ffmpeg_path)
