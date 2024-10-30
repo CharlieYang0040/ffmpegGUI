@@ -8,13 +8,11 @@ import re
 import shutil
 import psutil
 from concurrent.futures import ThreadPoolExecutor
-import concurrent.futures
 import time
 import gc
 from typing import List, Dict, Tuple, Optional
 import ffmpeg
 import logging
-from utils import get_sequence_start_number
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -29,10 +27,14 @@ FFMPEG_PATH = None
 FFPROBE_PATH = None
 
 def set_ffmpeg_path(path: str):
-    global FFMPEG_PATH
-    global FFPROBE_PATH
-    FFMPEG_PATH = path
-    FFPROBE_PATH = os.path.join(os.path.dirname(path), 'ffprobe.exe')
+    global FFMPEG_PATH, FFPROBE_PATH
+    if os.path.exists(path):
+        FFMPEG_PATH = path
+        FFPROBE_PATH = os.path.join(os.path.dirname(path), 'ffprobe.exe')
+        logger.debug(f"FFmpeg 경로 설정: {FFMPEG_PATH}")
+        logger.debug(f"FFprobe 경로 설정: {FFPROBE_PATH}")
+    else:
+        logger.error(f"FFmpeg 경로를 찾을 수 없음: {path}")
 
 
 def create_temp_file_list(temp_files: List[str]) -> str:
@@ -113,6 +115,7 @@ def process_video_file(
 ) -> str:
     """비디오 파일을 트림하고 필터를 적용하여 처리된 파일을 반환합니다."""
     temp_output = f'temp_output_{idx}.mp4'
+    logger.info(f"비디오 처리 시작: {input_file}")
 
     # 스레드와 메모리 최적화 옵션 적용
     encoding_options = get_optimal_encoding_options(encoding_options)
@@ -143,7 +146,14 @@ def process_video_file(
     if debug_mode:
         logger.debug(f"비디오 처리 명령어: {' '.join(ffmpeg.compile(stream))}")
 
-    ffmpeg.run(stream, cmd=FFMPEG_PATH)
+    # FFmpeg 실행
+    try:
+        ffmpeg.run(stream, cmd=FFMPEG_PATH)
+        logger.info(f"비디오 처리 완료: {input_file}")
+    except ffmpeg.Error as e:
+        error_message = e.stderr.decode() if e.stderr else str(e)
+        logger.error(f"FFmpeg 실행 중 오류 발생: {error_message}")
+        raise
 
     return temp_output
 

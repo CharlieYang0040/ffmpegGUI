@@ -6,6 +6,9 @@ import re
 import glob
 from collections import defaultdict
 from PySide6.QtCore import QSettings
+import appdirs
+import shutil
+import sys
 
 # 설정에서 디버그 모드 상태 로드
 settings = QSettings('LHCinema', 'ffmpegGUI')
@@ -162,3 +165,49 @@ def format_drag_to_output(file_path):
 
 def normalize_path_separator(path):
     return path.replace('\\', '/')
+
+class FFmpegManager:
+    def __init__(self):
+        self.app_name = "ffmpegGUI"
+        self.company = "LHCinema"
+        # 사용자 앱 데이터 디렉토리 사용
+        self.app_dir = appdirs.user_data_dir(self.app_name, self.company)
+        self.ffmpeg_dir = os.path.join(self.app_dir, "ffmpeg")
+        self.ffmpeg_path = os.path.join(self.ffmpeg_dir, "ffmpeg.exe")
+        self.ffprobe_path = os.path.join(self.ffmpeg_dir, "ffprobe.exe")
+        
+    def ensure_ffmpeg_exists(self) -> str:
+        """FFmpeg 바이너리 존재 확인 및 설치"""
+        if os.path.exists(self.ffmpeg_path) and os.path.exists(self.ffprobe_path):
+            logger.info("기존 FFmpeg 바이너리 사용")
+            return self.ffmpeg_path
+            
+        logger.info("FFmpeg 바이너리 설치 시작")
+        os.makedirs(self.ffmpeg_dir, exist_ok=True)
+        
+        if getattr(sys, 'frozen', False):
+            # 실행 파일로 패키징된 경우
+            meipass_ffmpeg = os.path.join(sys._MEIPASS, "ffmpeg.exe")
+            meipass_ffprobe = os.path.join(sys._MEIPASS, "ffprobe.exe")
+            
+            if os.path.exists(meipass_ffmpeg) and os.path.exists(meipass_ffprobe):
+                shutil.copy2(meipass_ffmpeg, self.ffmpeg_path)
+                shutil.copy2(meipass_ffprobe, self.ffprobe_path)
+                logger.info("FFmpeg 바이너리 설치 완료")
+                return self.ffmpeg_path
+                
+        else:
+            # 개발 환경에서는 libs 폴더에서 복사
+            dev_ffmpeg = os.path.join("libs", "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe")
+            dev_ffprobe = os.path.join("libs", "ffmpeg-7.1-full_build", "bin", "ffprobe.exe")
+            
+            if os.path.exists(dev_ffmpeg) and os.path.exists(dev_ffprobe):
+                shutil.copy2(dev_ffmpeg, self.ffmpeg_path)
+                shutil.copy2(dev_ffprobe, self.ffprobe_path)
+                logger.info("FFmpeg 바이너리 설치 완료")
+                return self.ffmpeg_path
+        logger.error("FFmpeg 바이너리를 찾을 수 없습니다")
+        return ""
+
+# 싱글톤 인스턴스
+ffmpeg_manager = FFmpegManager()

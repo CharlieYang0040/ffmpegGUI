@@ -14,17 +14,19 @@ from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread, 
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator, QShortcut, QKeySequence
 
 from ffmpeg_utils import process_all_media
+from ffmpeg_utils import set_ffmpeg_path as set_ffmpeg_utils_path
 from update import UpdateChecker
 from commands import RemoveItemsCommand, ReorderItemsCommand, ClearListCommand, AddItemsCommand, Command
 from drag_drop_list_widget import DragDropListWidget
 from droppable_line_edit import DroppableLineEdit
 from video_thread import VideoThread
+from video_thread import set_ffmpeg_path as set_video_thread_path
 from utils import (
     process_file,
     is_video_file,
     is_image_file,
     get_first_sequence_file,
-    format_drag_to_output,
+    ffmpeg_manager,
     get_debug_mode,
     set_debug_mode,
     set_logger_level
@@ -99,9 +101,24 @@ class FFmpegGui(QWidget):
     """
     def __init__(self):
         super().__init__()
+        self.settings = QSettings('LHCinema', 'ffmpegGUI')
+        
+        # FFmpeg 경로 초기화
+        self.default_ffmpeg_path = ffmpeg_manager.ensure_ffmpeg_exists()
+        if not self.default_ffmpeg_path:
+            QMessageBox.critical(self, "오류", "FFmpeg를 찾을 수 없습니다.")
+            sys.exit(1)
+            
+        # 저장된 FFmpeg 경로 또는 기본 경로 사용
+        saved_ffmpeg_path = self.settings.value("ffmpeg_path", "")
+        self.current_ffmpeg_path = saved_ffmpeg_path if os.path.exists(saved_ffmpeg_path) else self.default_ffmpeg_path
+        
+        # FFmpeg 경로 설정
+        set_video_thread_path(self.current_ffmpeg_path)
+        set_ffmpeg_utils_path(self.current_ffmpeg_path)
+
         self.init_attributes()
         self.init_shortcuts()
-        self.init_ffmpeg_path()
         self.init_ui()
         self.position_window_near_mouse()
         self.setStyleSheet(self.get_unreal_style())
@@ -161,8 +178,6 @@ class FFmpegGui(QWidget):
                     ffmpeg_path = self.default_ffmpeg_path
 
             # 모든 모듈에 FFmpeg 경로 동기화
-            from video_thread import set_ffmpeg_path as set_video_thread_path
-            from ffmpeg_utils import set_ffmpeg_path as set_ffmpeg_utils_path
             set_video_thread_path(ffmpeg_path)
             set_ffmpeg_utils_path(ffmpeg_path)
             logger.info(f"FFmpeg 경로가 설정되었습니다: {ffmpeg_path}")
@@ -496,8 +511,6 @@ class FFmpegGui(QWidget):
         if ffmpeg_path:
             self.ffmpeg_edit.setText(ffmpeg_path)
             self.settings.setValue("ffmpeg_path", ffmpeg_path)
-            from video_thread import set_ffmpeg_path as set_video_thread_path
-            from ffmpeg_utils import set_ffmpeg_path as set_ffmpeg_utils_path
             set_video_thread_path(ffmpeg_path)
             set_ffmpeg_utils_path(ffmpeg_path)
 
@@ -733,8 +746,6 @@ class FFmpegGui(QWidget):
             self.settings.setValue("last_output_path", output_file)
 
     def start_encoding(self):
-        from video_thread import set_ffmpeg_path as set_video_thread_path
-        from ffmpeg_utils import set_ffmpeg_path as set_ffmpeg_utils_path
         ffmpeg_path = self.ffmpeg_edit.text()
         set_video_thread_path(ffmpeg_path)
         set_ffmpeg_utils_path(ffmpeg_path)
@@ -778,7 +789,7 @@ class FFmpegGui(QWidget):
                 QMessageBox.critical(self, "에러", f"인코딩 중 에러가 발생했습니다:\n{e}")
 
     def on_encoding_finished(self):
-        self.progress_dialog.stop_timer()  # 타이머 중지
+        self.progress_dialog.stop_timer()  # ��이머 중지
         self.progress_dialog.close()
         QMessageBox.information(self, "완료", "인코딩이 완료되었습니다.")
 
@@ -841,7 +852,7 @@ class FFmpegGui(QWidget):
                 elif is_image_file(file_path):
                     self.show_image_preview(file_path)
                 else:
-                    logger.warning(f"지원하지 않는 파일 형식입니다: {file_path}")
+                    logger.warning(f"지��하지 않는 파일 형식입니다: {file_path}")
             else:
                 self.preview_label.clear()
         except Exception as e:

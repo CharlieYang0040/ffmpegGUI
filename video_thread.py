@@ -24,10 +24,14 @@ FFMPEG_PATH = None
 FFPROBE_PATH = None
 
 def set_ffmpeg_path(path: str):
-    global FFMPEG_PATH
-    global FFPROBE_PATH
-    FFMPEG_PATH = path
-    FFPROBE_PATH = os.path.join(os.path.dirname(FFMPEG_PATH), 'ffprobe.exe')
+    global FFMPEG_PATH, FFPROBE_PATH
+    if os.path.exists(path):
+        FFMPEG_PATH = path
+        FFPROBE_PATH = os.path.join(os.path.dirname(path), 'ffprobe.exe')
+        logger.debug(f"FFmpeg 경로 설정: {FFMPEG_PATH}")
+        logger.debug(f"FFprobe 경로 설정: {FFPROBE_PATH}")
+    else:
+        logger.error(f"FFmpeg 경로를 찾을 수 없음: {path}")
 
 
 class VideoThread(QThread):
@@ -226,7 +230,7 @@ class VideoThread(QThread):
                 self.msleep(int(1000 / (self.frame_rate * self.speed)))
 
                 if self.current_frame >= self.total_frames - 1:
-                    break  # 마지막 프레임에 도달하면 루프를 빠져나갑니다.
+                    break  # 마지막 ���레임에 도달하면 루프를 빠져나갑니다.
 
         except ffmpeg.Error as e:
             print(f"FFmpeg 에러: {e.stderr.decode()}")
@@ -350,7 +354,7 @@ class VideoThread(QThread):
         target_ratio = target_width / target_height
 
         if aspect_ratio > target_ratio:
-            # 이미지가 더 넓은 경우
+            # 이미지가 �� 넓은 경우
             new_width = target_width
             new_height = int(target_width / aspect_ratio)
         else:
