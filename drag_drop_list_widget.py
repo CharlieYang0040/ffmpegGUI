@@ -242,7 +242,6 @@ class DragDropListWidget(QListWidget):
             return
         
         distance = (event.pos() - self.drag_start_position).manhattanLength()
-        logger.debug(f"[mouseMoveEvent] 드래그 거리: {distance}")
         
         if distance < QApplication.startDragDistance():
             return

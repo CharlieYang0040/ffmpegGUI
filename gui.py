@@ -763,11 +763,10 @@ class FFmpegGui(QWidget):
 
                 self.encoding_thread = EncodingThread(
                     process_all_media,  # 업데이트된 함수 사용
-                    [item[0] for item in ordered_input],
+                    ordered_input,  # 전체 튜플을 그대로 전달
                     output_file,
                     encoding_options,
                     debug_mode=debug_mode,
-                    trim_values=[(item[1], item[2]) for item in ordered_input],
                     global_trim_start=self.global_trim_start,
                     global_trim_end=self.global_trim_end
                 )

@@ -92,7 +92,7 @@ def process_image_sequences(files):
             if frame is not None:
                 sequence_key = os.path.join(dir_path, f"{base}%0{len(frame)}d{ext}")
                 sequences[sequence_key].append((int(frame), file_path))
-                logger.info(f"이미지 시퀀스 발견: {sequence_key}")
+                logger.debug(f"이미지 시퀀스 발견: {sequence_key}")
             else:
                 processed_files.append(file_path)
         else:
