@@ -32,6 +32,9 @@ class DragDropListWidget(QListWidget):
         self.placeholder_subtext = "이미지 시퀀스 파일은 한 장만 드래그 하세요."
         self.placeholder_visible = True
         
+        # 더블 클릭 이벤트 연결
+        self.itemDoubleClicked.connect(self.on_item_double_clicked)
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.accept()
@@ -57,11 +60,43 @@ class DragDropListWidget(QListWidget):
         result = drag.exec_(Qt.MoveAction)
         logger.info(f"[startDrag] 드래그 작업 완료")
 
+    def handle_new_files(self, links):
+        """드래그 드롭과 파일 추가시 공통으로 사용할 파일 처리 메서드"""
+        if links and hasattr(self.parent(), 'execute_command'):
+            command = AddItemsCommand(self, links)
+            self.parent().execute_command(command)
+            logger.info(f"[handle_new_files] {len(links)}개 파일 추가됨")
+            
+            # 자동 출력 경로 설정
+            if hasattr(self.parent(), 'auto_output_path_checkbox') and self.parent().auto_output_path_checkbox.isChecked():
+                output_dir = os.path.dirname(links[0])
+            else:
+                output_dir = os.path.dirname(self.parent().output_edit.text())
+                if not output_dir:
+                    output_dir = os.path.expanduser("~")
+            
+            # 자동 네이밍이 활성화되어 있는지 확인
+            if hasattr(self.parent(), 'auto_naming_checkbox') and self.parent().auto_naming_checkbox.isChecked():
+                output_name = format_drag_to_output(links[0])
+            else:
+                existing_name = os.path.splitext(os.path.basename(self.parent().output_edit.text()))[0]
+                output_name = existing_name if existing_name else "output"
+            
+            # 새로운 출력 경로 생성
+            new_output_path = os.path.join(output_dir, f"{output_name}.mp4")
+            
+            # 출력 경로 변경을 위한 Command 생성 및 실행
+            command = ChangeOutputPathCommand(
+                self.parent().output_edit,  # 출력 경로 QLineEdit
+                self.parent().output_edit.text(),  # 이전 경로
+                new_output_path  # 새로운 경로
+            )
+            self.parent().execute_command(command)
+
     def dropEvent(self, event: QDropEvent):
         logger.debug("[dropEvent] 드롭 이벤트 시작")
         if event.mimeData().hasUrls():
             logger.info("[dropEvent] 외부 파일 드롭 처리 시작")
-            # 외부 파일 드롭 처리
             event.setDropAction(Qt.CopyAction)
             event.accept()
             links = []
@@ -75,34 +110,7 @@ class DragDropListWidget(QListWidget):
                         if processed_path:
                             links.append(processed_path)
             
-            # AddItemsCommand 생성 및 실행
-            if links and hasattr(self.parent(), 'execute_command'):
-                command = AddItemsCommand(self, links)
-                self.parent().execute_command(command)
-                logger.info(f"[dropEvent] {len(links)}개 파일 추가됨")
-                
-                # 자동 네이밍이 활성화되어 있는지 확인
-                if hasattr(self.parent(), 'auto_naming_checkbox') and self.parent().auto_naming_checkbox.isChecked():
-                    # 첫 번째 파일의 이름으로 출력 경로 설정
-                    first_file = links[0]
-                    # utils.py의 format_drag_to_output 함수를 사용하여 파일명 포맷팅
-                    output_name = format_drag_to_output(first_file)
-                    
-                    # 현재 출력 경로의 디렉토리 유지
-                    current_dir = os.path.dirname(self.parent().output_edit.text())
-                    if not current_dir:  # 디렉토리가 비어있으면 기본값 사용
-                        current_dir = os.path.expanduser("~")
-                    
-                    # 새로운 출력 경로 생성
-                    new_output_path = os.path.join(current_dir, f"{output_name}.mp4")
-                    
-                    # 출력 경로 변경을 위한 Command 생성 및 실행
-                    command = ChangeOutputPathCommand(
-                        self.parent().output_edit,  # 출력 경로 QLineEdit
-                        self.parent().output_edit.text(),  # 이전 경로
-                        new_output_path  # 새로운 경로
-                    )
-                    self.parent().execute_command(command)
+            self.handle_new_files(links)
         else:
             logger.info("[dropEvent] 내부 아이템 재정렬")
             event.setDropAction(Qt.MoveAction)
@@ -246,3 +254,14 @@ class DragDropListWidget(QListWidget):
 
         logger.info("[mouseMoveEvent] 드래그 시작")
         self.startDrag(Qt.MoveAction)
+
+    def handle_double_click(self, file_path):
+        """ListWidgetItem으로부터 더블클릭 이벤트를 받아 처리"""
+        if hasattr(self.parent(), 'open_folder'):
+            self.parent().open_folder(file_path)
+
+    def on_item_double_clicked(self, item):
+        """QListWidget의 기본 더블클릭 이벤트 처리"""
+        file_path = item.data(Qt.UserRole)
+        if file_path and hasattr(self.parent(), 'open_folder'):
+            self.parent().open_folder(file_path)

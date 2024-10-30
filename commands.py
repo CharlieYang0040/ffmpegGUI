@@ -5,6 +5,7 @@ from typing import List
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QListWidget, QListWidgetItem
 from list_widget_item import ListWidgetItem
+from utils import normalize_path_separator
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -23,13 +24,16 @@ class AddItemsCommand(Command):
         self.added_items = []
 
     def execute(self):
+        logger.info("[AddItemsCommand] 아이템 추가 시작")
         self.list_widget.add_items(self.items)
         self.added_items = [self.list_widget.item(i) for i in range(self.list_widget.count() - len(self.items), self.list_widget.count())]
-
+        logger.info("[AddItemsCommand] 아이템 추가 완료")
     def undo(self):
+        logger.info("[AddItemsCommand] undo 실행")
         for _ in range(len(self.items)):
             self.list_widget.takeItem(self.list_widget.count() - 1)
         self.list_widget.placeholder_visible = self.list_widget.count() == 0
+        logger.info("[AddItemsCommand] undo 완료")
 
 class RemoveItemsCommand(Command):
     def __init__(self, list_widget: QListWidget, items: List[QListWidgetItem]):
@@ -46,7 +50,7 @@ class RemoveItemsCommand(Command):
         logger.info(f"[RemoveItemsCommand] {len(self.items)}개 아이템 제거 완료")
 
     def undo(self):
-        logger.debug("[RemoveItemsCommand] undo 실행")
+        logger.info("[RemoveItemsCommand] undo 실행")
         for row, file_path in self.item_data:
             item_widget = ListWidgetItem(file_path)
             list_item = QListWidgetItem()
@@ -54,7 +58,7 @@ class RemoveItemsCommand(Command):
             list_item.setData(Qt.UserRole, file_path)
             self.list_widget.insertItem(row, list_item)
             self.list_widget.setItemWidget(list_item, item_widget)
-        logger.debug("[RemoveItemsCommand] 아이템 복원 완료")
+        logger.info("[RemoveItemsCommand] 아이템 복원 완료")
 
 class ClearListCommand(Command):
     def __init__(self, list_widget: QListWidget):
@@ -71,7 +75,7 @@ class ClearListCommand(Command):
         logger.info("[ClearListCommand] 목록 초기화 완료")
 
     def undo(self):
-        logger.debug("[ClearListCommand] undo 실행")
+        logger.info("[ClearListCommand] undo 실행")
         for file_path in self.file_paths:
             item_widget = ListWidgetItem(file_path)
             list_item = QListWidgetItem()
@@ -80,7 +84,7 @@ class ClearListCommand(Command):
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, item_widget)
         self.list_widget.placeholder_visible = False
-        logger.debug("[ClearListCommand] 목록 복원 완료")
+        logger.info("[ClearListCommand] 목록 복원 완료")
 
 class ReorderItemsCommand(Command):
     def __init__(self, list_widget: QListWidget, old_order: List[str], new_order: List[str]):
@@ -95,7 +99,7 @@ class ReorderItemsCommand(Command):
         self._apply_order(self.new_order)
 
     def undo(self):
-        logger.debug("[ReorderItemsCommand] undo 실행")
+        logger.info("[ReorderItemsCommand] undo 실행")
         self._apply_order(self.old_order)
 
     def _apply_order(self, order: List[str]):
@@ -116,16 +120,16 @@ class ChangeOutputPathCommand(Command):
     def __init__(self, output_edit, old_path: str, new_path: str):
         logger.debug("[ChangeOutputPathCommand] 초기화")
         self.output_edit = output_edit
-        self.old_path = old_path
-        self.new_path = new_path
+        self.old_path = normalize_path_separator(old_path)
+        self.new_path = normalize_path_separator(new_path)
         logger.info(f"[ChangeOutputPathCommand] 출력 경로 변경: {old_path} -> {new_path}")
 
     def execute(self):
-        logger.debug("[ChangeOutputPathCommand] execute 실행")
+        logger.info("[ChangeOutputPathCommand] 출력 경로 변경 시작")
         self.output_edit.setText(self.new_path)
-        logger.debug("[ChangeOutputPathCommand] 새 경로 설정 완료")
+        logger.info("[ChangeOutputPathCommand] 새 경로 설정 완료")
 
     def undo(self):
-        logger.debug("[ChangeOutputPathCommand] undo 실행")
+        logger.info("[ChangeOutputPathCommand] undo 실행")
         self.output_edit.setText(self.old_path)
-        logger.debug("[ChangeOutputPathCommand] 이전 경로 복원 완료")
+        logger.info("[ChangeOutputPathCommand] 이전 경로 복원 완료")

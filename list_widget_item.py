@@ -1,7 +1,7 @@
 # list_widget_item.py
 
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QSpinBox
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import Qt, QEvent
 import os
 
 
@@ -34,6 +34,10 @@ class ListWidgetItem(QWidget):
         self.setLayout(layout)
         self.setMouseTracking(True)
 
+        # 더블 클릭 이벤트를 위한 설정
+        self.setAttribute(Qt.WA_Hover)
+        self.setMouseTracking(True)
+
     def get_trim_values(self):
         return self.trim_start_spinbox.value(), self.trim_end_spinbox.value()
 
@@ -56,3 +60,9 @@ class ListWidgetItem(QWidget):
             self.setStyleSheet("background-color: #2a2a2a;")
         else:
             self.setStyleSheet("")
+
+    def mouseDoubleClickEvent(self, event):
+        # 부모 위젯(DragDropListWidget)의 더블클릭 시그널 발생
+        parent_list = self.parent().parent()
+        if hasattr(parent_list, 'itemDoubleClicked'):
+            parent_list.handle_double_click(self.file_path)

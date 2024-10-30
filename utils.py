@@ -159,3 +159,6 @@ def format_drag_to_output(file_path):
     
     logger.info(f"변환된 출력 이름: {base_name}")
     return base_name
+
+def normalize_path_separator(path):
+    return path.replace('\\', '/')

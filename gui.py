@@ -2,6 +2,7 @@
 
 import os
 import sys
+import subprocess
 import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
@@ -361,8 +362,12 @@ class FFmpegGui(QWidget):
         self.preview_mode_checkbox.setChecked(True)
         checkbox_layout.addWidget(self.preview_mode_checkbox)
 
+        self.auto_output_path_checkbox = QCheckBox("자동 경로")
+        self.auto_output_path_checkbox.setChecked(True)
+        checkbox_layout.addWidget(self.auto_output_path_checkbox)
+
         self.auto_naming_checkbox = QCheckBox("자동 네이밍")
-        self.auto_naming_checkbox.setChecked(False)
+        self.auto_naming_checkbox.setChecked(True)
         checkbox_layout.addWidget(self.auto_naming_checkbox)
 
         left_layout.addLayout(checkbox_layout)
@@ -451,8 +456,15 @@ class FFmpegGui(QWidget):
 
         self.output_browse = QPushButton("찾아보기")
         self.output_browse.clicked.connect(self.browse_output)
+
+        self.open_folder_button = QPushButton("📂")
+        self.open_folder_button.setToolTip("출력 폴더 열기")
+        # 람다를 사용하여 output_edit의 경로 전달
+        self.open_folder_button.clicked.connect(lambda: self.open_folder(self.output_edit.text()))
+
         output_layout.addWidget(self.output_label)
         output_layout.addWidget(self.output_edit)
+        output_layout.addWidget(self.open_folder_button)
         output_layout.addWidget(self.output_browse)
         left_layout.addLayout(output_layout)
 
@@ -463,8 +475,15 @@ class FFmpegGui(QWidget):
         self.ffmpeg_edit.setAcceptDrops(False)
         self.ffmpeg_browse = QPushButton("찾아보기")
         self.ffmpeg_browse.clicked.connect(self.browse_ffmpeg)
+
+        self.open_ffmpeg_folder_button = QPushButton("📂")
+        self.open_ffmpeg_folder_button.setToolTip("FFmpeg 폴더 열기")
+        # 람다를 사용하여 ffmpeg_edit의 경로 전달
+        self.open_ffmpeg_folder_button.clicked.connect(lambda: self.open_folder(self.ffmpeg_edit.text()))
+
         ffmpeg_layout.addWidget(self.ffmpeg_label)
         ffmpeg_layout.addWidget(self.ffmpeg_edit)
+        ffmpeg_layout.addWidget(self.open_ffmpeg_folder_button)
         ffmpeg_layout.addWidget(self.ffmpeg_browse)
         left_layout.addLayout(ffmpeg_layout)
 
@@ -640,19 +659,7 @@ class FFmpegGui(QWidget):
         files, _ = QFileDialog.getOpenFileNames(self, '파일 선택', '', '모든 파일 (*.*)')
         if files:
             processed_files = list(map(process_file, files))
-            command = AddItemsCommand(self.list_widget, processed_files)
-            self.execute_command(command)
-
-            if self.auto_naming_checkbox.isChecked() and processed_files:
-                first_file = processed_files[0]
-                output_name = format_drag_to_output(first_file)
-
-                current_dir = os.path.dirname(self.output_edit.text())
-                if not current_dir:
-                    current_dir = os.path.expanduser("~")
-
-                new_output_path = os.path.join(current_dir, f"{output_name}.mp4")
-                self.output_edit.setText(new_output_path)
+            self.list_widget.handle_new_files(processed_files)
 
     def reverse_list_order(self):
         file_paths = self.list_widget.get_all_file_paths()
@@ -1069,3 +1076,17 @@ class FFmpegGui(QWidget):
             self.remove_selected_files()
         else:
             super().keyPressEvent(event)
+
+    def open_folder(self, path):
+        if path:
+            folder_path = os.path.dirname(path)
+            folder_path = folder_path.replace('/', '\\')
+            
+            if os.path.exists(folder_path):
+                try:
+                    subprocess.Popen(['explorer', folder_path])
+                except Exception as e:
+                    logger.error(f"폴더 열기 실패: {str(e)}")
+                    QMessageBox.warning(self, "오류", f"폴더를 열 수 없습니다: {str(e)}")
+            else:
+                QMessageBox.warning(self, "경고", "폴더가 존재하지 않습니다.")
