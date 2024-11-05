@@ -118,16 +118,39 @@ def process_image_file(file_path):
     dir_path, file_name = os.path.split(file_path)
     base_name, ext = os.path.splitext(file_name)
 
-    match = re.search(r'(\d+)$', base_name)
+    logger.debug(f"처리 중인 이미지 파일: {file_path}")
+    logger.debug(f"파일 이름에서 숫자 부분 검색 중: {base_name}")
+    
+    # 파일명에서 숫자 네 자리를 찾기 (중간 또는 끝)
+    match = re.search(r'(\d{4})', base_name)  # 숫자 네 자리를 찾도록 설정
     if match:
         number_part = match.group(1)
-        prefix = base_name[:-len(number_part)]
-        pattern = f"{prefix}[0-9]*{ext}"
-        matching_files = [f for f in os.listdir(dir_path) if re.match(pattern, f)]
+        logger.debug(f"찾은 숫자 부분: {number_part}")
+        prefix = base_name[:match.start()]  # 숫자 앞부분
+        logger.debug(f"프리픽스: {prefix}")
+        
+        # 특수문자를 포함한 파일명에 대응하기 위해 re.escape 사용
+        pattern = f"^{re.escape(prefix)}[0-9]+{re.escape(ext)}$"
+        logger.debug(f"검색 패턴: {pattern}")
+        
+        try:
+            # glob을 사용하여 네트워크 경로에서도 파일 검색
+            import glob
+            search_path = os.path.join(dir_path, f"{prefix}*{ext}")
+            matching_files = [os.path.basename(f) for f in glob.glob(search_path)]
+            matching_files = [f for f in matching_files if re.match(pattern, f)]
+            logger.debug(f"일치하는 파일 목록: {matching_files}")
+            
+            if len(matching_files) > 1:
+                logger.info(f"이미지 시퀀스 발견: {prefix}%0{len(number_part)}d{ext}")
+                return os.path.join(dir_path, f"{prefix}%0{len(number_part)}d{ext}")
+                
+        except Exception as e:
+            logger.error(f"파일 검색 중 오류 발생: {str(e)}")
+    else:
+        logger.warning(f"숫자 부분을 찾지 못했습니다: {base_name}")
 
-        if len(matching_files) > 1:
-            return os.path.join(dir_path, f"{prefix}%0{len(number_part)}d{ext}")
-
+    logger.warning(f"이미지 파일 처리 실패: {file_path}")
     return file_path
 
 def get_sequence_start_number(sequence_path):
