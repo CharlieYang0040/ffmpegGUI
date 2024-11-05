@@ -1,6 +1,7 @@
 # FFmpegGUI by LHCinema
 
-![image](https://github.com/user-attachments/assets/b93f4d9f-8d81-4c28-92fa-f8d0908a7f76)  
+![image](https://github.com/user-attachments/assets/cd7e4b50-da90-485f-b22f-335e94c2afc0)
+
 
 
 FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인코딩할 수 있는 그래픽 사용자 인터페이스(GUI) 애플리케이션입니다.
@@ -53,7 +54,9 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 - 재생속도 조절이 가능한 미리보기 기능
 - 0.25x에서 8x까지 재생 속도 조절
 
-### 자동 네이밍
+### 자동 경로, 네이밍
+
+![image](https://github.com/user-attachments/assets/b5cfb6f0-ba3e-416c-9e2f-ba2229c20fc9)  
 
 ![image](https://github.com/user-attachments/assets/af0818b1-4fdd-4123-8dc8-35efd4361e40)  
 
@@ -63,10 +66,12 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 ### 출력 경로
 
 ![image](https://github.com/user-attachments/assets/e0162672-2e79-4ea3-8098-dddc57759aac)  
+![image](https://github.com/user-attachments/assets/8dcb9641-d689-4fdd-b207-2524dcb30785)  
 
 
 - 인코딩된 파일의 저장 위치를 지정할 수 있습니다.
 - 이전에 사용했던 저장 위치를 자동으로 기억합니다.
+- 폴더 버튼을 누르면 경로를 탐색기로 바로 엽니다.
 
 ### 실행취소, 다시실행
 
