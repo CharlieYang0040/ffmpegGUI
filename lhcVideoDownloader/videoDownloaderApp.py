@@ -3,8 +3,11 @@ import os
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel,
                                QLineEdit, QPushButton, QFileDialog, QTextEdit, QProgressBar, QHBoxLayout)
 from PySide6.QtCore import Signal, Slot, QThread
-from PySide6.QtGui import QClipboard
 import yt_dlp
+from youtube_auth import YouTubeAuthWindow
+import tempfile
+import json
+import subprocess  # 파일 탐색기 실행용
 
 class MyLogger:
     def __init__(self, log_signal):
@@ -23,7 +26,11 @@ class ExtractWorker(QThread):
     def __init__(self, url):
         super().__init__()
         self.url = url
-
+        self.cookies = None
+        
+    def set_cookies(self, cookies):
+        self.cookies = cookies
+        
     def run(self):
         try:
             self.progress_signal.emit(f"Attempting to connect to YouTube URL: {self.url}")
@@ -31,7 +38,10 @@ class ExtractWorker(QThread):
                 'quiet': True,
                 'no_warnings': True
             }
-
+            
+            if self.cookies:
+                ydl_opts['cookiefile'] = self.cookies
+                
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 self.progress_signal.emit("Retrieving video information...")
                 info = ydl.extract_info(self.url, download=False)
@@ -75,40 +85,44 @@ class DownloadWorker(QThread):
     log_signal = Signal(str)
     finished_signal = Signal(bool)
 
-    def __init__(self, url, format_data, output_file, ffmpeg_path):
+    def __init__(self, url, format_data, output_file, ffmpeg_path, cookies=None):
         super().__init__()
         self.url = url
         self.format_data = format_data
         self.output_file = output_file
         self.ffmpeg_path = ffmpeg_path
-
+        self.cookies = cookies
+        
     def run(self):
         def progress_hook(d):
             if d['status'] == 'downloading':
                 downloaded = d.get('downloaded_bytes', 0)
-                total = d.get('total_bytes', 0)
-                if total > 0:
+                total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+                
+                if total > 0:  # total이 유효한 값일 때만 진행률 계산
                     progress = int((downloaded / total) * 100)
                     self.progress_signal.emit(progress, 100)
+                    
                     speed = d.get('speed', 0)
                     eta = d.get('eta', 0)
-                    if speed > 1024*1024:
+                    
+                    if speed and speed > 1024*1024:  # speed가 None이 아닐 때만 계산
                         speed_str = f"{speed/(1024*1024):.2f} MB/s"
-                    elif speed > 1024:
+                    elif speed and speed > 1024:
                         speed_str = f"{speed/1024:.2f} KB/s"
                     else:
-                        speed_str = f"{speed:.2f} B/s"
-                    self.log_signal.emit(f"Download progress: {progress}% | Speed: {speed_str} | ETA: {eta}s")
+                        speed_str = f"{speed:.2f} B/s" if speed else "Unknown speed"
+                        
+                    eta_str = f"{eta}s" if eta else "Unknown"
+                    self.log_signal.emit(f"Download progress: {progress}% | Speed: {speed_str} | ETA: {eta_str}")
             
-            if d['status'] == 'started':
-                # ffmpeg 인코딩 시작 안내문구
+            elif d['status'] == 'started':
                 self.log_signal.emit("FFmpeg로 인코딩 중입니다. 잠시 기다려주세요...")
-                self.progress_signal.emit(0,0)  # 진행률 바를 무한 상태로 설정
+                self.progress_signal.emit(0, 0)
+            
             elif d['status'] == 'finished':
-                # 인코딩 완료 안내문구
                 self.log_signal.emit("인코딩이 완료되었습니다!")
-                # 다시 진행률 바를 일반 상태로 복귀 (원한다면)
-                #self.progress_signal.emit(0,100) # 혹은 다운로드 완료 상태 등
+                self.progress_signal.emit(100, 100)
 
         try:
             if not os.path.exists(self.ffmpeg_path):
@@ -154,6 +168,9 @@ class DownloadWorker(QThread):
                 ]
             }
 
+            if self.cookies:
+                ydl_opts['cookiefile'] = self.cookies
+
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([self.url])
 
@@ -164,6 +181,28 @@ class DownloadWorker(QThread):
             self.finished_signal.emit(False)
 
 
+class ConfigManager:
+    def __init__(self):
+        # Windows의 경우 %APPDATA%/Local/LHCVideoDownloader 경로 사용
+        if os.name == 'nt':
+            self.config_file = os.path.join(os.getenv('LOCALAPPDATA'), 'LHCVideoDownloader', 'settings.json')
+        else:
+            self.config_file = os.path.expanduser('~/.config/lhcVideoDownloader.json')
+        
+        # 설정 파일 디렉토리 생성
+        os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+
+    def load_cookies(self):
+        if os.path.exists(self.config_file):
+            with open(self.config_file, 'r') as f:
+                return f.read()
+        return None
+
+    def save_cookies(self, cookies):
+        with open(self.config_file, 'w') as f:
+            f.write(cookies)
+
+
 class VideoDownloaderApp(QMainWindow):
     update_progress = Signal(int, int)
     log_message = Signal(str)
@@ -172,7 +211,11 @@ class VideoDownloaderApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("YouTube Video Downloader")
         self.setGeometry(200, 200, 600, 400)
-
+        
+        # ConfigManager 초기화
+        self.config_manager = ConfigManager()
+        
+        # UI 초기화
         self.main_widget = QWidget()
         self.layout = QVBoxLayout()
 
@@ -221,6 +264,46 @@ class VideoDownloaderApp(QMainWindow):
         self.update_progress.connect(self.update_progress_bar)
         self.log_message.connect(self.append_log)
 
+        # 설정 버튼 레이아웃
+        self.settings_layout = QHBoxLayout()
+        
+        # 로그인 버튼
+        self.login_btn = QPushButton("YouTube 로그인")
+        self.login_btn.clicked.connect(self.show_login_window)
+        self.settings_layout.addWidget(self.login_btn)
+        
+        # Config 폴더 열기 버튼
+        self.open_config_btn = QPushButton("설정 폴더 열기")
+        self.open_config_btn.clicked.connect(self.open_config_folder)
+        self.settings_layout.addWidget(self.open_config_btn)
+        
+        # 설정 레이아웃을 메인 레이아웃에 추가
+        self.layout.insertLayout(1, self.settings_layout)  # URL 입력란 아래에 추가
+        
+        self.youtube_cookies = None  # 쿠키 저장용 변수
+        
+        # 저장된 쿠키 확인 및 로드
+        self.load_saved_cookies()
+    
+    def load_saved_cookies(self):
+        """저장된 쿠키 로드"""
+        saved_cookies = self.config_manager.load_cookies()
+        if saved_cookies:
+            # 임시 파일에 쿠키 저장
+            temp_cookie_file = tempfile.NamedTemporaryFile(
+                mode='w',
+                suffix='.txt',
+                delete=False
+            )
+            temp_cookie_file.write(saved_cookies)
+            temp_cookie_file.close()
+            
+            self.youtube_cookies = temp_cookie_file.name
+            self.append_log("저장된 로그인 정보를 불러왔습니다.")
+            
+            # 로그인 버튼 텍스트 변경
+            self.login_btn.setText("다시 로그인")
+    
     def choose_save_path(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Save Directory")
         if folder:
@@ -243,6 +326,8 @@ class VideoDownloaderApp(QMainWindow):
             return
 
         self.extract_thread = ExtractWorker(video_url)
+        if self.youtube_cookies:  # 쿠키가 있다면 전달
+            self.extract_thread.set_cookies(self.youtube_cookies)
         self.extract_thread.progress_signal.connect(self.append_log)
         self.extract_thread.result_signal.connect(self.handle_extract_result)
         self.extract_thread.start()
@@ -281,7 +366,13 @@ class VideoDownloaderApp(QMainWindow):
 
         ffmpeg_path = r'\\192.168.2.215\Share_151\art\ffmpeg-7.1\bin\ffmpeg.exe'
 
-        self.download_thread = DownloadWorker(self.url_input.text(), selected_format, output_file, ffmpeg_path)
+        self.download_thread = DownloadWorker(
+            self.url_input.text(), 
+            selected_format, 
+            output_file, 
+            ffmpeg_path,
+            self.youtube_cookies  # 쿠키 전달
+        )
         self.download_thread.progress_signal.connect(self.update_progress_bar)
         self.download_thread.log_signal.connect(self.append_log)
         self.download_thread.finished_signal.connect(self.download_finished)
@@ -307,6 +398,34 @@ class VideoDownloaderApp(QMainWindow):
         """클립보드의 내용을 URL 입력창에 붙여넣습니다."""
         clipboard = QApplication.clipboard()
         self.url_input.setText(clipboard.text())
+
+    def show_login_window(self):
+        """YouTube 로그인 창을 표시"""
+        if hasattr(self, 'auth_window'):
+            self.auth_window.close()
+        self.auth_window = YouTubeAuthWindow()
+        self.auth_window.login_completed.connect(self.handle_login_completed)
+    
+    def handle_login_completed(self, cookie_file):
+        """로그인이 완료되면 쿠키 파일 경로 저장"""
+        self.youtube_cookies = cookie_file
+        self.append_log("YouTube 로그인이 완료되었습니다.")
+        self.login_btn.setText("다시 로그인")
+
+    def open_config_folder(self):
+        """설정 폴더를 파일 탐색기로 엽니다"""
+        config_path = os.path.dirname(self.config_manager.config_file)
+        try:
+            # 설정 폴더가 없으면 생성
+            os.makedirs(config_path, exist_ok=True)
+            
+            if os.name == 'nt':  # Windows
+                os.startfile(config_path)
+            elif os.name == 'posix':  # macOS, Linux
+                subprocess.run(['xdg-open', config_path])
+            self.append_log(f"설정 폴더를 열었습니다: {config_path}")
+        except Exception as e:
+            self.append_log(f"설정 폴더를 여는 중 오류가 발생했습니다: {e}")
 
 
 if __name__ == "__main__":
