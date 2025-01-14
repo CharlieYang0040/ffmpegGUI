@@ -81,7 +81,11 @@ class DragDropListWidget(QListWidget):
             else:
                 existing_name = os.path.splitext(os.path.basename(self.parent().output_edit.text()))[0]
                 output_name = existing_name if existing_name else "output"
-            
+
+            # 자동 폴더네이밍이 활성화되어 있는지 확인
+            if hasattr(self.parent(), 'auto_foldernaming_checkbox') and self.parent().auto_foldernaming_checkbox.isChecked():
+                output_name = os.path.basename(os.path.dirname(links[0]))
+
             # 새로운 출력 경로 생성
             new_output_path = os.path.join(output_dir, f"{output_name}.mp4")
             

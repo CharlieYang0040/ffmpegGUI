@@ -385,6 +385,10 @@ class FFmpegGui(QWidget):
         self.auto_naming_checkbox.setChecked(True)
         checkbox_layout.addWidget(self.auto_naming_checkbox)
 
+        self.auto_foldernaming_checkbox = QCheckBox("자동 폴더네이밍")
+        self.auto_foldernaming_checkbox.setChecked(False)
+        checkbox_layout.addWidget(self.auto_foldernaming_checkbox)
+
         left_layout.addLayout(checkbox_layout)
 
         self.list_widget = DragDropListWidget(self, process_file_func=process_file)

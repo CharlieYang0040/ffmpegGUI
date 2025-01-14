@@ -181,6 +181,8 @@ def process_image_sequence(
             raise FileNotFoundError(f"No images found for pattern '{input_file}'")
 
         total_frames = len(image_files)
+
+        # 시작 프레임 번호 추출
         frame_number_pattern = re.compile(r'(\d+)\.(\w+)$')
         first_image = os.path.basename(image_files[0])
         match = frame_number_pattern.search(first_image)
@@ -195,23 +197,25 @@ def process_image_sequence(
         if new_total_frames <= 0:
             raise ValueError("트림 후 남은 프레임이 없습니다.")
 
-        # 스레드 최적화 옵션 적용
+        # 인코딩 옵션 설정
         encoding_options = get_optimal_encoding_options(encoding_options)
-
-        # 프레임레이트 설정
         framerate = float(encoding_options.get('r', 30))
-        
+
         # 입력 옵션 설정
         input_args = {
             'framerate': str(framerate),
             'probesize': '100M',
             'analyzeduration': '100M',
-            'start_number': str(new_start_frame)
+            'start_number': str(new_start_frame)  # 트림된 시작 프레임
         }
 
-        # frames 옵션 추가 (총 프레임 수 지정)
-        if new_total_frames > 0:
-            encoding_options['frames'] = str(new_total_frames)
+        # frames 옵션 추가 (트림된 총 프레임 수)
+        encoding_options['frames'] = str(new_total_frames)
+
+        if debug_mode:
+            logger.debug(f"트림 정보 - 시작: {new_start_frame}, 프레임 수: {new_total_frames}")
+            logger.debug(f"입력 옵션: {input_args}")
+            logger.debug(f"인코딩 옵션: {encoding_options}")
 
         # 스트림 생성
         stream = ffmpeg.input(input_file, **input_args)
@@ -235,10 +239,6 @@ def process_image_sequence(
             error_message = e.stderr.decode() if e.stderr else str(e)
             logger.error(f"FFmpeg 실행 중 오류 발생: {error_message}")
             raise
-
-        # 출력 파일 확인
-        if not os.path.exists(temp_output):
-            raise FileNotFoundError(f"출력 파일이 생성되지 않았습니다: {temp_output}")
 
         return temp_output
 
@@ -469,20 +469,30 @@ def process_all_media(
     """
     모든 미디어 파일을 처리하고 하나의 파일로 합칩니다.
     """
-
-    if trim_values is None:
-        trim_values = [(0, 0)] * len(media_files)
-
-    # 전역 트림 값을 각 파일의 트림 값에 적용
-    trim_values = [(ts + global_trim_start, te + global_trim_end) for ts, te in trim_values]
-
-    # 디버그 모드일 때 -v quiet 옵션 제거, 아닐 때 추가
-    if debug_mode:
-        encoding_options.pop('v', None)  # 'v' 키가 있다면 제거
-    else:
-        encoding_options['v'] = 'quiet'
-
     try:
+        if trim_values is None:
+            # media_files의 개별 트림 값을 사용
+            trim_values = [(media_file[1], media_file[2]) for media_file in media_files]
+
+        if debug_mode:
+            logger.debug(f"전역 트림 값 - 시작: {global_trim_start}, 끝: {global_trim_end}")
+            logger.debug(f"개별 트림 값: {trim_values}")
+
+        # 전역 트림 값과 개별 트림 값을 합산
+        combined_trim_values = [
+            (ts + global_trim_start, te + global_trim_end) 
+            for ts, te in trim_values
+        ]
+
+        if debug_mode:
+            logger.debug(f"합산된 트림 값: {combined_trim_values}")
+
+        # 디버그 모드일 때 -v quiet 옵션 제거, 아닐 때 추가
+        if debug_mode:
+            encoding_options.pop('v', None)  # 'v' 키가 있다면 제거
+        else:
+            encoding_options['v'] = 'quiet'
+
         logger.info(f"미디어 처리 시작: {len(media_files)}개 파일")
         
         # 먼저 target_properties 얻기
@@ -503,14 +513,12 @@ def process_all_media(
         memory_threshold = total_memory * 0.8
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 각 파일에 대한 처리 작업 제출
             futures = []
             
-            # media_files의 각 항목 처리
-            for idx, media_file in enumerate(media_files):
-                input_file = media_file[0]
-                trim_start = media_file[1]
-                trim_end = media_file[2]
+            for idx, ((input_file, _, _), (trim_start, trim_end)) in enumerate(zip(media_files, combined_trim_values)):
+                if debug_mode:
+                    logger.debug(f"파일 처리: {input_file}")
+                    logger.debug(f"적용될 트림 값 - 시작: {trim_start}, 끝: {trim_end}")
 
                 future = executor.submit(
                     process_single_media,
