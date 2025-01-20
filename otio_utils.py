@@ -77,7 +77,7 @@ class OTIOGenerator:
             "children": [{
                 "OTIO_SCHEMA": "Track.1",
                 "metadata": {},
-                "name": "Default Sequence",
+                "name": "Main Sequence",
                 "source_range": None,
                 "effects": [],
                 "markers": [],
@@ -264,4 +264,67 @@ def generate_and_open_otio(clips: List[Tuple[str, int, int]], output_path: str, 
             
     except Exception as e:
         logger.error(f"OTIO 파일 생성 중 오류 발생: {e}")
+        raise
+
+def parse_otio_file(otio_path: str) -> List[Tuple[str, int, int]]:
+    """
+    OTIO 파일을 파싱하여 (파일경로, trim_start, trim_end) 튜플 리스트를 반환합니다.
+    """
+    try:
+        logger.debug(f"OTIO 파일 읽기 시작: {otio_path}")
+        with open(otio_path, 'r') as f:
+            otio_data = json.load(f)
+        
+        clips = []
+        tracks = otio_data.get("tracks", {}).get("children", [])
+        logger.debug(f"트랙 수: {len(tracks)}")
+        
+        for track in tracks:
+            for clip in track.get("children", []):
+                if clip.get("OTIO_SCHEMA") == "Clip.2":
+                    logger.debug(f"클립 데이터: {clip}")
+                    media_ref = clip["media_references"]["DEFAULT_MEDIA"]
+                    logger.debug(f"미디어 레퍼런스: {media_ref}")
+                    
+                    # 미디어 타입에 따라 파일 경로 추출
+                    if media_ref["OTIO_SCHEMA"] == "ImageSequenceReference.1":
+                        # 이미지 시퀀스의 경우
+                        base_path = media_ref["target_url_base"]
+                        name_prefix = media_ref["name_prefix"]
+                        frame_zero_padding = media_ref.get("frame_zero_padding", 4)
+                        file_path = os.path.join(
+                            base_path, 
+                            f"{name_prefix}%0{frame_zero_padding}d.{media_ref['name_suffix'].lstrip('.')}"
+                        )
+                        
+                        # 이미지 시퀀스의 실제 시작/끝 프레임 추출
+                        clip_name = clip.get("name", "")
+                        frame_range_match = re.search(r'(\d+)-(\d+)#', clip_name)
+                        if frame_range_match:
+                            start_frame = int(frame_range_match.group(1))
+                            end_frame = int(frame_range_match.group(2))
+                            # 시퀀스의 실제 프레임 범위를 사용하므로 trim은 0으로 설정
+                            trim_start = 0
+                            trim_end = 0
+                        else:
+                            trim_start = 0
+                            trim_end = 0
+                    else:
+                        # 비디오 파일의 경우
+                        file_path = media_ref["target_url"].replace('\\', '/')
+                        # source_range에서 trim 정보 추출
+                        source_range = clip.get("source_range", {})
+                        start_time = source_range.get("start_time", {}).get("value", 0)
+                        trim_start = int(start_time)
+                        trim_end = 0
+                    
+                    logger.debug(f"추출된 파일 경로: {file_path}")
+                    logger.debug(f"추출된 트림 정보: 시작={trim_start}, 끝={trim_end}")
+                    clips.append((file_path, trim_start, trim_end))
+        
+        logger.debug(f"최종 추출된 클립 목록: {clips}")
+        return clips
+        
+    except Exception as e:
+        logger.error(f"OTIO 파일 파싱 중 오류 발생: {str(e)}", exc_info=True)
         raise

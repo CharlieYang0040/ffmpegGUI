@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
     QMessageBox, QSlider, QDoubleSpinBox, QSpinBox,
-    QProgressBar, QDialog, QPushButton
+    QProgressBar, QDialog, QPushButton, QListWidgetItem, QMainWindow
 )
 from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread, QTimer, QTime
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator, QShortcut, QKeySequence
@@ -29,8 +29,10 @@ from utils import (
     ffmpeg_manager,
     get_debug_mode,
     set_debug_mode,
-    set_logger_level
+    set_logger_level,
+    process_image_file
 )
+from list_widget_item import ListWidgetItem
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -1119,9 +1121,13 @@ class FFmpegGui(QWidget):
         self.create_otio_button = QPushButton("🎬 OTIO 생성 및 열기")
         self.create_otio_button.clicked.connect(self.create_and_open_otio)
         
+        self.load_otio_button = QPushButton("📂 OTIO 불러오기")
+        self.load_otio_button.clicked.connect(self.load_otio_file)
+        
         otio_layout.addWidget(self.rv_path_edit)
         otio_layout.addWidget(self.rv_browse_button)
         otio_layout.addWidget(self.create_otio_button)
+        otio_layout.addWidget(self.load_otio_button)
         
         left_layout.addLayout(otio_layout)
 
@@ -1155,3 +1161,79 @@ class FFmpegGui(QWidget):
         except Exception as e:
             logger.error(f"OTIO 생성 중 오류 발생: {e}")
             QMessageBox.warning(self, "오류", f"OTIO 생성 중 오류가 발생했습니다: {str(e)}")
+
+    def load_otio_file(self):
+        """OTIO 파일을 선택하고 파싱하여 리스트에 추가합니다."""
+        otio_path, _ = QFileDialog.getOpenFileName(
+            self, 'OTIO 파일 선택',
+            '',
+            'OTIO 파일 (*.otio);;모든 파일 (*.*)'
+        )
+        
+        if not otio_path:
+            return
+        
+        try:
+            logger.debug(f"OTIO 파일 파싱 시작: {otio_path}")
+            from otio_utils import parse_otio_file
+            clips = parse_otio_file(otio_path)
+            logger.debug(f"파싱된 클립 정보: {clips}")
+            
+            if clips:
+                # 기존 리스트 초기화 여부 확인
+                if self.list_widget.count() > 0:
+                    reply = QMessageBox.question(
+                        self,
+                        'OTIO 불러오기',
+                        '기존 목록을 비우고 OTIO 파일을 불러오시겠습니까?',
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
+                    
+                    if reply == QMessageBox.Yes:
+                        self.list_widget.clear()
+                
+                # 클립 추가
+                file_paths = []
+                trim_values = {}  # 파일 경로를 키로 하고 (trim_start, trim_end)를 값으로 하는 딕셔너리
+                
+                for file_path, trim_start, trim_end in clips:
+                    logger.debug(f"처리할 파일 정보: 경로={file_path}, 시작={trim_start}, 끝={trim_end}")
+                    # 파일 경로 처리
+                    file_path = file_path.replace('\\', '/')  # 경로 정규화
+                    
+                    # 이미지 파일인 경우 시퀀스 처리
+                    if is_image_file(file_path):
+                        processed_path = process_image_file(file_path)
+                        logger.debug(f"이미지 시퀀스 처리 결과: {processed_path}")
+                        if processed_path and '%' in processed_path:  # 시퀀스 패턴이 있는 경우
+                            file_path = processed_path
+                    
+                    if os.path.exists(file_path) or '%' in file_path:  # 시퀀스 패턴이 있는 경우도 허용
+                        file_paths.append(file_path)
+                        trim_values[file_path] = (trim_start, trim_end)
+                        logger.debug(f"파일 추가됨: {file_path}")
+                    else:
+                        logger.warning(f"파일을 찾을 수 없습니다: {file_path}")
+                
+                if file_paths:
+                    # 먼저 파일들을 추가
+                    command = AddItemsCommand(self.list_widget, file_paths)
+                    self.execute_command(command)
+                    
+                    # 그 다음 trim 값을 설정
+                    for i in range(self.list_widget.count()):
+                        item = self.list_widget.item(i)
+                        file_path = item.data(Qt.UserRole)
+                        if file_path in trim_values:
+                            trim_start, trim_end = trim_values[file_path]
+                            item_widget = self.list_widget.itemWidget(item)
+                            if item_widget:
+                                item_widget.trim_start_spinbox.setValue(trim_start)
+                                item_widget.trim_end_spinbox.setValue(trim_end)
+                else:
+                    QMessageBox.warning(self, "경고", "처리할 수 있는 파일이 없습니다.")
+                
+        except Exception as e:
+            logger.error(f"OTIO 파일 불러오기 실패: {str(e)}", exc_info=True)
+            QMessageBox.warning(self, "오류", f"OTIO 파일을 불러오는 중 오류가 발생했습니다: {str(e)}")

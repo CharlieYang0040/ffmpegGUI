@@ -9,7 +9,7 @@ from gui import FFmpegGui
 # 로깅 설정
 logger = logging.getLogger(__name__)
 
-__version__ = '1.1.1'
+__version__ = '1.1.2'
 
 if __name__ == '__main__':
     try:
