@@ -31,7 +31,10 @@ class DragDropListWidget(QListWidget):
         self.placeholder_text = "파일 또는 폴더를 드래그 하여 추가하세요."
         self.placeholder_subtext = "이미지 시퀀스 파일은 한 장만 드래그 하세요."
         self.placeholder_visible = True
-        
+
+        # 선택 모드 설정
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
         # 더블 클릭 이벤트 연결
         self.itemDoubleClicked.connect(self.on_item_double_clicked)
 
@@ -62,28 +65,28 @@ class DragDropListWidget(QListWidget):
 
     def handle_new_files(self, links):
         """드래그 드롭과 파일 추가시 공통으로 사용할 파일 처리 메서드"""
-        if links and hasattr(self.parent(), 'execute_command'):
+        if links and hasattr(self, 'main_window') and self.main_window:
             command = AddItemsCommand(self, links)
-            self.parent().execute_command(command)
+            self.main_window.execute_command(command)
             logger.info(f"[handle_new_files] {len(links)}개 파일 추가됨")
             
             # 자동 출력 경로 설정
-            if hasattr(self.parent(), 'auto_output_path_checkbox') and self.parent().auto_output_path_checkbox.isChecked():
+            if hasattr(self.main_window, 'auto_output_path_checkbox') and self.main_window.auto_output_path_checkbox.isChecked():
                 output_dir = os.path.dirname(links[0])
             else:
-                output_dir = os.path.dirname(self.parent().output_edit.text())
+                output_dir = os.path.dirname(self.main_window.output_edit.text())
                 if not output_dir:
                     output_dir = os.path.expanduser("~")
             
             # 자동 네이밍이 활성화되어 있는지 확인
-            if hasattr(self.parent(), 'auto_naming_checkbox') and self.parent().auto_naming_checkbox.isChecked():
+            if hasattr(self.main_window, 'auto_naming_checkbox') and self.main_window.auto_naming_checkbox.isChecked():
                 output_name = format_drag_to_output(links[0])
             else:
-                existing_name = os.path.splitext(os.path.basename(self.parent().output_edit.text()))[0]
+                existing_name = os.path.splitext(os.path.basename(self.main_window.output_edit.text()))[0]
                 output_name = existing_name if existing_name else "output"
 
             # 자동 폴더네이밍이 활성화되어 있는지 확인
-            if hasattr(self.parent(), 'auto_foldernaming_checkbox') and self.parent().auto_foldernaming_checkbox.isChecked():
+            if hasattr(self.main_window, 'auto_foldernaming_checkbox') and self.main_window.auto_foldernaming_checkbox.isChecked():
                 output_name = os.path.basename(os.path.dirname(links[0]))
 
             # 새로운 출력 경로 생성
@@ -91,11 +94,11 @@ class DragDropListWidget(QListWidget):
             
             # 출력 경로 변경을 위한 Command 생성 및 실행
             command = ChangeOutputPathCommand(
-                self.parent().output_edit,  # 출력 경로 QLineEdit
-                self.parent().output_edit.text(),  # 이전 경로
+                self.main_window.output_edit,  # 출력 경로 QLineEdit
+                self.main_window.output_edit.text(),  # 이전 경로
                 new_output_path  # 새로운 경로
             )
-            self.parent().execute_command(command)
+            self.main_window.execute_command(command)
 
     def dropEvent(self, event: QDropEvent):
         logger.debug("[dropEvent] 드롭 이벤트 시작")
@@ -160,6 +163,7 @@ class DragDropListWidget(QListWidget):
             self.addItem(list_item)
             self.setItemWidget(list_item, item_widget)
         self.placeholder_visible = self.count() == 0
+        self.viewport().update()  # placeholder 업데이트를 위해 뷰포트 갱신
         logger.info(f"[update_items] {len(new_file_paths)}개 아이템 업데이트 완료")
 
     def get_all_file_paths(self):
@@ -227,7 +231,7 @@ class DragDropListWidget(QListWidget):
     def clear(self):
         super().clear()
         self.placeholder_visible = True
-        self.viewport().update()  # 뷰포트를 다시 그리도록 요청
+        self.viewport().update()  # placeholder 표시를 위해 뷰포트 갱신
 
     def update(self):
         super().update()
@@ -235,6 +239,10 @@ class DragDropListWidget(QListWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            item = self.itemAt(event.pos())
+            if not item:  # 빈 공간 클릭
+                self.clearSelection()
+                return
             self.drag_start_position = event.pos()
             logger.debug(f"[mousePressEvent] 마우스 누름 위치: {event.pos()}")
         super().mousePressEvent(event)
@@ -268,3 +276,8 @@ class DragDropListWidget(QListWidget):
         file_path = item.data(Qt.UserRole)
         if file_path and hasattr(self.parent(), 'open_folder'):
             self.parent().open_folder(file_path)
+
+    def remove_item(self, item):
+        self.takeItem(self.row(item))
+        self.placeholder_visible = self.count() == 0
+        self.viewport().update()  # placeholder 업데이트를 위해 뷰포트 갱신

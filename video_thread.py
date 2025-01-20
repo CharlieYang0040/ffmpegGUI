@@ -288,25 +288,26 @@ class VideoThread(QThread):
         self.frame_ready.emit(pixmap)
 
     def stop(self):
-        if self.is_stopping:
+        if self.is_stopping or not self.is_playing:
             return
+        
         self.is_stopping = True
         self.is_playing = False
         logger.info("VideoThread 정지 요청")
+        
         if self.process:
             try:
-                # 프로세스 종료 요청
                 self.process.terminate()
-                # 최대 5초 동안 프로세스가 종료되기를 기다림
                 self.process.wait(timeout=5)
                 logger.info("FFmpeg 프로세스 정상 종료")
             except subprocess.TimeoutExpired:
-                # 5초 후에도 종료되지 않으면 강제 종료
                 self.process.kill()
+                logger.warning("FFmpeg 프로세스 강제 종료")
             except Exception as e:
-                print(f"프로세스 종료 중 오류 발생: {e}")
+                logger.error(f"프로세스 종료 중 오류 발생: {e}")
             finally:
                 self.process = None
+            
         self.is_stopping = False
         logger.info("VideoThread 정지 완료")
 

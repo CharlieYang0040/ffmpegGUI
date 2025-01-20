@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
     QMessageBox, QSlider, QDoubleSpinBox, QSpinBox,
-    QProgressBar, QDialog, QPushButton, QListWidgetItem, QMainWindow
+    QProgressBar, QDialog, QPushButton, QListWidgetItem, QMainWindow, QTabWidget
 )
 from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread, QTimer, QTime
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator, QShortcut, QKeySequence
@@ -33,6 +33,7 @@ from utils import (
     process_image_file
 )
 from list_widget_item import ListWidgetItem
+from tab_list_widget import TabListWidget
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -95,6 +96,66 @@ class EncodingThread(QThread):
     def run(self):
         self.process_all_media_func(*self.args, **self.kwargs, progress_callback=self.progress_updated.emit)
         self.encoding_finished.emit()
+
+
+class EncodingOptionsDialog(QDialog):
+    def __init__(self, parent=None, encoding_options=None):
+        super().__init__(parent)
+        self.setWindowTitle("인코딩 옵션")
+        self.encoding_options = encoding_options or {}
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+
+        # 인코딩 옵션 그룹
+        options_group = QGroupBox("인코딩 옵션")
+        options_layout = QVBoxLayout()
+
+        encoding_options = [
+            ("c:v", ["libx264", "libx265", "none"]),
+            ("pix_fmt", ["yuv420p", "yuv422p", "yuv444p", "none"]),
+            ("colorspace", ["bt709", "bt2020nc", "none"]),
+            ("color_primaries", ["bt709", "bt2020", "none"]),
+            ("color_trc", ["bt709", "bt2020-10", "none"]),
+            ("color_range", ["limited", "full", "none"])
+        ]
+
+        self.option_widgets = {}
+        for option, values in encoding_options:
+            self.create_option_widget(options_layout, option, values)
+
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
+
+        # 확인/취소 버튼
+        button_box = QHBoxLayout()
+        ok_button = QPushButton("확인")
+        cancel_button = QPushButton("취소")
+        ok_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        button_box.addWidget(ok_button)
+        button_box.addWidget(cancel_button)
+        layout.addLayout(button_box)
+
+    def create_option_widget(self, layout, option, values):
+        hbox = QHBoxLayout()
+        label = QLabel(option)
+        combo = QComboBox()
+        combo.addItems(values)
+        current_value = self.encoding_options.get(option, values[0])
+        combo.setCurrentText(current_value)
+        hbox.addWidget(label)
+        hbox.addWidget(combo)
+        layout.addLayout(hbox)
+        self.option_widgets[option] = combo
+
+    def get_options(self):
+        options = {}
+        for option, combo in self.option_widgets.items():
+            if combo.currentText() != "none":
+                options[option] = combo.currentText()
+        return options
 
 
 class FFmpegGui(QWidget):
@@ -362,17 +423,8 @@ class FFmpegGui(QWidget):
 
     def create_left_layout(self, content_layout):
         left_layout = QVBoxLayout()
-        self.create_list_widget(left_layout)
-        self.create_button_layout(left_layout)
-        self.create_options_group(left_layout)
-        self.create_output_layout(left_layout)
-        self.create_encode_button(left_layout)
-        self.create_update_button(left_layout)
-        self.create_undo_redo_buttons(left_layout)
-        self.setup_otio_controls(left_layout)
-        content_layout.addLayout(left_layout)
-
-    def create_list_widget(self, left_layout):
+        
+        # 체크박스 레이아웃 먼저 생성
         checkbox_layout = QHBoxLayout()
         checkbox_layout.setAlignment(Qt.AlignLeft)
 
@@ -393,16 +445,45 @@ class FFmpegGui(QWidget):
         checkbox_layout.addWidget(self.auto_foldernaming_checkbox)
 
         left_layout.addLayout(checkbox_layout)
-
-        self.list_widget = DragDropListWidget(self, process_file_func=process_file)
-        self.list_widget.setMinimumHeight(200)
-        self.list_widget.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.list_widget.itemSelectionChanged.connect(self.on_item_selection_changed)
-        left_layout.addWidget(self.list_widget)
-
-    def on_item_selection_changed(self):
-        if self.preview_mode_checkbox.isChecked():
-            self.update_preview()
+        
+        # TabListWidget 생성 및 추가
+        self.tab_list_widget = TabListWidget(self)
+        left_layout.addWidget(self.tab_list_widget)
+        
+        # 현재 활성화된 list_widget 참조 설정
+        self.list_widget = self.tab_list_widget.get_current_list_widget()
+        self.tab_list_widget.tab_widget.currentChanged.connect(self.on_tab_changed)
+        
+        # 버튼 레이아웃 추가
+        self.create_button_layout(left_layout)
+        
+        # 버전 및 인코딩 옵션 버튼 레이아웃
+        version_options_layout = QHBoxLayout()
+        
+        # 버전 업/다운 버튼 추가
+        version_down_button = QPushButton("⬇️ 버전다운")
+        version_up_button = QPushButton("⬆️ 버전업")
+        version_down_button.clicked.connect(lambda: self.change_version(-1))
+        version_up_button.clicked.connect(lambda: self.change_version(1))
+        
+        # 인코딩 옵션 버튼
+        options_button = QPushButton("⚙️ 인코딩 옵션")
+        options_button.clicked.connect(self.show_encoding_options)
+        
+        version_options_layout.addWidget(version_down_button)
+        version_options_layout.addWidget(version_up_button)
+        version_options_layout.addWidget(options_button)
+        
+        left_layout.addLayout(version_options_layout)
+        
+        # 나머지 UI 요소들 추가
+        self.create_output_layout(left_layout)
+        self.create_encode_button(left_layout)
+        self.create_update_button(left_layout)
+        self.create_undo_redo_buttons(left_layout)
+        self.setup_otio_controls(left_layout)
+        
+        content_layout.addLayout(left_layout)
 
     def create_button_layout(self, left_layout):
         button_layout = QHBoxLayout()
@@ -436,39 +517,6 @@ class FFmpegGui(QWidget):
         button_layout.addWidget(self.move_down_button)
 
         left_layout.addLayout(button_layout)
-
-    def create_options_group(self, left_layout):
-        self.options_group = QGroupBox("인코딩 옵션")
-        options_layout = QVBoxLayout()
-
-        encoding_options = [
-            ("c:v", ["libx264", "libx265", "none"]),
-            ("pix_fmt", ["yuv420p", "yuv422p", "yuv444p", "none"]),
-            ("colorspace", ["bt709", "bt2020nc", "none"]),
-            ("color_primaries", ["bt709", "bt2020", "none"]),
-            ("color_trc", ["bt709", "bt2020-10", "none"]),
-            ("color_range", ["limited", "full", "none"])
-        ]
-
-        self.option_widgets = {}
-
-        for option, values in encoding_options:
-            self.create_option_widget(options_layout, option, values)
-
-        self.options_group.setLayout(options_layout)
-        left_layout.addWidget(self.options_group)
-
-    def create_option_widget(self, options_layout, option, values):
-        hbox = QHBoxLayout()
-        label = QLabel(option)
-        combo = QComboBox()
-        combo.addItems(values)
-        combo.setCurrentIndex(0)
-        combo.currentTextChanged.connect(lambda value, opt=option: self.update_option(opt, value))
-        hbox.addWidget(label)
-        hbox.addWidget(combo)
-        options_layout.addLayout(hbox)
-        self.option_widgets[option] = combo
 
     def create_output_layout(self, left_layout):
         output_layout = QHBoxLayout()
@@ -850,30 +898,48 @@ class FFmpegGui(QWidget):
     def update_preview(self):
         try:
             file_path = self.list_widget.get_selected_file_path()
-            if file_path:
+            if not file_path:
                 self.stop_current_preview()
-                logger.info(f"미리보기 업데이트: {file_path}")
-
-                if is_video_file(file_path):
-                    self.show_video_preview(file_path)
-                elif is_image_file(file_path):
-                    self.show_image_preview(file_path)
-                else:
-                    logger.warning(f"지원하지 않는 파일 형식입니다: {file_path}")
-            else:
                 self.preview_label.clear()
+                return
+            
+            # 현재 재생 중인 비디오가 있고, 같은 파일이면 미리보기 업데이트 하지 않음
+            if (hasattr(self, 'video_thread') and self.video_thread and 
+                hasattr(self.video_thread, 'file_path') and 
+                self.video_thread.file_path == file_path):
+                return
+            
+            # 다른 파일이면 현재 재생 중인 비디오 정리
+            self.stop_current_preview()
+            logger.info(f"미리보기 업데이트: {file_path}")
+
+            if is_video_file(file_path):
+                self.show_video_preview(file_path)
+            elif is_image_file(file_path):
+                self.show_image_preview(file_path)
+            else:
+                logger.warning(f"지원하지 않는 파일 형식입니다: {file_path}")
         except Exception as e:
             logger.error(f"미리보기 업데이트 중 오류: {str(e)}")
 
     def stop_current_preview(self):
-        if self.video_thread:
-            self.video_thread.stop()
-            self.video_thread.wait()
-            self.video_thread = None
+        """현재 재생 중인 미리보기를 정리하는 메서드"""
+        if not hasattr(self, 'video_thread') or not self.video_thread:
+            return
+        
+        logger.debug("현재 미리보기 정리 시작")
+        if self.video_thread.is_playing:
+            self.stop_video_playback()
+        
+        self.video_thread = None
+        # 재생 버튼 상태 초기화
+        if hasattr(self, 'play_button'):
+            self.play_button.setText('▶️ 재생')
 
     def show_video_preview(self, file_path: str):
         self.create_video_thread()
-        self.play_button.setEnabled(True)
+        if hasattr(self, 'play_button'):
+            self.play_button.setEnabled(True)
 
         self.video_thread.get_video_info()
         self.video_thread.wait()
@@ -941,18 +1007,25 @@ class FFmpegGui(QWidget):
         self.play_button.setText('⏹️ 정지')
 
     def stop_video_playback(self):
-        if not self.video_thread or not self.video_thread.is_playing:
+        if not hasattr(self, 'video_thread') or not self.video_thread:
             return
+        
+        if not self.video_thread.is_playing:
+            return
+        
+        logger.debug("비디오 재생 중지 시작")
         self.video_thread.stop()
         self.video_thread.wait()
         self.update_ui_after_stop()
 
     def on_video_finished(self):
-        if self.video_thread.is_playing:
+        if not hasattr(self, 'video_thread') or not self.video_thread:
             return
-        self.stop_video_playback()
-        self.update_ui_after_stop()
-        self.video_thread.reset()
+        
+        if self.video_thread.is_playing:
+            self.stop_video_playback()
+            self.update_ui_after_stop()
+            self.video_thread.reset()
 
     def update_ui_after_stop(self):
         self.video_thread.is_playing = False
@@ -1237,3 +1310,88 @@ class FFmpegGui(QWidget):
         except Exception as e:
             logger.error(f"OTIO 파일 불러오기 실패: {str(e)}", exc_info=True)
             QMessageBox.warning(self, "오류", f"OTIO 파일을 불러오는 중 오류가 발생했습니다: {str(e)}")
+
+    def on_tab_changed(self, index):
+        """탭이 변경될 때 호출되는 메서드"""
+        self.list_widget = self.tab_list_widget.get_current_list_widget()
+        if self.list_widget:
+            # 현재 탭의 리스트 위젯으로 업데이트
+            logger.info(f"탭 변경됨: 인덱스 {index}")
+            
+            # 미리보기 모드가 활성화되어 있다면 프리뷰 업데이트
+            if hasattr(self, 'preview_mode_checkbox') and self.preview_mode_checkbox.isChecked():
+                self.update_preview()
+
+    def on_item_selection_changed(self):
+        """리스트 위젯의 아이템 선택이 변경될 때 호출되는 메서드"""
+        if self.preview_mode_checkbox.isChecked():
+            self.update_preview()
+        
+        # 선택된 아이템 유무에 따라 버튼 상태 업데이트
+        has_selection = len(self.list_widget.selectedItems()) > 0
+        if hasattr(self, 'remove_button'):
+            self.remove_button.setEnabled(has_selection)
+        if hasattr(self, 'move_up_button'):
+            self.move_up_button.setEnabled(has_selection)
+        if hasattr(self, 'move_down_button'):
+            self.move_down_button.setEnabled(has_selection)
+
+    def show_encoding_options(self):
+        dialog = EncodingOptionsDialog(self, self.encoding_options)
+        if dialog.exec_() == QDialog.Accepted:
+            self.encoding_options = dialog.get_options()
+
+    def change_version(self, delta):
+        """
+        리스트의 모든 아이템의 버전을 변경하는 메서드
+        :param delta: 버전 변경값 (1: 업, -1: 다운)
+        """
+        import re
+        import os
+        
+        def update_version_in_path(file_path, delta):
+            # 경로를 디렉토리와 파일명으로 분리
+            directory, filename = os.path.split(file_path)
+            parent_dir = os.path.dirname(directory)
+            
+            # 버전 패턴 찾기 (v + 숫자)
+            version_pattern = r'v(\d+)'
+            
+            # 디렉토리명과 파일명에서 버전 찾기
+            dir_name = os.path.basename(directory)
+            dir_match = re.search(version_pattern, dir_name)
+            file_match = re.search(version_pattern, filename)
+            
+            # 버전 번호 업데이트
+            current_version = int(dir_match.group(1)) if dir_match else 0
+            new_version = max(0, current_version + delta)  # 버전이 음수가 되지 않도록
+            new_version_str = str(new_version).zfill(len(dir_match.group(1)) if dir_match else 3)
+            
+            # 디렉토리명과 파일명 업데이트
+            if dir_match:
+                new_dir_name = dir_name.replace(f'v{dir_match.group(1)}', f'v{new_version_str}')
+            else:
+                new_dir_name = dir_name
+            
+            if file_match:
+                new_filename = filename.replace(f'v{file_match.group(1)}', f'v{new_version_str}')
+            else:
+                new_filename = filename
+            
+            # 새로운 경로 생성
+            new_path = os.path.join(parent_dir, new_dir_name, new_filename)
+            return new_path
+        
+        # 현재 리스트의 모든 아이템 업데이트
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            file_path = item.data(Qt.UserRole)
+            new_path = update_version_in_path(file_path, delta)
+            
+            # 경로가 변경된 경우에만 업데이트
+            if new_path != file_path:
+                item_widget = self.list_widget.itemWidget(item)
+                if item_widget:
+                    item_widget.file_path = new_path
+                    item_widget.update_labels()
+                item.setData(Qt.UserRole, new_path)
