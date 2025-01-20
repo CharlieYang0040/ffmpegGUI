@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
     QMessageBox, QSlider, QDoubleSpinBox, QSpinBox,
-    QProgressBar, QDialog
+    QProgressBar, QDialog, QPushButton
 )
 from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread, QTimer, QTime
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator, QShortcut, QKeySequence
@@ -367,6 +367,7 @@ class FFmpegGui(QWidget):
         self.create_encode_button(left_layout)
         self.create_update_button(left_layout)
         self.create_undo_redo_buttons(left_layout)
+        self.setup_otio_controls(left_layout)
         content_layout.addLayout(left_layout)
 
     def create_list_widget(self, left_layout):
@@ -793,7 +794,7 @@ class FFmpegGui(QWidget):
                 QMessageBox.critical(self, "에러", f"인코딩 중 에러가 발생했습니다:\n{e}")
 
     def on_encoding_finished(self):
-        self.progress_dialog.stop_timer()  # ��이머 중지
+        self.progress_dialog.stop_timer()  # 타이머 중지
         self.progress_dialog.close()
         QMessageBox.information(self, "완료", "인코딩이 완료되었습니다.")
 
@@ -856,7 +857,7 @@ class FFmpegGui(QWidget):
                 elif is_image_file(file_path):
                     self.show_image_preview(file_path)
                 else:
-                    logger.warning(f"지��하지 않는 파일 형식입니다: {file_path}")
+                    logger.warning(f"지원하지 않는 파일 형식입니다: {file_path}")
             else:
                 self.preview_label.clear()
         except Exception as e:
@@ -1104,3 +1105,53 @@ class FFmpegGui(QWidget):
                     QMessageBox.warning(self, "오류", f"폴더를 열 수 없습니다: {str(e)}")
             else:
                 QMessageBox.warning(self, "경고", "폴더가 존재하지 않습니다.")
+
+    def setup_otio_controls(self, left_layout):
+        otio_layout = QHBoxLayout()
+        
+        self.rv_path_edit = QLineEdit()
+        self.rv_path_edit.setPlaceholderText("OpenRV 경로")
+        self.rv_path_edit.setText(self.settings.value("rv_path", ""))
+        
+        self.rv_browse_button = QPushButton("RV 찾기")
+        self.rv_browse_button.clicked.connect(self.browse_rv_path)
+        
+        self.create_otio_button = QPushButton("🎬 OTIO 생성 및 열기")
+        self.create_otio_button.clicked.connect(self.create_and_open_otio)
+        
+        otio_layout.addWidget(self.rv_path_edit)
+        otio_layout.addWidget(self.rv_browse_button)
+        otio_layout.addWidget(self.create_otio_button)
+        
+        left_layout.addLayout(otio_layout)
+
+    def browse_rv_path(self):
+        rv_path, _ = QFileDialog.getOpenFileName(
+            self, 'OpenRV 실행 파일 선택',
+            self.rv_path_edit.text(),
+            'OpenRV (rv.exe);;모든 파일 (*.*)'
+        )
+        if rv_path:
+            self.rv_path_edit.setText(rv_path)
+            self.settings.setValue("rv_path", rv_path)
+
+    def create_and_open_otio(self):
+        if self.list_widget.count() == 0:
+            QMessageBox.warning(self, "경고", "파일 목록이 비어있습니다.")
+            return
+        
+        clips = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            item_widget = self.list_widget.itemWidget(item)
+            file_path = item_widget.file_path
+            trim_start, trim_end = item_widget.get_trim_values()
+            clips.append((file_path, trim_start, trim_end))
+        
+        try:
+            from otio_utils import generate_and_open_otio
+            # 임시 파일로 바로 생성하고 열기
+            generate_and_open_otio(clips, None, self.rv_path_edit.text())
+        except Exception as e:
+            logger.error(f"OTIO 생성 중 오류 발생: {e}")
+            QMessageBox.warning(self, "오류", f"OTIO 생성 중 오류가 발생했습니다: {str(e)}")

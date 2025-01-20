@@ -83,14 +83,36 @@ class VideoThread(QThread):
     def get_video_properties(self, input_file: str) -> Dict[str, str]:
         ffprobe_path = FFPROBE_PATH
         try:
-            probe_args = [ffprobe_path, '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', '-i', input_file]
-            result = subprocess.run(probe_args, capture_output=True, text=True)
+            probe_args = [
+                ffprobe_path,
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams',
+                '-i', input_file
+            ]
+            # UTF-8 인코딩으로 출력을 읽도록 수정
+            result = subprocess.run(
+                probe_args,
+                capture_output=True,
+                text=True,
+                encoding='utf-8'  # 명시적으로 UTF-8 인코딩 지정
+            )
+            
             if result.returncode != 0:
-                print("FFprobe 오류:", result.stderr)
-                return {}
+                logger.error(f"FFprobe 오류: {result.stderr}")
+                return self.get_fallback_properties()  # 폴백 속성 반환
             
             probe = json.loads(result.stdout)
-            video_stream = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+            video_stream = next(
+                (s for s in probe['streams'] if s['codec_type'] == 'video'),
+                None
+            )
+            
+            if video_stream is None:
+                logger.error("비디오 스트림을 찾을 수 없습니다")
+                return self.get_fallback_properties()
+            
             return {
                 'width': str(video_stream['width']),
                 'height': str(video_stream['height']),
@@ -98,8 +120,17 @@ class VideoThread(QThread):
                 'duration': probe['format'].get('duration', '0')
             }
         except Exception as e:
-            print(f"비디오 속성 가져오기 오류: {e}")
-            return {}
+            logger.error(f"비디오 속성 가져오기 오류: {e}")
+            return self.get_fallback_properties()
+
+    def get_fallback_properties(self) -> Dict[str, str]:
+        """기본 비디오 속성을 반환하는 폴백 메소드"""
+        return {
+            'width': '640',
+            'height': '480',
+            'r_frame_rate': '30/1',
+            'duration': '0'
+        }
 
     def process_image_sequence(self):
         base_path = self.file_path.split('%')[0]
@@ -230,7 +261,7 @@ class VideoThread(QThread):
                 self.msleep(int(1000 / (self.frame_rate * self.speed)))
 
                 if self.current_frame >= self.total_frames - 1:
-                    break  # 마지막 ���레임에 도달하면 루프를 빠져나갑니다.
+                    break  # 마지막 프레임에 도달하면 루프를 빠져나갑니다.
 
         except ffmpeg.Error as e:
             print(f"FFmpeg 에러: {e.stderr.decode()}")
@@ -354,7 +385,7 @@ class VideoThread(QThread):
         target_ratio = target_width / target_height
 
         if aspect_ratio > target_ratio:
-            # 이미지가 �� 넓은 경우
+            # 이미지가 더 넓은 경우
             new_width = target_width
             new_height = int(target_width / aspect_ratio)
         else:

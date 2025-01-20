@@ -117,27 +117,57 @@ def process_video_file(
     temp_output = f'temp_output_{idx}.mp4'
     logger.info(f"비디오 처리 시작: {input_file}")
 
+    # 비디오 정보 가져오기
+    try:
+        probe = ffmpeg.probe(input_file, cmd=FFPROBE_PATH)
+        video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+        
+        # 프레임레이트 가져오기 (예: '30/1', '60/1', '24/1')
+        fps = eval(video_info.get('r_frame_rate', '30/1'))
+        
+        # 총 프레임 수 계산
+        total_frames = int(video_info.get('nb_frames', 0))
+        if total_frames == 0:  # nb_frames가 없는 경우
+            duration = float(video_info.get('duration', 0))
+            total_frames = int(duration * fps)
+
+        if debug_mode:
+            logger.debug(f"비디오 정보:")
+            logger.debug(f"  - 프레임레이트: {fps} fps")
+            logger.debug(f"  - 총 프레임 수: {total_frames}")
+            logger.debug(f"  - 영상 길이: {total_frames/fps:.2f} 초")
+    except Exception as e:
+        logger.error(f"비디오 정보 가져오기 실패: {e}")
+        raise
+
     # 스레드와 메모리 최적화 옵션 적용
     encoding_options = get_optimal_encoding_options(encoding_options)
+    
+    # 입력 프레임레이트를 인코딩 옵션에 추가
+    encoding_options['r'] = str(fps)
 
     # 입력 버퍼 크기 설정
     input_options = {
-        'probesize': '100M',    # 파일 분석을 위한 버퍼 크기
-        'analyzeduration': '100M'  # 스트림 분석 시간
+        'probesize': '100M',
+        'analyzeduration': '100M'
     }
 
-    # 트림 시간 계산
-    framerate = float(encoding_options.get('r', 30))
-    start_time = trim_start / framerate if trim_start > 0 else 0
+    # 스트림 생성
+    stream = ffmpeg.input(input_file, **input_options)
 
-    # 스트림 생성 (입력 옵션 추가)
+    # 프레임 기반 트림 필터 적용
     if trim_start > 0 or trim_end > 0:
-        total_duration = get_video_duration(input_file)
-        duration_time = total_duration - (trim_start + trim_end) / framerate
-        if duration_time > 0:
-            stream = ffmpeg.input(input_file, ss=start_time, t=duration_time, **input_options)
-    else:
-        stream = ffmpeg.input(input_file, **input_options)
+        end_frame = total_frames - trim_end if trim_end > 0 else total_frames
+        
+        if debug_mode:
+            logger.debug(f"트림 정보:")
+            logger.debug(f"  - 시작 프레임: {trim_start}")
+            logger.debug(f"  - 끝 프레임: {end_frame}")
+            logger.debug(f"  - 잘린 프레임 수: {trim_start + trim_end}")
+            logger.debug(f"  - 예상 출력 프레임 수: {end_frame - trim_start}")
+        
+        stream = stream.filter('select', f'between(n,{trim_start},{end_frame})')
+        stream = stream.filter('setpts', 'PTS-STARTPTS')  # 타임스탬프 리셋
     
     stream = apply_filters(stream, target_properties)
     stream = ffmpeg.output(stream, temp_output, **encoding_options)
