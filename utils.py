@@ -69,11 +69,15 @@ def is_media_file(file_path):
 
 def is_image_file(file_path):
     _, ext = os.path.splitext(file_path)
-    return ext.lower() in ['.jpg', '.jpeg', '.png', '.bmp']
+    return ext.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
 
 def is_video_file(file_path):
     _, ext = os.path.splitext(file_path)
     return ext.lower() in ['.mp4', '.avi', '.mov', '.mkv']
+
+def is_webp_file(file_path):
+    _, ext = os.path.splitext(file_path)
+    return ext.lower() == '.webp'
 
 def parse_image_filename(file_name):
     base, ext = os.path.splitext(file_name)

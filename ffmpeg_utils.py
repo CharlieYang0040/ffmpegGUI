@@ -13,6 +13,8 @@ import gc
 from typing import List, Dict, Tuple, Optional
 import ffmpeg
 import logging
+from utils import is_webp_file
+import subprocess
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -111,81 +113,203 @@ def process_video_file(
     encoding_options: Dict[str, str],
     target_properties: Dict[str, str],
     debug_mode: bool,
-    idx: int
+    idx: int,
+    progress_callback=None,
+    use_frame_based_trim: bool = False
 ) -> str:
-    """비디오 파일을 트림하고 필터를 적용하여 처리된 파일을 반환합니다."""
+    """
+    비디오 파일을 처리하고 임시 출력 파일을 반환합니다.
+    진행률 콜백을 통해 처리 진행 상황을 보고합니다.
+    """
     temp_output = f'temp_output_{idx}.mp4'
-    logger.info(f"비디오 처리 시작: {input_file}")
-
-    # 비디오 정보 가져오기
     try:
-        probe = ffmpeg.probe(input_file, cmd=FFPROBE_PATH)
-        video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+        logger.info(f"비디오 파일 처리 시작: {input_file}")
+
+        if progress_callback:
+            progress_callback(5)  # 시작 진행률
+
+        # 비디오 속성 가져오기
+        video_properties = get_media_properties(input_file, debug_mode)
         
-        # 프레임레이트 가져오기 (예: '30/1', '60/1', '24/1')
-        fps = eval(video_info.get('r_frame_rate', '30/1'))
+        if progress_callback:
+            progress_callback(15)  # 속성 분석 완료
+
+        # 비디오 길이 계산
+        duration = float(video_properties.get('duration', 0))
+        if duration <= 0:
+            logger.warning(f"'{input_file}'의 길이를 가져올 수 없습니다.")
+            duration = 0
+
+        # 인코딩 옵션 설정
+        encoding_options = get_optimal_encoding_options(encoding_options)
+
+        # 비디오 총 프레임 수 계산
+        fps = float(video_properties.get('r', 30))
+        total_frames = int(duration * fps)
         
-        # 총 프레임 수 계산
-        total_frames = int(video_info.get('nb_frames', 0))
-        if total_frames == 0:  # nb_frames가 없는 경우
-            duration = float(video_info.get('duration', 0))
-            total_frames = int(duration * fps)
+        # 트림 후 남은 프레임 수 계산
+        new_total_frames = total_frames - trim_start - trim_end
+        if new_total_frames <= 0:
+            raise ValueError("트림 후 남은 프레임이 없습니다.")
+        
+        # 트림 끝 프레임 계산
+        end_frame = total_frames - trim_end
+        
+        if debug_mode:
+            logger.debug(f"비디오 속성: {video_properties}")
+            logger.debug(f"총 프레임 수: {total_frames}")
+            logger.debug(f"트림 정보 - 시작 프레임: {trim_start}, 끝 프레임: {end_frame}, 남은 프레임 수: {new_total_frames}")
+
+        if progress_callback:
+            progress_callback(20)  # 트림 계산 완료
+
+        # 프레임 단위 트림 방식 선택 (초 단위 변환 또는 프레임 단위 직접 트림)
+        # use_frame_based_trim 매개변수를 그대로 사용
+        
+        if use_frame_based_trim:
+            # 프레임 단위 직접 트림 (select 필터 사용)
+            # 입력 옵션 설정
+            input_args = {
+                'probesize': '100M',
+                'analyzeduration': '100M'
+            }
+            
+            # 필터 설정 (프레임 번호로 직접 선택)
+            vf_filter = f"select=between(n\\,{trim_start}\\,{end_frame}),setpts=PTS-STARTPTS"
+            af_filter = "aselect=between(n\\,{0}\\,{1}),asetpts=PTS-STARTPTS".format(
+                int(trim_start * (float(video_properties.get('sample_rate', 44100)) / fps)),
+                int(end_frame * (float(video_properties.get('sample_rate', 44100)) / fps))
+            )
+            
+            if debug_mode:
+                logger.debug(f"프레임 단위 트림 필터: {vf_filter}")
+                logger.debug(f"오디오 트림 필터: {af_filter}")
+            
+            if progress_callback:
+                progress_callback(25)  # 옵션 설정 완료
+            
+            # 스트림 생성
+            stream = ffmpeg.input(input_file, **input_args)
+            
+            # 비디오 필터 적용
+            video_stream = stream.video.filter('select', f'between(n,{trim_start},{end_frame})').filter('setpts', 'PTS-STARTPTS')
+            
+            # 오디오 필터 적용 (오디오 스트림이 있는 경우)
+            try:
+                audio_stream = stream.audio.filter('aselect', f'between(n,{trim_start},{end_frame})').filter('asetpts', 'PTS-STARTPTS')
+                # 필터 적용 후 추가 필터 적용
+                if target_properties:
+                    video_stream = apply_filters(video_stream, target_properties)
+                
+                # 출력 스트림 설정 (비디오 + 오디오)
+                stream = ffmpeg.output(video_stream, audio_stream, temp_output, **encoding_options)
+            except Exception as e:
+                logger.warning(f"오디오 스트림 처리 중 오류 발생: {e}")
+                # 오디오 스트림이 없는 경우 비디오만 처리
+                if target_properties:
+                    video_stream = apply_filters(video_stream, target_properties)
+                
+                # 출력 스트림 설정 (비디오만)
+                stream = ffmpeg.output(video_stream, temp_output, **encoding_options)
+        else:
+            # 기존 방식: 초 단위로 변환하여 트림
+            # 트림 값을 초 단위로 변환
+            trim_start_sec = trim_start / fps if fps > 0 else 0
+            trim_end_sec = trim_end / fps if fps > 0 else 0
+
+            # 새 길이 계산
+            new_duration = duration - trim_start_sec - trim_end_sec
+            
+            if debug_mode:
+                logger.debug(f"트림 정보 - 시작: {trim_start_sec}초, 끝: {trim_end_sec}초, 새 길이: {new_duration}초")
+
+            # 입력 옵션 설정
+            input_args = {
+                'probesize': '100M',
+                'analyzeduration': '100M'
+            }
+
+            # 시작 시간이 있으면 추가
+            if trim_start_sec > 0:
+                input_args['ss'] = str(trim_start_sec)
+
+            # 길이 제한이 있으면 추가
+            if new_duration < duration:
+                encoding_options['t'] = str(new_duration)
+
+            if debug_mode:
+                logger.debug(f"입력 옵션: {input_args}")
+                logger.debug(f"인코딩 옵션: {encoding_options}")
+
+            if progress_callback:
+                progress_callback(25)  # 옵션 설정 완료
+
+            # 스트림 생성
+            stream = ffmpeg.input(input_file, **input_args)
+
+            # 필터 적용
+            if target_properties:
+                stream = apply_filters(stream, target_properties)
+
+            # 출력 스트림 설정
+            stream = ffmpeg.output(stream, temp_output, **encoding_options)
+        
+        stream = stream.overwrite_output()
 
         if debug_mode:
-            logger.debug(f"비디오 정보:")
-            logger.debug(f"  - 프레임레이트: {fps} fps")
-            logger.debug(f"  - 총 프레임 수: {total_frames}")
-            logger.debug(f"  - 영상 길이: {total_frames/fps:.2f} 초")
+            logger.debug(f"비디오 처리 명령어: {' '.join(ffmpeg.compile(stream))}")
+
+        if progress_callback:
+            progress_callback(30)  # FFmpeg 명령 준비 완료
+
+        # FFmpeg 실행 (진행률 모니터링)
+        process = subprocess.Popen(
+            ffmpeg.compile(stream, cmd=FFMPEG_PATH),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            bufsize=1
+        )
+        
+        # 진행률 모니터링
+        for line in process.stderr:
+            if debug_mode:
+                logger.debug(line.strip())
+            
+            # 진행률 파싱 및 업데이트
+            if progress_callback and "time=" in line:
+                try:
+                    time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
+                    if time_match:
+                        time_str = time_match.group(1)
+                        h, m, s = map(float, time_str.split(':'))
+                        current_seconds = h * 3600 + m * 60 + s
+                        progress = min(30 + (current_seconds / new_duration) * 70, 100)
+                        progress_callback(int(progress))
+                except Exception as e:
+                    logger.warning(f"진행률 파싱 오류: {e}")
+        
+        process.wait()
+        
+        if process.returncode != 0:
+            raise Exception(f"FFmpeg 실행 실패 (반환 코드: {process.returncode})")
+        
+        logger.info(f"비디오 파일 처리 완료: {input_file}")
+        
+        if progress_callback:
+            progress_callback(100)  # 처리 완료
+            
+        return temp_output
+
     except Exception as e:
-        logger.error(f"비디오 정보 가져오기 실패: {e}")
+        logger.exception(f"비디오 파일 처리 중 오류 발생: {str(e)}")
+        if os.path.exists(temp_output):
+            try:
+                os.remove(temp_output)
+                logger.info(f"임시 파일 제거됨: {temp_output}")
+            except Exception as cleanup_error:
+                logger.warning(f"임시 파일 제거 실패: {cleanup_error}")
         raise
-
-    # 스레드와 메모리 최적화 옵션 적용
-    encoding_options = get_optimal_encoding_options(encoding_options)
-    
-    # 입력 프레임레이트를 인코딩 옵션에 추가
-    encoding_options['r'] = str(fps)
-
-    # 입력 버퍼 크기 설정
-    input_options = {
-        'probesize': '100M',
-        'analyzeduration': '100M'
-    }
-
-    # 스트림 생성
-    stream = ffmpeg.input(input_file, **input_options)
-
-    # 프레임 기반 트림 필터 적용
-    if trim_start > 0 or trim_end > 0:
-        end_frame = total_frames - trim_end if trim_end > 0 else total_frames
-        
-        if debug_mode:
-            logger.debug(f"트림 정보:")
-            logger.debug(f"  - 시작 프레임: {trim_start}")
-            logger.debug(f"  - 끝 프레임: {end_frame}")
-            logger.debug(f"  - 잘린 프레임 수: {trim_start + trim_end}")
-            logger.debug(f"  - 예상 출력 프레임 수: {end_frame - trim_start}")
-        
-        stream = stream.filter('select', f'between(n,{trim_start},{end_frame})')
-        stream = stream.filter('setpts', 'PTS-STARTPTS')  # 타임스탬프 리셋
-    
-    stream = apply_filters(stream, target_properties)
-    stream = ffmpeg.output(stream, temp_output, **encoding_options)
-    stream = stream.overwrite_output()
-
-    if debug_mode:
-        logger.debug(f"비디오 처리 명령어: {' '.join(ffmpeg.compile(stream))}")
-
-    # FFmpeg 실행
-    try:
-        ffmpeg.run(stream, cmd=FFMPEG_PATH)
-        logger.info(f"비디오 처리 완료: {input_file}")
-    except ffmpeg.Error as e:
-        error_message = e.stderr.decode() if e.stderr else str(e)
-        logger.error(f"FFmpeg 실행 중 오류 발생: {error_message}")
-        raise
-
-    return temp_output
 
 
 def process_image_sequence(
@@ -195,11 +319,16 @@ def process_image_sequence(
     encoding_options: Dict[str, str],
     target_properties: Dict[str, str],
     debug_mode: bool,
-    idx: int
+    idx: int,
+    progress_callback=None,
+    use_frame_based_trim: bool = False
 ) -> str:
     try:
         temp_output = f'temp_output_{idx}.mp4'
         logger.info(f"이미지 시퀀스 처리 시작: {input_file}")
+
+        if progress_callback:
+            progress_callback(5)  # 시작 진행률
 
         # 이미지 파일 패턴과 총 프레임 수 계산
         pattern = input_file.replace('\\', '/')
@@ -211,6 +340,9 @@ def process_image_sequence(
             raise FileNotFoundError(f"No images found for pattern '{input_file}'")
 
         total_frames = len(image_files)
+
+        if progress_callback:
+            progress_callback(10)  # 파일 분석 완료
 
         # 시작 프레임 번호 추출
         frame_number_pattern = re.compile(r'(\d+)\.(\w+)$')
@@ -227,6 +359,9 @@ def process_image_sequence(
         if new_total_frames <= 0:
             raise ValueError("트림 후 남은 프레임이 없습니다.")
 
+        if progress_callback:
+            progress_callback(15)  # 트림 계산 완료
+
         # 인코딩 옵션 설정
         encoding_options = get_optimal_encoding_options(encoding_options)
         framerate = float(encoding_options.get('r', 30))
@@ -241,11 +376,37 @@ def process_image_sequence(
 
         # frames 옵션 추가 (트림된 총 프레임 수)
         encoding_options['frames'] = str(new_total_frames)
+        
+        if progress_callback:
+            progress_callback(20)  # 옵션 설정 완료
+        
+        # 첫 번째 이미지에서 크기 정보 가져오기
+        if not target_properties or 'width' not in target_properties or 'height' not in target_properties or target_properties.get('width', 0) == 0 or target_properties.get('height', 0) == 0:
+            from PIL import Image
+            try:
+                with Image.open(image_files[0]) as img:
+                    width, height = img.size
+                    target_properties = {'width': width, 'height': height}
+                    logger.debug(f"이미지에서 크기 정보 추출: {width}x{height}")
+            except Exception as e:
+                logger.warning(f"이미지에서 크기 정보를 추출할 수 없습니다: {e}")
+                # 기본 크기 설정
+                target_properties = {'width': 512, 'height': 512}
+                logger.debug(f"기본 크기 설정: 512x512")
+        
+        # 크기 옵션 설정 (0x0이면 안됨)
+        if 's' in encoding_options and encoding_options['s'] == '0x0':
+            encoding_options['s'] = f"{target_properties['width']}x{target_properties['height']}"
+            logger.debug(f"크기 옵션 수정: {encoding_options['s']}")
 
         if debug_mode:
             logger.debug(f"트림 정보 - 시작: {new_start_frame}, 프레임 수: {new_total_frames}")
             logger.debug(f"입력 옵션: {input_args}")
             logger.debug(f"인코딩 옵션: {encoding_options}")
+            logger.debug(f"프레임 단위 트림 사용: {use_frame_based_trim}")
+
+        if progress_callback:
+            progress_callback(25)  # 속성 설정 완료
 
         # 스트림 생성
         stream = ffmpeg.input(input_file, **input_args)
@@ -261,12 +422,46 @@ def process_image_sequence(
         if debug_mode:
             logger.debug(f"이미지 시퀀스 처리 명령어: {' '.join(ffmpeg.compile(stream))}")
 
-        # FFmpeg 실행
+        if progress_callback:
+            progress_callback(30)  # FFmpeg 명령 준비 완료
+
+        # FFmpeg 실행 (진행률 모니터링)
         try:
-            ffmpeg.run(stream, cmd=FFMPEG_PATH)
+            process = subprocess.Popen(
+                ffmpeg.compile(stream, cmd=FFMPEG_PATH),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                bufsize=1
+            )
+            
+            # 진행률 모니터링
+            for line in process.stderr:
+                if debug_mode:
+                    logger.debug(line.strip())
+                
+                # 진행률 파싱 및 업데이트
+                if progress_callback and "frame=" in line:
+                    try:
+                        frame_match = re.search(r"frame=\s*(\d+)", line)
+                        if frame_match:
+                            current_frame = int(frame_match.group(1))
+                            progress = min(30 + (current_frame / new_total_frames) * 70, 100)
+                            progress_callback(int(progress))
+                    except Exception as e:
+                        logger.warning(f"진행률 파싱 오류: {e}")
+            
+            process.wait()
+            
+            if process.returncode != 0:
+                raise Exception(f"FFmpeg 실행 실패 (반환 코드: {process.returncode})")
+            
             logger.info(f"이미지 시퀀스 처리 완료: {input_file}")
-        except ffmpeg.Error as e:
-            error_message = e.stderr.decode() if e.stderr else str(e)
+            
+            if progress_callback:
+                progress_callback(100)  # 처리 완료
+        except Exception as e:
+            error_message = str(e)
             logger.error(f"FFmpeg 실행 중 오류 발생: {error_message}")
             raise
 
@@ -390,80 +585,125 @@ def concat_media_files(
     encoding_options: Dict[str, str],
     target_properties: Dict[str, str],
     debug_mode: bool,
-    progress_callback=None
+    progress_callback=None,
+    task_callback=None
 ):
-    """최적화된 파일 병합 처리"""
-    logger.info(f"파일 병합 시작: {len(processed_files)}개 파일")
-    
-    # 단일 파일인 경우 직접 이동
-    if len(processed_files) == 1:
-        shutil.move(processed_files[0], output_file)
-        if progress_callback:
-            progress_callback(100)
-        return
-
-    # 병합을 위한 최적화된 인코딩 옵션
-    concat_options = get_optimal_encoding_options(encoding_options)
-    
-    # 입력 버퍼 최적화
-    input_options = {
-        'safe': '0',
-        'probesize': '100M',
-        'analyzeduration': '100M',
-    }
-
-    # 파일 목록 생성
-    file_list_path = create_temp_file_list(processed_files)
-    
+    """
+    처리된 미디어 파일들을 하나로 병합합니다.
+    진행률 콜백과 작업 상태 콜백을 통해 진행 상황을 보고합니다.
+    """
+    temp_list_file = None
     try:
-        # concat demuxer를 사용한 스트림 생성
-        stream = ffmpeg.input(file_list_path, **input_options, f='concat')
+        if not processed_files:
+            raise ValueError("병합할 파일이 없습니다.")
 
-        # 필터 적용 (필요한 경우)
+        logger.info(f"파일 병합 시작: {len(processed_files)}개 파일")
+        
+        if task_callback:
+            task_callback(f"파일 병합 중... ({len(processed_files)}개 파일)")
+        
+        if progress_callback:
+            progress_callback(5)  # 시작 진행률
+
+        # 임시 파일 목록 생성
+        temp_list_file = create_temp_file_list(processed_files)
+        
+        if progress_callback:
+            progress_callback(10)  # 파일 목록 생성 완료
+
+        # 병합 옵션 설정
+        concat_options = {
+            'f': 'concat',
+            'safe': '0'
+        }
+
+        # 인코딩 옵션 설정
+        encoding_options = get_optimal_encoding_options(encoding_options)
+
+        # 스트림 생성
+        stream = ffmpeg.input(temp_list_file, **concat_options)
+
+        # 필터 적용
         if target_properties:
             stream = apply_filters(stream, target_properties)
 
         # 출력 스트림 설정
-        stream = ffmpeg.output(stream, output_file, **concat_options)
+        stream = ffmpeg.output(stream, output_file, **encoding_options)
         stream = stream.overwrite_output()
 
         if debug_mode:
             logger.debug(f"병합 명령어: {' '.join(ffmpeg.compile(stream))}")
+        
+        if progress_callback:
+            progress_callback(15)  # FFmpeg 명령 준비 완료
 
-        # 비동기 처리를 위한 프로세스 실행
-        process = ffmpeg.run_async(
-            stream, 
-            cmd=FFMPEG_PATH,
-            pipe_stdout=True, 
-            pipe_stderr=True
+        # 총 길이 계산 (모든 파일의 길이 합산)
+        total_duration = 0
+        for file in processed_files:
+            try:
+                duration = get_video_duration(file)
+                total_duration += duration
+            except Exception as e:
+                logger.warning(f"파일 길이 계산 실패: {file} - {e}")
+        
+        if total_duration <= 0:
+            total_duration = 1  # 기본값 설정
+            
+        if debug_mode:
+            logger.debug(f"총 병합 길이: {total_duration}초")
+
+        # FFmpeg 실행 (진행률 모니터링)
+        process = subprocess.Popen(
+            ffmpeg.compile(stream, cmd=FFMPEG_PATH),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            bufsize=1
         )
-
-        # 진행 상황 모니터링
-        while True:
-            output = process.stderr.readline().decode()
-            if output == '' and process.poll() is not None:
-                break
-            if output:
-                # 진행률 파싱 및 콜백
-                progress = parse_ffmpeg_progress(output)
-                if progress is not None and progress_callback:
-                    # 진행률을 75%에서 100% 사이로 조정
-                    adjusted_progress = 75 + int(progress * 0.25)
-                    progress_callback(adjusted_progress)
-
-        # 프로세스 완료 대기
+        
+        # 진행률 모니터링
+        for line in process.stderr:
+            if debug_mode:
+                logger.debug(line.strip())
+            
+            # 진행률 파싱 및 업데이트
+            if progress_callback and "time=" in line:
+                try:
+                    time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
+                    if time_match:
+                        time_str = time_match.group(1)
+                        h, m, s = map(float, time_str.split(':'))
+                        current_seconds = h * 3600 + m * 60 + s
+                        progress = min(15 + (current_seconds / total_duration) * 85, 100)
+                        progress_callback(int(progress))
+                except Exception as e:
+                    logger.warning(f"진행률 파싱 오류: {e}")
+        
         process.wait()
+        
+        if process.returncode != 0:
+            raise Exception(f"FFmpeg 실행 실패 (반환 코드: {process.returncode})")
+        
+        logger.info(f"파일 병합 완료: {output_file}")
+        
+        if task_callback:
+            task_callback("병합 완료!")
+            
+        if progress_callback:
+            progress_callback(100)  # 처리 완료
 
     except Exception as e:
-        logger.error(f"파일 병합 중 오류 발생: {e}")
+        logger.exception(f"파일 병합 중 오류 발생: {str(e)}")
         raise
+        
     finally:
-        # 임시 파일 정리
-        try:
-            os.remove(file_list_path)
-            logger.debug("임시 파일 목록 제거됨")
-        except Exception as e:
-            logger.warning(f"임시 파일 제거 중 오류: {e}")
+        # 임시 파일 목록 정리
+        if temp_list_file and os.path.exists(temp_list_file):
+            try:
+                os.remove(temp_list_file)
+                logger.debug(f"임시 파일 목록 제거됨: {temp_list_file}")
+            except Exception as e:
+                logger.warning(f"임시 파일 목록 제거 실패: {e}")
 
 def parse_ffmpeg_progress(output: str) -> Optional[float]:
     """FFmpeg 출력에서 진행률 파싱"""
@@ -494,11 +734,29 @@ def process_all_media(
     global_trim_start: int = 0,
     global_trim_end: int = 0,
     progress_callback: Optional[callable] = None,
-    target_properties: Dict[str, str] = {}
+    task_callback: Optional[callable] = None,
+    target_properties: Dict[str, str] = {},
+    use_custom_framerate: bool = False,
+    custom_framerate: float = 30.0,
+    use_custom_resolution: bool = False,
+    custom_width: int = 0,
+    custom_height: int = 0,
+    use_frame_based_trim: bool = False
 ):
     """
     모든 미디어 파일을 처리하고 하나의 파일로 합칩니다.
+    
+    진행률 가중치:
+    - WebP 변환: 10%
+    - 개별 파일 처리: 60%
+    - 파일 병합: 30%
+    
+    매개변수:
+        use_frame_based_trim (bool): 프레임 단위로 직접 트림을 적용할지 여부. 
+                                    True이면 select 필터를 사용하여 프레임 번호로 직접 트림합니다.
+                                    False이면 초 단위로 변환하여 트림합니다.
     """
+    temp_dirs_to_cleanup = []
     try:
         if trim_values is None:
             # media_files의 개별 트림 값을 사용
@@ -507,6 +765,8 @@ def process_all_media(
         if debug_mode:
             logger.debug(f"전역 트림 값 - 시작: {global_trim_start}, 끝: {global_trim_end}")
             logger.debug(f"개별 트림 값: {trim_values}")
+            logger.debug(f"사용자 지정 프레임레이트: {use_custom_framerate}, 값: {custom_framerate}")
+            logger.debug(f"사용자 지정 해상도: {use_custom_resolution}, 값: {custom_width}x{custom_height}")
 
         # 전역 트림 값과 개별 트림 값을 합산
         combined_trim_values = [
@@ -525,58 +785,161 @@ def process_all_media(
 
         logger.info(f"미디어 처리 시작: {len(media_files)}개 파일")
         
+        if task_callback:
+            task_callback("미디어 파일 분석 중...")
+        
+        # WebP 파일 개수 확인
+        webp_files_count = sum(1 for file, _, _ in media_files if is_webp_file(file))
+        webp_files_processed = 0
+        
+        # WebP 파일을 이미지 시퀀스로 미리 변환
+        processed_media_files = []
+        for idx, (input_file, trim_start, trim_end) in enumerate(media_files):
+            if is_webp_file(input_file):
+                if task_callback:
+                    task_callback(f"WebP 파일 변환 중 ({idx+1}/{len(media_files)}): {os.path.basename(input_file)}")
+                
+                logger.info(f"WebP 파일 사전 처리: {input_file}")
+                try:
+                    # WebP 파일을 이미지 시퀀스로 변환
+                    image_sequence, webp_metadata, temp_dir = extract_webp_to_image_sequence(
+                        input_file, 
+                        debug_mode,
+                        lambda p: update_webp_progress(p, idx, len(media_files), webp_files_count, webp_files_processed, progress_callback)
+                    )
+                    temp_dirs_to_cleanup.append(temp_dir)
+                    webp_files_processed += 1
+                    
+                    # 프레임레이트 설정
+                    if use_custom_framerate:
+                        fps = custom_framerate
+                    else:
+                        fps = webp_metadata['fps']
+                    
+                    # 해상도 설정
+                    if use_custom_resolution and custom_width > 0 and custom_height > 0:
+                        width, height = custom_width, custom_height
+                    else:
+                        width, height = webp_metadata['width'], webp_metadata['height']
+                    
+                    # 변환된 이미지 시퀀스와 메타데이터를 저장
+                    processed_media_files.append((image_sequence, trim_start, trim_end, {
+                        'fps': fps,
+                        'width': width,
+                        'height': height,
+                        'is_webp_sequence': True
+                    }))
+                    
+                    if debug_mode:
+                        logger.debug(f"WebP 파일 변환 완료: {input_file} -> {image_sequence}")
+                        logger.debug(f"메타데이터: fps={fps}, 크기={width}x{height}")
+                except Exception as e:
+                    logger.error(f"WebP 파일 변환 실패: {input_file} - {e}")
+                    # 변환 실패 시 원본 파일 사용
+                    processed_media_files.append((input_file, trim_start, trim_end, {}))
+            else:
+                # WebP가 아닌 파일은 그대로 사용
+                processed_media_files.append((input_file, trim_start, trim_end, {}))
+        
+        if task_callback:
+            task_callback("파일 속성 분석 중...")
+            
         # 먼저 target_properties 얻기
-        input_files = [file[0] for file in media_files]  # 파일 경로만 추출
-        target_properties = get_target_properties(input_files, encoding_options, debug_mode)
+        input_files = [file[0] for file in processed_media_files]  # 파일 경로만 추출
+        if not target_properties:
+            target_properties = get_target_properties(input_files, encoding_options, debug_mode)
+        
+        # 사용자 지정 해상도가 있으면 target_properties 업데이트
+        if use_custom_resolution and custom_width > 0 and custom_height > 0:
+            target_properties = {'width': custom_width, 'height': custom_height}
+            logger.debug(f"사용자 지정 해상도로 target_properties 업데이트: {target_properties}")
         
         if not target_properties:
-            raise ValueError("대상 속성을 가져올 수 없습니다.")
+            logger.warning("대상 속성을 가져올 수 없습니다. 기본값을 사용합니다.")
+            target_properties = {'width': 1920, 'height': 1080}
         
         temp_files_to_remove = []
-        processed_files = [None] * len(media_files)  # 순서 유지를 위한 초기화
+        processed_files = [None] * len(processed_media_files)  # 순서 유지를 위한 초기화
 
         # 최적의 스레드 수 계산
-        max_workers = min(len(media_files), os.cpu_count() or 1)
+        max_workers = min(len(processed_media_files), os.cpu_count() or 1)
         
         # 메모리 사용량 모니터링 설정
         total_memory = psutil.virtual_memory().total
         memory_threshold = total_memory * 0.8
 
+        # WebP 변환 진행률 가중치: 10%
+        # 개별 파일 처리 진행률 가중치: 60%
+        # 파일 병합 진행률 가중치: 30%
+        webp_weight = 0.1
+        processing_weight = 0.6
+        merging_weight = 0.3
+        
+        # WebP 변환 완료 후 시작 진행률
+        current_progress = webp_weight * 100 if webp_files_count > 0 else 0
+        
+        if progress_callback:
+            progress_callback(int(current_progress))
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             
-            for idx, ((input_file, _, _), (trim_start, trim_end)) in enumerate(zip(media_files, combined_trim_values)):
+            for idx, ((input_file, trim_start, trim_end, metadata), (combined_trim_start, combined_trim_end)) in enumerate(zip(processed_media_files, combined_trim_values)):
+                if task_callback:
+                    task_callback(f"파일 처리 중 ({idx+1}/{len(processed_media_files)}): {os.path.basename(input_file)}")
+                
                 if debug_mode:
                     logger.debug(f"파일 처리: {input_file}")
-                    logger.debug(f"적용될 트림 값 - 시작: {trim_start}, 끝: {trim_end}")
+                    logger.debug(f"적용될 트림 값 - 시작: {combined_trim_start}, 끝: {combined_trim_end}")
+                
+                # 인코딩 옵션 복사 및 WebP 메타데이터 적용
+                file_encoding_options = encoding_options.copy()
+                file_target_properties = target_properties.copy()
+                
+                # WebP 시퀀스인 경우 메타데이터 적용
+                if 'is_webp_sequence' in metadata and metadata['is_webp_sequence']:
+                    if not use_custom_framerate:
+                        file_encoding_options["r"] = str(metadata['fps'])
+                    
+                    if not use_custom_resolution:
+                        file_target_properties['width'] = metadata['width']
+                        file_target_properties['height'] = metadata['height']
 
                 future = executor.submit(
                     process_single_media,
                     input_file,
-                    trim_start,
-                    trim_end,
-                    encoding_options.copy(),
+                    combined_trim_start,
+                    combined_trim_end,
+                    file_encoding_options,
                     debug_mode,
                     idx,
                     memory_threshold,
-                    target_properties
+                    file_target_properties,
+                    use_custom_framerate,
+                    custom_framerate,
+                    use_custom_resolution,
+                    custom_width,
+                    custom_height,
+                    lambda p: update_file_progress(p, idx, len(processed_media_files), current_progress, processing_weight, progress_callback),
+                    use_frame_based_trim
                 )
                 futures.append((idx, future))
 
             # 순서대로 결과 수집 및 진행률 업데이트
-            total_files = len(media_files)
+            total_files = len(processed_media_files)
             for idx, future in futures:
                 try:
                     temp_output = future.result()
                     processed_files[idx] = temp_output  # 원래 순서대로 저장
                     temp_files_to_remove.append(temp_output)
                     
+                    # 파일 처리 완료 후 진행률 업데이트
                     if progress_callback:
-                        progress = int(((idx + 1) / total_files) * 75)
-                        progress_callback(progress)
+                        file_progress = webp_weight * 100 + processing_weight * 100 * (idx + 1) / total_files
+                        progress_callback(int(file_progress))
                         
                 except Exception as e:
-                    logger.error(f"'{media_files[idx][0]}' 처리 중 오류 발생: {e}")
+                    logger.error(f"'{processed_media_files[idx][0]}' 처리 중 오류 발생: {e}")
                     raise
 
         # 빈 항목 제거
@@ -584,14 +947,21 @@ def process_all_media(
 
         # 처리된 파일들을 하나로 병합
         if processed_files:
+            if task_callback:
+                task_callback(f"파일 병합 중... ({len(processed_files)}개 파일)")
+                
             try:
+                # 병합 시작 진행률 계산
+                merge_start_progress = webp_weight * 100 + processing_weight * 100
+                
                 concat_media_files(
                     processed_files,
                     output_file,
                     encoding_options,
                     target_properties,
                     debug_mode,
-                    progress_callback
+                    lambda p: update_merge_progress(p, merge_start_progress, merging_weight, progress_callback),
+                    task_callback
                 )
             finally:
                 # 임시 파일 정리
@@ -603,11 +973,65 @@ def process_all_media(
                     except Exception as e:
                         logger.warning(f"임시 파일 제거 실패: {temp_file} - {e}")
 
+        if task_callback:
+            task_callback("인코딩 완료!")
+            
+        if progress_callback:
+            progress_callback(100)  # 최종 진행률 100%로 설정
+            
         return output_file
 
     except Exception as e:
         logger.exception("미디어 처리 중 오류 발생")
+        if task_callback:
+            task_callback(f"오류 발생: {str(e)}")
         raise
+    finally:
+        # 임시 디렉토리 정리
+        for temp_dir in temp_dirs_to_cleanup:
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    logger.debug(f"임시 디렉토리 정리 중: {temp_dir}")
+                    shutil.rmtree(temp_dir)
+                    logger.debug(f"임시 디렉토리 정리 완료: {temp_dir}")
+                except Exception as cleanup_error:
+                    logger.warning(f"임시 디렉토리 정리 실패: {temp_dir} - {cleanup_error}")
+
+# 진행률 업데이트 헬퍼 함수들
+def update_webp_progress(progress, file_idx, total_files, webp_count, webp_processed, callback):
+    """WebP 변환 진행률 업데이트"""
+    if callback and webp_count > 0:
+        # WebP 변환은 전체의 10%
+        webp_weight = 0.1
+        # 현재 WebP 파일의 가중치
+        file_weight = 1.0 / webp_count
+        # 이전 WebP 파일들의 진행률
+        previous_progress = webp_processed * file_weight
+        # 현재 WebP 파일의 진행률
+        current_file_progress = progress / 100 * file_weight
+        # 전체 진행률
+        total_progress = (previous_progress + current_file_progress) * webp_weight * 100
+        callback(int(total_progress))
+
+def update_file_progress(progress, file_idx, total_files, base_progress, processing_weight, callback):
+    """개별 파일 처리 진행률 업데이트"""
+    if callback:
+        # 파일 처리는 전체의 60%
+        # 현재 파일의 가중치
+        file_weight = 1.0 / total_files
+        # 현재 파일의 진행률 기여도
+        file_progress = progress / 100 * file_weight * processing_weight * 100
+        # 전체 진행률
+        total_progress = base_progress + file_progress
+        callback(int(total_progress))
+
+def update_merge_progress(progress, base_progress, merging_weight, callback):
+    """파일 병합 진행률 업데이트"""
+    if callback:
+        # 병합은 전체의 30%
+        merge_progress = progress / 100 * merging_weight * 100
+        total_progress = base_progress + merge_progress
+        callback(int(total_progress))
 
 def process_single_media(
     input_file: str,
@@ -617,9 +1041,17 @@ def process_single_media(
     debug_mode: bool,
     idx: int,
     memory_threshold: int,
-    target_properties: Dict[str, str] = {}
+    target_properties: Dict[str, str] = {},
+    use_custom_framerate: bool = False,
+    custom_framerate: float = 30.0,
+    use_custom_resolution: bool = False,
+    custom_width: int = 0,
+    custom_height: int = 0,
+    progress_callback=None,
+    use_frame_based_trim: bool = False
 ) -> str:
     """단일 미디어 파일 처리 (메모리 모니터링 포함)"""
+    temp_dirs_to_cleanup = []
     try:
         # 현재 메모리 사용량 확인
         current_memory = psutil.virtual_memory().used
@@ -629,21 +1061,127 @@ def process_single_media(
             time.sleep(5)  # 5초 대기
             gc.collect()  # 가비지 컬렉션 강제 실행
 
+        if progress_callback:
+            progress_callback(5)  # 시작 진행률
+
+        # webp 파일인지 확인
+        if is_webp_file(input_file):
+            # webp 파일을 이미지 시퀀스로 변환
+            image_sequence, webp_metadata, temp_dir = extract_webp_to_image_sequence(
+                input_file, 
+                debug_mode,
+                lambda p: progress_callback(int(p * 0.4)) if progress_callback else None  # 변환은 전체의 40%
+            )
+            temp_dirs_to_cleanup.append(temp_dir)
+            
+            # 편집 옵션에서 설정한 값이 있으면 우선 적용
+            if use_custom_framerate:
+                logger.debug(f"사용자 지정 프레임레이트 사용: {custom_framerate} fps")
+                encoding_options["r"] = str(custom_framerate)
+            else:
+                # webp에서 추출한 프레임레이트 사용
+                logger.debug(f"webp에서 추출한 프레임레이트 사용: {webp_metadata['fps']} fps")
+                encoding_options["r"] = str(webp_metadata['fps'])
+            
+            # 해상도 설정
+            if use_custom_resolution and custom_width > 0 and custom_height > 0:
+                logger.debug(f"사용자 지정 해상도 사용: {custom_width}x{custom_height}")
+                target_properties['width'] = custom_width
+                target_properties['height'] = custom_height
+            elif 'width' in webp_metadata and 'height' in webp_metadata and webp_metadata['width'] > 0 and webp_metadata['height'] > 0:
+                logger.debug(f"webp에서 추출한 해상도 사용: {webp_metadata['width']}x{webp_metadata['height']}")
+                target_properties['width'] = webp_metadata['width']
+                target_properties['height'] = webp_metadata['height']
+            
+            if progress_callback:
+                progress_callback(45)  # WebP 변환 및 설정 완료
+            
+            # 변환된 이미지 시퀀스를 처리
+            result = process_image_sequence(
+                image_sequence, 
+                trim_start, 
+                trim_end,
+                encoding_options, 
+                target_properties, 
+                debug_mode, 
+                idx,
+                lambda p: progress_callback(45 + int(p * 0.55)) if progress_callback else None,  # 처리는 전체의 55%
+                use_frame_based_trim
+            )
+            
+            if progress_callback:
+                progress_callback(100)  # 처리 완료
+                
+            return result
+            
         # 이미지 시퀀스인지 확인
-        if is_image_sequence(input_file):
+        elif is_image_sequence(input_file):
+            # 편집 옵션에서 설정한 값이 있으면 우선 적용
+            if use_custom_framerate:
+                logger.debug(f"사용자 지정 프레임레이트 사용: {custom_framerate} fps")
+                encoding_options["r"] = str(custom_framerate)
+            
+            # 해상도 설정
+            if use_custom_resolution and custom_width > 0 and custom_height > 0:
+                logger.debug(f"사용자 지정 해상도 사용: {custom_width}x{custom_height}")
+                target_properties['width'] = custom_width
+                target_properties['height'] = custom_height
+            
+            if progress_callback:
+                progress_callback(10)  # 설정 완료
+                
             return process_image_sequence(
-                input_file, trim_start, trim_end,
-                encoding_options, target_properties, debug_mode, idx
+                input_file, 
+                trim_start, 
+                trim_end,
+                encoding_options, 
+                target_properties, 
+                debug_mode, 
+                idx,
+                lambda p: progress_callback(10 + int(p * 0.9)) if progress_callback else None,  # 처리는 전체의 90%
+                use_frame_based_trim
             )
         else:
+            # 비디오 파일 처리
+            # 편집 옵션에서 설정한 값이 있으면 우선 적용
+            if use_custom_framerate:
+                logger.debug(f"사용자 지정 프레임레이트 사용: {custom_framerate} fps")
+                encoding_options["r"] = str(custom_framerate)
+            
+            # 해상도 설정
+            if use_custom_resolution and custom_width > 0 and custom_height > 0:
+                logger.debug(f"사용자 지정 해상도 사용: {custom_width}x{custom_height}")
+                target_properties['width'] = custom_width
+                target_properties['height'] = custom_height
+            
+            if progress_callback:
+                progress_callback(10)  # 설정 완료
+                
             return process_video_file(
-                input_file, trim_start, trim_end,
-                encoding_options, target_properties, debug_mode, idx
+                input_file, 
+                trim_start, 
+                trim_end,
+                encoding_options, 
+                target_properties, 
+                debug_mode, 
+                idx,
+                lambda p: progress_callback(10 + int(p * 0.9)) if progress_callback else None,  # 처리는 전체의 90%
+                use_frame_based_trim
             )
 
     except Exception as e:
         logger.exception(f"'{input_file}' 처리 중 오류 발생")
         raise
+    finally:
+        # 임시 디렉토리 정리
+        for temp_dir in temp_dirs_to_cleanup:
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    logger.debug(f"임시 디렉토리 정리 중: {temp_dir}")
+                    shutil.rmtree(temp_dir)
+                    logger.debug(f"임시 디렉토리 정리 완료: {temp_dir}")
+                except Exception as cleanup_error:
+                    logger.warning(f"임시 디렉토리 정리 실패: {temp_dir} - {cleanup_error}")
 
 def get_optimal_thread_count():
     """libx264에 최적화된 스레드 수를 반환"""
@@ -665,3 +1203,130 @@ def get_optimal_encoding_options(encoding_options: dict) -> dict:
     })
     
     return optimal_options
+
+def extract_webp_to_image_sequence(webp_file_path: str, debug_mode: bool = False, progress_callback=None) -> tuple:
+    """
+    Pillow를 사용하여 webp 파일을 이미지 시퀀스로 변환합니다.
+    애니메이션 webp와 정적 webp 모두 지원합니다.
+    
+    Args:
+        webp_file_path (str): webp 파일 경로
+        debug_mode (bool): 디버그 모드 여부
+        progress_callback (callable, optional): 진행률 업데이트 콜백 함수
+        
+    Returns:
+        tuple: (이미지 시퀀스 패턴, 메타데이터 딕셔너리, 임시 디렉토리 경로)
+               메타데이터는 'fps', 'width', 'height' 등의 정보를 포함
+    """
+    temp_dir = None
+    try:
+        from PIL import Image
+        import io
+        
+        logger.info(f"webp 파일을 이미지 시퀀스로 변환 시작: {webp_file_path}")
+        
+        if progress_callback:
+            progress_callback(5)  # 시작 진행률
+        
+        # 출력 디렉토리 생성 (임시 디렉토리)
+        temp_dir = tempfile.mkdtemp(prefix="webp_extract_")
+        
+        # 파일 이름에서 확장자 제거
+        base_name = os.path.basename(webp_file_path)
+        file_name_without_ext = os.path.splitext(base_name)[0]
+        
+        # 메타데이터를 저장할 딕셔너리
+        metadata = {
+            'fps': 25,  # 기본값
+            'width': 0,
+            'height': 0
+        }
+        
+        if progress_callback:
+            progress_callback(10)  # 초기화 완료
+        
+        # webp 파일 열기
+        try:
+            with Image.open(webp_file_path) as img:
+                # 이미지 크기 정보 저장
+                metadata['width'], metadata['height'] = img.size
+                
+                # 애니메이션 webp인지 확인
+                is_animated = hasattr(img, 'n_frames') and img.n_frames > 1
+                
+                if debug_mode:
+                    logger.debug(f"webp 파일 정보: 애니메이션={is_animated}, 크기={img.size}, 모드={img.mode}")
+                    if is_animated:
+                        logger.debug(f"프레임 수: {img.n_frames}")
+                
+                if progress_callback:
+                    progress_callback(20)  # 파일 분석 완료
+                
+                # 애니메이션 webp인 경우 프레임레이트 추출 시도
+                if is_animated:
+                    # webp 파일에서 프레임레이트 정보 추출 시도
+                    try:
+                        # info 딕셔너리에서 duration 정보 확인
+                        if hasattr(img, 'info') and 'duration' in img.info:
+                            # duration은 밀리초 단위, 이를 fps로 변환
+                            duration_ms = img.info['duration']
+                            if duration_ms > 0:
+                                metadata['fps'] = round(1000 / duration_ms, 2)
+                                logger.debug(f"추출된 프레임레이트: {metadata['fps']} fps (duration: {duration_ms}ms)")
+                    except Exception as e:
+                        logger.warning(f"프레임레이트 추출 실패: {e}")
+                    
+                    # 모든 프레임 추출
+                    total_frames = img.n_frames
+                    for i in range(total_frames):
+                        img.seek(i)
+                        frame_path = os.path.join(temp_dir, f"{file_name_without_ext}_{i+1:04d}.png")
+                        img.save(frame_path, "PNG")
+                        
+                        if progress_callback:
+                            # 프레임 추출 진행률 (20-90%)
+                            extract_progress = 20 + (i + 1) / total_frames * 70
+                            progress_callback(int(extract_progress))
+                            
+                        if debug_mode and i == 0:
+                            logger.debug(f"첫 번째 프레임 저장됨: {frame_path}")
+                # 정적 webp인 경우
+                else:
+                    frame_path = os.path.join(temp_dir, f"{file_name_without_ext}_0001.png")
+                    img.save(frame_path, "PNG")
+                    if debug_mode:
+                        logger.debug(f"단일 이미지 저장됨: {frame_path}")
+                    
+                    if progress_callback:
+                        progress_callback(90)  # 단일 이미지 저장 완료
+        except Exception as e:
+            logger.error(f"Pillow로 webp 파일 열기 실패: {e}")
+            raise Exception(f"webp 파일을 열 수 없습니다: {e}")
+        
+        # 생성된 파일 확인
+        image_files = sorted(glob.glob(os.path.join(temp_dir, f"{file_name_without_ext}_*.png")))
+        
+        if not image_files:
+            logger.error(f"변환된 이미지 파일을 찾을 수 없습니다: {temp_dir}")
+            raise Exception("변환된 이미지 파일을 찾을 수 없습니다")
+        
+        logger.info(f"webp 파일 변환 완료: {len(image_files)}개 이미지 생성됨")
+        logger.info(f"추출된 메타데이터: 프레임레이트={metadata['fps']} fps, 크기={metadata['width']}x{metadata['height']}")
+        
+        if progress_callback:
+            progress_callback(100)  # 변환 완료
+        
+        # 이미지 시퀀스 패턴과 메타데이터, 임시 디렉토리 경로 반환
+        return os.path.join(temp_dir, f"{file_name_without_ext}_%04d.png"), metadata, temp_dir
+    
+    except Exception as e:
+        logger.exception(f"webp 파일 변환 중 오류 발생: {str(e)}")
+        
+        # 임시 디렉토리 정리
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as cleanup_error:
+                logger.warning(f"임시 디렉토리 정리 실패: {cleanup_error}")
+        
+        raise

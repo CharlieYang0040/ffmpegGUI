@@ -48,13 +48,24 @@ class EncodingProgressDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("인코딩 진행 상황")
-        self.setFixedSize(300, 150)  # 높이를 늘려서 경과 시간 표시
+        self.setFixedSize(350, 180)  # 높이를 늘려서 에러 메시지 표시 공간 확보
 
         layout = QVBoxLayout()
+        
+        # 상태 레이블 추가
+        self.status_label = QLabel("처리 중...")
+        layout.addWidget(self.status_label)
+        
+        # 진행 바
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         layout.addWidget(self.progress_bar)
 
+        # 현재 작업 표시 레이블
+        self.current_task_label = QLabel("준비 중...")
+        layout.addWidget(self.current_task_label)
+
+        # 경과 시간 레이블
         self.elapsed_time_label = QLabel("경과 시간: 00:00:00")
         layout.addWidget(self.elapsed_time_label)
 
@@ -63,6 +74,7 @@ class EncodingProgressDialog(QDialog):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_elapsed_time)
         self.start_time = QTime()
+        self.is_error = False
 
     def start_timer(self):
         self.start_time = QTime.currentTime()
@@ -72,12 +84,24 @@ class EncodingProgressDialog(QDialog):
         self.timer.stop()
 
     def update_elapsed_time(self):
-        elapsed = self.start_time.secsTo(QTime.currentTime())
-        elapsed_time_str = QTime(0, 0).addSecs(elapsed).toString("hh:mm:ss")
-        self.elapsed_time_label.setText(f"경과 시간: {elapsed_time_str}")
+        if not self.is_error:
+            elapsed = self.start_time.secsTo(QTime.currentTime())
+            elapsed_time_str = QTime(0, 0).addSecs(elapsed).toString("hh:mm:ss")
+            self.elapsed_time_label.setText(f"경과 시간: {elapsed_time_str}")
 
     def update_progress(self, value):
         self.progress_bar.setValue(value)
+
+    def update_task(self, task_description):
+        self.current_task_label.setText(task_description)
+
+    def show_error(self, error_message):
+        self.is_error = True
+        self.stop_timer()
+        self.status_label.setText("에러 발생!")
+        self.status_label.setStyleSheet("color: red; font-weight: bold;")
+        self.current_task_label.setText(error_message)
+        self.current_task_label.setStyleSheet("color: red;")
 
 
 class EncodingThread(QThread):
@@ -85,7 +109,9 @@ class EncodingThread(QThread):
     인코딩 작업을 별도의 스레드에서 실행하기 위한 클래스
     """
     progress_updated = Signal(int)
+    task_updated = Signal(str)
     encoding_finished = Signal()
+    encoding_error = Signal(str)
 
     def __init__(self, process_all_media_func, *args, **kwargs):
         super().__init__()
@@ -94,8 +120,19 @@ class EncodingThread(QThread):
         self.kwargs = kwargs
 
     def run(self):
-        self.process_all_media_func(*self.args, **self.kwargs, progress_callback=self.progress_updated.emit)
-        self.encoding_finished.emit()
+        try:
+            self.task_updated.emit("인코딩 준비 중...")
+            self.process_all_media_func(
+                *self.args, 
+                **self.kwargs, 
+                progress_callback=self.progress_updated.emit,
+                task_callback=self.task_updated.emit
+            )
+            self.encoding_finished.emit()
+        except Exception as e:
+            error_message = str(e)
+            logger.exception("인코딩 중 오류 발생")
+            self.encoding_error.emit(error_message)
 
 
 class EncodingOptionsDialog(QDialog):
@@ -380,41 +417,54 @@ class FFmpegGui(QWidget):
         offset_layout.addLayout(resolution_layout)
 
     def create_global_trim_control(self, offset_layout):
-        global_trim_layout = QVBoxLayout()
-        self.global_trim_checkbox = QCheckBox("전체 앞뒤 트림:")
+        """전역 트림 컨트롤 생성"""
+        trim_group = QGroupBox("전역 트림")
+        trim_layout = QVBoxLayout()
+        
+        # 전역 트림 활성화 체크박스
+        self.global_trim_checkbox = QCheckBox("전역 트림 사용")
         self.global_trim_checkbox.setChecked(False)
         self.global_trim_checkbox.stateChanged.connect(self.toggle_global_trim)
-
-        self.global_trim_start_spinbox = QSpinBox()
-        self.global_trim_start_spinbox.setRange(0, 9999)
-        self.global_trim_start_spinbox.setValue(0)
-        self.global_trim_start_spinbox.setEnabled(False)
-        self.global_trim_start_spinbox.valueChanged.connect(self.update_global_trim_start)
-
-        self.global_trim_end_spinbox = QSpinBox()
-        self.global_trim_end_spinbox.setRange(0, 9999)
-        self.global_trim_end_spinbox.setValue(0)
-        self.global_trim_end_spinbox.setEnabled(False)
-        self.global_trim_end_spinbox.valueChanged.connect(self.update_global_trim_end)
-
-        global_trim_layout.addWidget(self.global_trim_checkbox)
-
-        spinbox_layout = QHBoxLayout()
-
-        start_layout = QVBoxLayout()
-        start_layout.addWidget(QLabel("시작:"))
-        start_layout.addWidget(self.global_trim_start_spinbox)
-
-        end_layout = QVBoxLayout()
-        end_layout.addWidget(QLabel("끝:"))
-        end_layout.addWidget(self.global_trim_end_spinbox)
-
-        spinbox_layout.addLayout(start_layout)
-        spinbox_layout.addLayout(end_layout)
-
-        global_trim_layout.addLayout(spinbox_layout)
-
-        offset_layout.addLayout(global_trim_layout)
+        trim_layout.addWidget(self.global_trim_checkbox)
+        
+        # 시작 트림 슬라이더
+        start_layout = QHBoxLayout()
+        start_layout.addWidget(QLabel("시작 트림:"))
+        self.global_trim_start_slider = QSlider(Qt.Horizontal)
+        self.global_trim_start_slider.setRange(0, 300)
+        self.global_trim_start_slider.setValue(0)
+        self.global_trim_start_slider.setEnabled(False)
+        self.global_trim_start_slider.valueChanged.connect(self.update_global_trim_start)
+        start_layout.addWidget(self.global_trim_start_slider)
+        self.global_trim_start_label = QLabel("0")
+        start_layout.addWidget(self.global_trim_start_label)
+        trim_layout.addLayout(start_layout)
+        
+        # 끝 트림 슬라이더
+        end_layout = QHBoxLayout()
+        end_layout.addWidget(QLabel("끝 트림:"))
+        self.global_trim_end_slider = QSlider(Qt.Horizontal)
+        self.global_trim_end_slider.setRange(0, 300)
+        self.global_trim_end_slider.setValue(0)
+        self.global_trim_end_slider.setEnabled(False)
+        self.global_trim_end_slider.valueChanged.connect(self.update_global_trim_end)
+        end_layout.addWidget(self.global_trim_end_slider)
+        self.global_trim_end_label = QLabel("0")
+        end_layout.addWidget(self.global_trim_end_label)
+        trim_layout.addLayout(end_layout)
+        
+        # 프레임 단위 트림 체크박스 추가
+        self.frame_based_trim_checkbox = QCheckBox("프레임 단위 트림 사용")
+        self.frame_based_trim_checkbox.setChecked(False)
+        self.frame_based_trim_checkbox.setToolTip("초 단위 변환 없이 프레임 번호로 직접 트림합니다.\n더 정확하지만 처리 속도가 느릴 수 있습니다.")
+        trim_layout.addWidget(self.frame_based_trim_checkbox)
+        
+        trim_group.setLayout(trim_layout)
+        offset_layout.addWidget(trim_group)
+        
+        # 초기값 설정
+        self.global_trim_start = 0
+        self.global_trim_end = 0
 
     def create_content_layout(self, main_layout):
         content_layout = QHBoxLayout()
@@ -827,17 +877,33 @@ class FFmpegGui(QWidget):
                 self.progress_dialog.show()
                 self.progress_dialog.start_timer()  # 타이머 시작
 
+                # 편집 옵션 설정 가져오기
+                use_custom_framerate = self.framerate_checkbox.isChecked()
+                custom_framerate = self.framerate_spinbox.value()
+                use_custom_resolution = self.resolution_checkbox.isChecked()
+                custom_width = int(self.width_edit.text()) if self.width_edit.text() else 0
+                custom_height = int(self.height_edit.text()) if self.height_edit.text() else 0
+                use_frame_based_trim = self.frame_based_trim_checkbox.isChecked()
+
                 self.encoding_thread = EncodingThread(
-                    process_all_media,  # 업데이트된 함수 사용
-                    ordered_input,  # 전체 튜플을 그대로 전달
+                    process_all_media,
+                    ordered_input,
                     output_file,
                     encoding_options,
                     debug_mode=debug_mode,
                     global_trim_start=self.global_trim_start,
-                    global_trim_end=self.global_trim_end
+                    global_trim_end=self.global_trim_end,
+                    use_custom_framerate=use_custom_framerate,
+                    custom_framerate=custom_framerate,
+                    use_custom_resolution=use_custom_resolution,
+                    custom_width=custom_width,
+                    custom_height=custom_height,
+                    use_frame_based_trim=use_frame_based_trim
                 )
                 self.encoding_thread.progress_updated.connect(self.progress_dialog.update_progress)
+                self.encoding_thread.task_updated.connect(self.progress_dialog.update_task)
                 self.encoding_thread.encoding_finished.connect(self.on_encoding_finished)
+                self.encoding_thread.encoding_error.connect(self.on_encoding_error)
                 self.encoding_thread.start()
 
             except Exception as e:
@@ -1116,8 +1182,8 @@ class FFmpegGui(QWidget):
 
     def toggle_global_trim(self, state):
         is_enabled = state == Qt.CheckState.Checked.value
-        self.global_trim_start_spinbox.setEnabled(is_enabled)
-        self.global_trim_end_spinbox.setEnabled(is_enabled)
+        self.global_trim_start_slider.setEnabled(is_enabled)
+        self.global_trim_end_slider.setEnabled(is_enabled)
 
     def update_global_trim_start(self, value):
         self.global_trim_start = value
@@ -1395,3 +1461,10 @@ class FFmpegGui(QWidget):
                     item_widget.file_path = new_path
                     item_widget.update_labels()
                 item.setData(Qt.UserRole, new_path)
+
+    def on_encoding_error(self, error_message):
+        """인코딩 에러 발생 시 호출되는 메서드"""
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            self.progress_dialog.show_error(f"에러: {error_message}")
+        
+        QMessageBox.critical(self, "인코딩 에러", f"인코딩 중 에러가 발생했습니다:\n{error_message}")
