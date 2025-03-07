@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QSpinBox
 from PySide6.QtCore import Qt, QEvent
 import os
 import re
-from utils import get_first_sequence_file
+from app.utils.utils import get_first_sequence_file
 
 
 class ListWidgetItem(QWidget):

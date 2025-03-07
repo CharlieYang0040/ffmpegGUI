@@ -3,7 +3,7 @@
 from PySide6.QtWidgets import QLineEdit
 from PySide6.QtCore import Qt
 import os
-from commands import ChangeOutputPathCommand
+from app.ui.commands.commands import ChangeOutputPathCommand
 
 class DroppableLineEdit(QLineEdit):
     def __init__(self, parent=None):

@@ -5,9 +5,9 @@ from PySide6.QtCore import Qt, QMimeData
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPainter, QColor, QDrag
 import os
 import logging
-from commands import ChangeOutputPathCommand, ReorderItemsCommand, AddItemsCommand
-from list_widget_item import ListWidgetItem
-from utils import (
+from app.ui.commands.commands import ChangeOutputPathCommand, ReorderItemsCommand, AddItemsCommand
+from app.ui.widgets.list_widget_item import ListWidgetItem
+from app.utils.utils import (
     is_media_file,
     process_image_sequences,
     process_file,

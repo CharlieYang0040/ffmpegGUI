@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import QTabWidget, QWidget, QVBoxLayout, QPushButton, QHBoxLayout
 from PySide6.QtCore import Qt, QSize
-from drag_drop_list_widget import DragDropListWidget
-from utils import process_file
+from app.ui.widgets.drag_drop_list_widget import DragDropListWidget
+from app.utils.utils import process_file
 import logging
 
 logger = logging.getLogger(__name__)
@@ -43,13 +43,20 @@ class TabListWidget(QWidget):
         # parent 설정을 나중에 수행
         list_widget.setParent(self.main_window)
         
-        # 아이템 선택 변경 시그널 연결
-        list_widget.itemSelectionChanged.connect(self.main_window.on_item_selection_changed)
+        # 아이템 선택 변경 시그널 연결 - 지연 연결 방식으로 변경
+        # 나중에 file_list_area가 초기화된 후에 연결될 수 있도록 함
+        list_widget.itemSelectionChanged.connect(self.on_item_selection_changed)
         
         # 리스트 위젯의 최소 크기 설정
         list_widget.setMinimumHeight(200)  # 리스트 위젯의 최소 높이 설정
         
         return list_widget
+    
+    def on_item_selection_changed(self):
+        """아이템 선택 변경 시 호출되는 메서드"""
+        # file_list_area가 초기화된 후에 이벤트를 전달
+        if hasattr(self.main_window, 'file_list_area'):
+            self.main_window.file_list_area.on_item_selection_changed()
         
     def add_new_tab(self):
         # 새 탭 컨테이너 생성

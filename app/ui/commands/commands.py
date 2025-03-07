@@ -4,8 +4,8 @@ import logging
 from typing import List
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QListWidget, QListWidgetItem
-from list_widget_item import ListWidgetItem
-from utils import normalize_path_separator
+from app.ui.widgets.list_widget_item import ListWidgetItem
+from app.utils.utils import normalize_path_separator
 
 # 로깅 설정
 logger = logging.getLogger(__name__)

@@ -223,7 +223,7 @@ def generate_and_open_otio(clips: List[Tuple[str, int, int]], output_path: str, 
     """
     try:
         # ffmpeg_utils의 ffmpeg 경로를 공유
-        from ffmpeg_utils import FFMPEG_PATH
+        from app.utils.ffmpeg_utils import FFMPEG_PATH
         if FFMPEG_PATH:
             set_ffmpeg_path(FFMPEG_PATH)
         
