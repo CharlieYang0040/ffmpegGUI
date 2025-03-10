@@ -7,9 +7,10 @@ import tempfile
 import psutil
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Tuple, Optional, Callable
+import concurrent.futures
 
 # 다른 모듈에서 필요한 함수 가져오기
-from app.core.ffmpeg_core import get_media_properties, get_target_properties, create_temp_file_list, get_optimal_encoding_options
+from app.core.ffmpeg_core import get_media_properties, get_target_properties, create_temp_file_list, get_optimal_encoding_options, get_optimal_thread_count
 from app.utils.utils import is_webp_file
 
 # 로깅 서비스 가져오기
@@ -133,19 +134,37 @@ class BatchProcessor:
             if webp_count > 0:
                 self.logger.info(f"{webp_count}개의 WebP 파일 처리 시작")
                 
-                # WebP 파일을 이미지 시퀀스로 변환
-                for i, (file_path, _, _) in enumerate(media_files):
+                # 최적의 스레드 수 계산 (CPU 코어 수 기반, 최대 webp_count)
+                max_workers = min(get_optimal_thread_count(), webp_count)
+                self.logger.info(f"WebP 병렬 처리를 위한 스레드 풀 생성: {max_workers}개 스레드")
+                
+                # 처리할 WebP 파일 정보 수집
+                webp_tasks = []
+                for i, (file_path, trim_start, trim_end) in enumerate(media_files):
                     if file_path.lower().endswith('.webp'):
+                        webp_tasks.append((i, file_path, trim_start, trim_end))
+                
+                # 결과를 저장할 딕셔너리
+                webp_results = {}
+                
+                # 진행 상황 추적을 위한 락
+                import threading
+                progress_lock = threading.Lock()
+                
+                # WebP 파일 처리 함수
+                def process_webp_file(task_idx, file_path, trim_start, trim_end):
+                    try:
                         if task_callback:
                             task_callback(f"WebP 파일 처리 중... ({webp_processed+1}/{webp_count})")
                         
                         # 진행률 업데이트 함수
                         def webp_progress_callback(progress):
                             if progress_callback:
-                                self.update_webp_progress(
-                                    progress, i, len(media_files), 
-                                    webp_count, webp_processed, progress_callback
-                                )
+                                with progress_lock:
+                                    self.update_webp_progress(
+                                        progress, task_idx, len(media_files), 
+                                        webp_count, webp_processed, progress_callback
+                                    )
                         
                         # 임시 디렉토리 생성
                         temp_dir = tempfile.mkdtemp()
@@ -157,15 +176,70 @@ class BatchProcessor:
                             file_path, temp_dir, webp_progress_callback
                         )
                         
-                        # 원본 WebP 파일을 이미지 시퀀스로 대체
-                        media_files[i] = (image_sequence, *media_files[i][1:])
-                        webp_processed += 1
-                        
-                        # WebP 처리 완료 후 진행률 업데이트
-                        if progress_callback:
-                            progress_callback(int((webp_processed / webp_count) * 30))
+                        # WebP 메타데이터 가져오기 (해상도 정보 포함)
+                        webp_metadata = webp_processor.get_webp_metadata(file_path)
                         
                         self.logger.info(f"WebP 파일 처리 완료: {file_path} -> {image_sequence}")
+                        
+                        # 결과 반환
+                        return {
+                            'task_idx': task_idx,
+                            'image_sequence': image_sequence,
+                            'metadata': webp_metadata,
+                            'temp_dir': temp_dir
+                        }
+                    except Exception as e:
+                        self.logger.exception(f"WebP 파일 처리 중 오류 발생: {str(e)}")
+                        return {
+                            'task_idx': task_idx,
+                            'error': str(e)
+                        }
+                
+                # 스레드 풀로 WebP 파일 병렬 처리
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # 작업 제출
+                    future_to_task = {
+                        executor.submit(process_webp_file, task_idx, file_path, trim_start, trim_end): task_idx 
+                        for task_idx, file_path, trim_start, trim_end in webp_tasks
+                    }
+                    
+                    # 작업 완료 대기 및 결과 수집
+                    for future in concurrent.futures.as_completed(future_to_task):
+                        task_idx = future_to_task[future]
+                        try:
+                            result = future.result()
+                            if 'error' not in result:
+                                webp_results[task_idx] = result
+                                
+                                # 원본 WebP 해상도 정보가 있으면 target_properties에 추가
+                                metadata = result['metadata']
+                                if metadata and metadata['width'] > 0 and metadata['height'] > 0:
+                                    if not target_properties:
+                                        target_properties = {}
+                                    
+                                    # 기존 해상도 정보가 없거나 WebP 해상도가 더 크면 업데이트
+                                    if ('width' not in target_properties or 
+                                        'height' not in target_properties or
+                                        (metadata['width'] > target_properties['width'] and 
+                                         metadata['height'] > target_properties['height'])):
+                                        target_properties['width'] = metadata['width']
+                                        target_properties['height'] = metadata['height']
+                                        self.logger.info(f"WebP 파일에서 해상도 정보 추출: {target_properties['width']}x{target_properties['height']}")
+                                
+                                # 원본 WebP 파일을 이미지 시퀀스로 대체
+                                media_files[task_idx] = (result['image_sequence'], *media_files[task_idx][1:])
+                                
+                                with progress_lock:
+                                    webp_processed += 1
+                                    # WebP 처리 완료 후 진행률 업데이트
+                                    if progress_callback:
+                                        progress_callback(int((webp_processed / webp_count) * 30))
+                            else:
+                                self.logger.error(f"WebP 파일 처리 실패: {result['error']}")
+                        except Exception as e:
+                            self.logger.exception(f"WebP 작업 결과 처리 중 오류 발생: {str(e)}")
+                
+                self.logger.info(f"모든 WebP 파일 처리 완료: {webp_processed}/{webp_count}")
             
             # 각 미디어 파일 처리
             for i, (file_path, trim_start, trim_end) in enumerate(media_files):

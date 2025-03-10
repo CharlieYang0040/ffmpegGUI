@@ -107,6 +107,41 @@ class MediaMerger:
             # 스트림 생성
             stream = ffmpeg.input(temp_list_file, **concat_options)
             
+            # 해상도 정보 확인 및 설정 (중요)
+            if not target_properties or 'width' not in target_properties or 'height' not in target_properties:
+                # 첫 번째 파일에서 속성을 가져와 설정
+                from app.core.ffmpeg_core import get_media_properties
+                first_file_props = get_media_properties(input_files[0], debug_mode)
+                if first_file_props and 'width' in first_file_props and 'height' in first_file_props:
+                    if not target_properties:
+                        target_properties = {}
+                    
+                    # 기존 속성이 없는 경우에만 설정
+                    if 'width' not in target_properties:
+                        target_properties['width'] = first_file_props['width']
+                    if 'height' not in target_properties:
+                        target_properties['height'] = first_file_props['height']
+                    
+                    self.logger.info(f"첫 번째 파일에서 해상도 추출: {target_properties['width']}x{target_properties['height']}")
+                else:
+                    # 기본 해상도 설정 (실패 방지)
+                    if not target_properties:
+                        target_properties = {}
+                    
+                    if 'width' not in target_properties:
+                        target_properties['width'] = 512
+                    if 'height' not in target_properties:
+                        target_properties['height'] = 512
+                    
+                    self.logger.warning(f"해상도 정보를 가져올 수 없어 기본값 사용: {target_properties['width']}x{target_properties['height']}")
+            else:
+                self.logger.info(f"기존 target_properties의 해상도 사용: {target_properties['width']}x{target_properties['height']}")
+            
+            # 인코딩 옵션에 해상도 명시적 추가
+            if target_properties and 'width' in target_properties and 'height' in target_properties:
+                encoding_options['s'] = f"{target_properties['width']}x{target_properties['height']}"
+                self.logger.info(f"인코딩 옵션에 해상도 설정: {encoding_options['s']}")
+
             # 필터 적용 (필요한 경우)
             if target_properties:
                 stream = apply_filters(stream, target_properties)
@@ -137,86 +172,88 @@ class MediaMerger:
             if debug_mode:
                 self.logger.debug(f"총 병합 길이: {total_duration}초")
 
-            # FFmpeg 실행 (진행률 모니터링)
-            process = subprocess.Popen(
-                ffmpeg.compile(stream, cmd=ffmpeg_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                bufsize=1
-            )
+            # 인코딩 옵션 최적화
+            from app.core.ffmpeg_core import get_optimal_encoding_options
+            encoding_options = get_optimal_encoding_options(encoding_options)
             
-            # 진행률 모니터링
-            for line in process.stderr:
-                if debug_mode:
-                    self.logger.debug(line.strip())
-                
-                # 진행률 파싱 및 업데이트
-                if progress_callback and "time=" in line:
-                    try:
-                        time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
-                        if time_match:
-                            time_str = time_match.group(1)
-                            h, m, s = map(float, time_str.split(':'))
-                            current_seconds = h * 3600 + m * 60 + s
-                            # 0으로 나누기 방지
-                            if total_duration > 0:
-                                progress = min(15 + (current_seconds / total_duration) * 85, 100)
-                            else:
-                                progress = 50  # 총 기간을 알 수 없는 경우 기본값 사용
-                            progress_callback(int(progress))
-                    except Exception as e:
-                        self.logger.warning(f"진행률 파싱 오류: {e}")
+            if debug_mode:
+                self.logger.debug(f"최적화된 인코딩 옵션: {encoding_options}")
+                self.logger.debug(f"병합 명령어: {' '.join(ffmpeg.compile(stream, cmd=ffmpeg_path))}")
             
-            process.wait()
-            
-            if process.returncode != 0:
-                stderr_output = "\n".join([line for line in process.stderr])
-                
-                # 특정 에러 코드 처리 (4294967274 = -22, 유효하지 않은 인자)
-                if process.returncode == 4294967274 or process.returncode == -22:
-                    self.logger.warning(f"FFmpeg concat 명령 실패 (코드: {process.returncode}), 대체 방법 시도")
-                    
-                    # 파일이 하나뿐인 경우 단순 복사로 대체
-                    if len(input_files) == 1:
-                        self.logger.warning("병합 실패, 단일 파일 복사로 대체합니다.")
-                        try:
-                            import shutil as file_copy_module  # 지역 변수로 다시 임포트
-                            file_copy_module.copy2(input_files[0], output_file)
-                            self.logger.info(f"파일 복사 완료: {input_files[0]} -> {output_file}")
-                            return output_file
-                        except Exception as copy_error:
-                            self.logger.error(f"파일 복사 실패: {copy_error}")
-                    
-                    # 여러 파일인 경우 대체 방법으로 병합 시도
-                    else:
-                        self.logger.warning(f"대체 방법으로 {len(input_files)}개 파일 병합 시도")
-                        try:
-                            # 대체 방법: filter_complex를 사용한 병합
-                            return self.concat_with_filter_complex(
-                                input_files, output_file, encoding_options, 
-                                target_properties, debug_mode, progress_callback, task_callback
-                            )
-                        except Exception as alt_error:
-                            self.logger.error(f"대체 병합 방법도 실패: {alt_error}")
-                
-                # 일반적인 에러 처리
-                error_msg = f"FFmpeg 실행 실패 (반환 코드: {process.returncode})"
-                if stderr_output:
-                    error_msg += f"\n오류 메시지: {stderr_output}"
-                
-                self.logger.error(error_msg)
-                raise Exception(error_msg)
-            
-            self.logger.info(f"파일 병합 완료: {output_file}")
-            
-            if task_callback:
-                task_callback("병합 완료!")
-                
             if progress_callback:
-                progress_callback(100)  # 처리 완료
+                progress_callback(15)  # FFmpeg 명령 준비 완료
+            
+            # 수정된 방식: subprocess.Popen 사용
+            try:
+                # FFmpeg 명령 구성
+                cmd = ffmpeg.compile(stream, cmd=ffmpeg_path)
                 
-            return output_file
+                if debug_mode:
+                    self.logger.debug(f"실행할 FFmpeg 명령어: {' '.join(cmd)}")
+                
+                # subprocess로 실행
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                
+                # 프로세스 완료 대기
+                stdout, stderr = process.communicate()
+                
+                # 오류 확인
+                if process.returncode != 0:
+                    stderr_output = stderr.decode() if stderr else "알 수 없는 오류"
+                    
+                    # 특정 에러 처리 (Invalid argument 등)
+                    if "Invalid argument" in stderr_output or "Error opening" in stderr_output:
+                        self.logger.warning(f"FFmpeg concat 명령 실패, 대체 방법 시도: {stderr_output}")
+                        
+                        # 파일이 하나뿐인 경우 단순 복사로 대체
+                        if len(input_files) == 1:
+                            self.logger.warning("병합 실패, 단일 파일 복사로 대체합니다.")
+                            try:
+                                import shutil as file_copy_module  # 지역 변수로 다시 임포트
+                                file_copy_module.copy2(input_files[0], output_file)
+                                self.logger.info(f"파일 복사 완료: {input_files[0]} -> {output_file}")
+                                return output_file
+                            except Exception as copy_error:
+                                self.logger.error(f"파일 복사 실패: {copy_error}")
+                        
+                        # 여러 파일인 경우 대체 방법으로 병합 시도
+                        else:
+                            self.logger.warning(f"대체 방법으로 {len(input_files)}개 파일 병합 시도")
+                            try:
+                                # 대체 방법: filter_complex를 사용한 병합
+                                return self.concat_with_filter_complex(
+                                    input_files, output_file, encoding_options, 
+                                    target_properties, debug_mode, progress_callback, task_callback
+                                )
+                            except Exception as alt_error:
+                                self.logger.error(f"대체 병합 방법도 실패: {alt_error}")
+                    
+                    # 일반적인 에러 처리
+                    error_msg = f"FFmpeg 실행 실패: {stderr_output}"
+                    self.logger.error(error_msg)
+                    raise Exception(error_msg)
+                
+                # 성공적으로 실행됨
+                self.logger.info(f"파일 병합 완료: {output_file}")
+                
+                if task_callback:
+                    task_callback("병합 완료!")
+                    
+                if progress_callback:
+                    progress_callback(100)  # 처리 완료
+                    
+                return output_file
+                
+            except Exception as e:
+                if isinstance(e, subprocess.SubprocessError):
+                    self.logger.error(f"FFmpeg 실행 중 서브프로세스 오류: {e}")
+                else:
+                    self.logger.error(f"FFmpeg 실행 중 오류: {e}")
+                raise
 
         except Exception as e:
             self.logger.exception(f"파일 병합 중 오류 발생: {str(e)}")
@@ -377,6 +414,41 @@ class MediaMerger:
                     progress_callback(100)  # 완료
                 return output_file
                 
+            # 해상도 정보 확인 및 설정 (중요)
+            if not target_properties or 'width' not in target_properties or 'height' not in target_properties:
+                # 첫 번째 파일에서 속성을 가져와 설정
+                from app.core.ffmpeg_core import get_media_properties
+                first_file_props = get_media_properties(input_files[0], debug_mode)
+                if first_file_props and 'width' in first_file_props and 'height' in first_file_props:
+                    if not target_properties:
+                        target_properties = {}
+                    
+                    # 기존 속성이 없는 경우에만 설정
+                    if 'width' not in target_properties:
+                        target_properties['width'] = first_file_props['width']
+                    if 'height' not in target_properties:
+                        target_properties['height'] = first_file_props['height']
+                    
+                    self.logger.info(f"첫 번째 파일에서 해상도 추출: {target_properties['width']}x{target_properties['height']}")
+                else:
+                    # 기본 해상도 설정 (실패 방지)
+                    if not target_properties:
+                        target_properties = {}
+                    
+                    if 'width' not in target_properties:
+                        target_properties['width'] = 512
+                    if 'height' not in target_properties:
+                        target_properties['height'] = 512
+                    
+                    self.logger.warning(f"해상도 정보를 가져올 수 없어 기본값 사용: {target_properties['width']}x{target_properties['height']}")
+            else:
+                self.logger.info(f"기존 target_properties의 해상도 사용: {target_properties['width']}x{target_properties['height']}")
+            
+            # 인코딩 옵션에 해상도 명시적 추가
+            if target_properties and 'width' in target_properties and 'height' in target_properties:
+                encoding_options['s'] = f"{target_properties['width']}x{target_properties['height']}"
+                self.logger.info(f"인코딩 옵션에 해상도 설정: {encoding_options['s']}")
+            
             self.logger.info(f"filter_complex로 {len(input_files)}개 미디어 파일 병합 시작")
             
             if task_callback:
@@ -393,96 +465,189 @@ class MediaMerger:
             if progress_callback:
                 progress_callback(10)  # 입력 스트림 생성 완료
             
-            # filter_complex 문자열 생성
-            filter_complex = ""
-            for i in range(len(inputs)):
-                filter_complex += f"[{i}:v]"
-            filter_complex += f"concat=n={len(inputs)}:v=1:a=0[outv]"
-            
-            # 출력 스트림 설정
-            stream = ffmpeg.output(
-                inputs[0].video.filter("concat", n=len(inputs), v=1, a=0),
-                output_file,
-                **encoding_options
-            )
-            stream = stream.overwrite_output()
+            # 인코딩 옵션 최적화
+            from app.core.ffmpeg_core import get_optimal_encoding_options
+            encoding_options = get_optimal_encoding_options(encoding_options)
             
             if debug_mode:
-                self.logger.debug(f"filter_complex 병합 명령어: {' '.join(ffmpeg.compile(stream, cmd=ffmpeg_path))}")
+                self.logger.debug(f"최적화된 인코딩 옵션: {encoding_options}")
             
-            # 총 길이 계산 (모든 파일의 길이 합산)
-            total_duration = 0
-            for file in input_files:
-                try:
-                    duration = get_video_duration(file)
-                    total_duration += duration
-                    if debug_mode:
-                        self.logger.debug(f"파일 길이: {file} - {duration}초")
-                except Exception as e:
-                    self.logger.warning(f"파일 길이 계산 실패: {file} - {e}")
-            
-            if total_duration <= 0:
-                # 길이를 계산할 수 없는 경우 적당한 기본값 설정
-                total_duration = len(input_files) * 60  # 파일당 평균 1분으로 가정
-                self.logger.warning(f"파일 길이를 계산할 수 없어 기본값 사용: {total_duration}초")
-                
-            if debug_mode:
-                self.logger.debug(f"총 병합 길이: {total_duration}초")
-            
-            if progress_callback:
-                progress_callback(15)  # FFmpeg 명령 준비 완료
-            
-            # FFmpeg 실행 (진행률 모니터링)
-            process = subprocess.Popen(
-                ffmpeg.compile(stream, cmd=ffmpeg_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                bufsize=1
-            )
-            
-            # 진행률 모니터링
-            for line in process.stderr:
-                if debug_mode:
-                    self.logger.debug(line.strip())
-                
-                # 진행률 파싱 및 업데이트
-                if progress_callback and "time=" in line:
+            # 오디오 스트림 처리 개선
+            has_audio = True
+            try:
+                # 각 입력 파일의 오디오 스트림 확인
+                for i, input_file in enumerate(input_files):
                     try:
-                        time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
-                        if time_match:
-                            time_str = time_match.group(1)
-                            h, m, s = map(float, time_str.split(':'))
-                            current_seconds = h * 3600 + m * 60 + s
-                            # 0으로 나누기 방지
-                            if total_duration > 0:
-                                progress = min(15 + (current_seconds / total_duration) * 85, 100)
-                            else:
-                                progress = 50  # 총 기간을 알 수 없는 경우 기본값 사용
-                            progress_callback(int(progress))
+                        probe = ffmpeg.probe(input_file, cmd=ffmpeg_path)
+                        audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
+                        if not audio_streams:
+                            self.logger.warning(f"파일에 오디오 스트림이 없습니다: {input_file}")
+                            has_audio = False
+                            break
                     except Exception as e:
-                        self.logger.warning(f"진행률 파싱 오류: {e}")
-            
-            process.wait()
-            
-            if process.returncode != 0:
-                stderr_output = "\n".join([line for line in process.stderr])
-                error_msg = f"filter_complex 병합 실패 (반환 코드: {process.returncode})"
-                if stderr_output:
-                    error_msg += f"\n오류 메시지: {stderr_output}"
+                        self.logger.warning(f"파일 {input_file}의 오디오 스트림 확인 중 오류: {e}")
+                        has_audio = False
+                        break
                 
-                self.logger.error(error_msg)
-                raise Exception(error_msg)
-            
-            self.logger.info(f"filter_complex 병합 완료: {output_file}")
-            
-            if task_callback:
-                task_callback("병합 완료!")
+                # 필터 문자열 구성
+                if has_audio:
+                    # 비디오와 오디오 모두 concat (새로운 방식)
+                    segments = []
+                    for i in range(len(input_files)):
+                        segments.append(f"[{i}:v][{i}:a]")
+                    
+                    filter_complex = f"{''.join(segments)}concat=n={len(input_files)}:v=1:a=1[v][a]"
+                    map_args = ['-map', '[v]', '-map', '[a]']
+                else:
+                    # 비디오만 concat
+                    video_parts = []
+                    for i in range(len(input_files)):
+                        video_parts.append(f"[{i}:v]")
+                    
+                    filter_complex = f"{''.join(video_parts)}concat=n={len(input_files)}:v=1:a=0[v]"
+                    map_args = ['-map', '[v]']
                 
-            if progress_callback:
-                progress_callback(100)  # 처리 완료
+                # 입력 파일 인수 구성
+                inputs_args = []
+                for input_file in input_files:
+                    inputs_args.extend(['-i', input_file])
                 
-            return output_file
+                # 명령줄 인수 구성
+                cmd = [ffmpeg_path, '-y']
+                cmd.extend(inputs_args)
+                cmd.extend(['-filter_complex', filter_complex])
+                cmd.extend(map_args)
+                
+                # 인코딩 옵션 추가
+                for k, v in encoding_options.items():
+                    if k.startswith('-'):
+                        cmd.append(k)
+                    else:
+                        cmd.append(f'-{k}')
+                    cmd.append(str(v))
+                
+                cmd.append(output_file)
+                
+                if debug_mode:
+                    self.logger.debug(f"직접 구성한 FFmpeg 명령어: {' '.join(cmd)}")
+                
+                # 직접 subprocess로 실행
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                
+                stdout, stderr = process.communicate()
+                
+                if process.returncode != 0:
+                    error_msg = f"직접 구성한 filter_complex 명령 실패 (코드: {process.returncode}): {stderr.decode()}"
+                    self.logger.error(error_msg)
+                    raise Exception(error_msg)
+                
+                # 성공적으로 실행됨
+                self.logger.info(f"직접 구성한 filter_complex 명령으로 병합 완료: {output_file}")
+                
+                if task_callback:
+                    task_callback("병합 완료!")
+                    
+                if progress_callback:
+                    progress_callback(100)  # 처리 완료
+                    
+                return output_file
+            except Exception as e:
+                # 오류 발생 시 더 간단한 방식으로 시도
+                self.logger.warning(f"복잡한 filter_complex 구성 중 오류 발생, 간단한 방식으로 시도: {e}")
+                
+                # 간단한 방식: 입력 파일 목록 직접 사용
+                inputs_args = []
+                for input_file in input_files:
+                    inputs_args.extend(['-i', input_file])
+                
+                # 필터 문자열 구성 (비디오와 오디오 모두 처리)
+                try:
+                    # 오디오 스트림 확인
+                    has_audio_simple = True
+                    for input_file in input_files:
+                        try:
+                            probe = ffmpeg.probe(input_file, cmd=ffmpeg_path)
+                            audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
+                            if not audio_streams:
+                                has_audio_simple = False
+                                break
+                        except:
+                            has_audio_simple = False
+                            break
+                    
+                    if has_audio_simple:
+                        # 비디오와 오디오 모두 concat (새로운 방식)
+                        segments = []
+                        for i in range(len(input_files)):
+                            segments.append(f"[{i}:v][{i}:a]")
+                        
+                        filter_complex = f"{''.join(segments)}concat=n={len(input_files)}:v=1:a=1[v][a]"
+                        map_args = ['-map', '[v]', '-map', '[a]']
+                    else:
+                        # 비디오만 concat
+                        video_parts = []
+                        for i in range(len(input_files)):
+                            video_parts.append(f"[{i}:v]")
+                        
+                        filter_complex = f"{''.join(video_parts)}concat=n={len(input_files)}:v=1:a=0[v]"
+                        map_args = ['-map', '[v]']
+                except:
+                    # 오류 발생 시 비디오만 처리
+                    self.logger.warning("오디오 스트림 확인 중 오류 발생, 비디오만 처리합니다")
+                    video_parts = []
+                    for i in range(len(input_files)):
+                        video_parts.append(f"[{i}:v]")
+                    
+                    filter_complex = f"{''.join(video_parts)}concat=n={len(input_files)}:v=1:a=0[v]"
+                    map_args = ['-map', '[v]']
+                
+                # 명령줄 인수 구성
+                cmd = [ffmpeg_path, '-y']
+                cmd.extend(inputs_args)
+                cmd.extend(['-filter_complex', filter_complex])
+                cmd.extend(map_args)
+                
+                # 인코딩 옵션 추가
+                for k, v in encoding_options.items():
+                    if k.startswith('-'):
+                        cmd.append(k)
+                    else:
+                        cmd.append(f'-{k}')
+                    cmd.append(str(v))
+                
+                cmd.append(output_file)
+                
+                if debug_mode:
+                    self.logger.debug(f"간단한 FFmpeg 명령어: {' '.join(cmd)}")
+                
+                # 직접 subprocess로 실행
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                
+                stdout, stderr = process.communicate()
+                
+                if process.returncode != 0:
+                    error_msg = f"간단한 filter_complex 명령 실패 (코드: {process.returncode}): {stderr.decode()}"
+                    self.logger.error(error_msg)
+                    raise Exception(error_msg)
+                
+                # 성공적으로 실행됨
+                self.logger.info(f"간단한 filter_complex 명령으로 병합 완료: {output_file}")
+                
+                if task_callback:
+                    task_callback("병합 완료!")
+                    
+                if progress_callback:
+                    progress_callback(100)  # 처리 완료
+                    
+                return output_file
             
         except Exception as e:
             self.logger.exception(f"filter_complex 병합 중 오류 발생: {str(e)}")

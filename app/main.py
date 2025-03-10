@@ -21,6 +21,13 @@ def setup_services():
     """서비스 초기화"""
     # 로깅 서비스 초기화
     logging_service = LoggingService()
+    
+    # 파일 로깅 설정
+    try:
+        logging_service.setup_file_logging()
+    except Exception as e:
+        print(f"로그 파일 설정 중 오류 발생: {e}")
+    
     logger = logging_service.get_logger(__name__)
     
     # 설정 서비스 초기화

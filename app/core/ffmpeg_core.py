@@ -65,7 +65,22 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
             if not image_files:
                 logger.warning(f"이미지 시퀀스 '{input_file}'를 찾을 수 없습니다.")
                 return {}
+                
+            # 첫 번째 이미지 파일로 속성 추출
             probe_input = image_files[0]
+            
+            # PIL을 사용하여 이미지 크기 확인 (ffprobe가 실패할 경우 대비)
+            try:
+                from PIL import Image
+                with Image.open(probe_input) as img:
+                    width, height = img.size
+                    return {
+                        'width': width,
+                        'height': height,
+                    }
+            except Exception as pil_error:
+                logger.warning(f"PIL로 이미지 크기를 가져오는 데 실패: {pil_error}")
+                # PIL 실패 시 ffprobe로 계속 진행
         else:
             probe_input = input_file
 

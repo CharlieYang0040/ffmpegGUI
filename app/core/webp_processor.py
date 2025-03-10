@@ -42,6 +42,7 @@ class WebPProcessor:
         WebP 애니메이션 파일을 이미지 시퀀스로 추출합니다.
         추출된 이미지 파일 패턴을 반환합니다.
         Pillow 라이브러리를 사용하여 WebP 파일을 처리합니다.
+        멀티스레딩을 사용하여 프레임 추출 속도를 향상시킵니다.
         
         Args:
             input_file: WebP 파일 경로
@@ -85,32 +86,57 @@ class WebPProcessor:
             frame_count = getattr(webp_image, 'n_frames', 1)
             self.logger.info(f"WebP 애니메이션 프레임 수: {frame_count}")
             
-            # 각 프레임 추출 및 저장
-            for frame_idx in range(frame_count):
-                if progress_callback:
-                    # 10%에서 시작하여 90%까지 진행
-                    progress = 10 + int((frame_idx / frame_count) * 90)
-                    progress_callback(progress)
-                    # # 로그 추가
-                    # if frame_idx % 10 == 0 or frame_idx == frame_count - 1:
-                    #     self.logger.debug(f"WebP 프레임 추출 진행률: {progress}% ({frame_idx+1}/{frame_count})")
+            # 진행 상황 추적을 위한 락과 카운터
+            import threading
+            progress_lock = threading.Lock()
+            processed_frames = [0]  # 리스트로 만들어 참조로 전달
+            
+            # 프레임 추출 함수 정의
+            def extract_frame(frame_idx):
+                try:
+                    # 새로운 이미지 객체 생성 (스레드 안전성을 위해)
+                    with Image.open(input_file) as frame_image:
+                        # 현재 프레임으로 이동
+                        frame_image.seek(frame_idx)
+                        
+                        # 프레임 저장 (RGBA -> RGB 변환)
+                        frame_path = os.path.join(temp_dir, f'frame_{frame_idx:05d}.png')
+                        
+                        # RGBA 모드인 경우 RGB로 변환 (알파 채널 제거)
+                        if frame_image.mode == 'RGBA':
+                            # 흰색 배경에 알파 채널 합성
+                            background = Image.new('RGB', frame_image.size, (255, 255, 255))
+                            background.paste(frame_image, mask=frame_image.split()[3])  # 알파 채널을 마스크로 사용
+                            background.save(frame_path, 'PNG')
+                        else:
+                            frame_image.convert('RGB').save(frame_path, 'PNG')
+                        
+                        self.logger.debug(f"프레임 저장됨: {frame_path}")
+                        
+                        # 진행률 업데이트
+                        with progress_lock:
+                            processed_frames[0] += 1
+                            if progress_callback:
+                                # 10%에서 시작하여 90%까지 진행
+                                progress = 10 + int((processed_frames[0] / frame_count) * 90)
+                                progress_callback(progress)
+                except Exception as e:
+                    self.logger.error(f"프레임 {frame_idx} 추출 중 오류 발생: {str(e)}")
+            
+            # 스레드 풀 생성 및 작업 제출
+            import concurrent.futures
+            from app.core.ffmpeg_core import get_optimal_thread_count
+            
+            # 최적의 스레드 수 계산 (CPU 코어 수 기반, 최대 프레임 수의 절반)
+            max_workers = min(get_optimal_thread_count(), max(4, frame_count // 2))
+            self.logger.info(f"WebP 프레임 병렬 추출을 위한 스레드 풀 생성: {max_workers}개 스레드")
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 모든 프레임에 대해 작업 제출
+                futures = [executor.submit(extract_frame, i) for i in range(frame_count)]
                 
-                # 현재 프레임으로 이동
-                webp_image.seek(frame_idx)
-                
-                # 프레임 저장 (RGBA -> RGB 변환)
-                frame_path = os.path.join(temp_dir, f'frame_{frame_idx:05d}.png')
-                
-                # RGBA 모드인 경우 RGB로 변환 (알파 채널 제거)
-                if webp_image.mode == 'RGBA':
-                    # 흰색 배경에 알파 채널 합성
-                    background = Image.new('RGB', webp_image.size, (255, 255, 255))
-                    background.paste(webp_image, mask=webp_image.split()[3])  # 알파 채널을 마스크로 사용
-                    background.save(frame_path, 'PNG')
-                else:
-                    webp_image.convert('RGB').save(frame_path, 'PNG')
-                
-                # self.logger.debug(f"프레임 저장됨: {frame_path}")
+                # 모든 작업 완료 대기
+                concurrent.futures.wait(futures)
             
             # 추출된 파일 확인
             extracted_files = sorted(glob.glob(os.path.join(temp_dir, 'frame_*.png')))

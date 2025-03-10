@@ -14,7 +14,7 @@
 /lhcVideoDownloader/dist
 
 # 로그 폴더 무시
-/log
+/logs
 
 # 캐시 폴더 무시
 /cache
