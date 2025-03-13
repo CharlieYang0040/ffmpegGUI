@@ -10,6 +10,7 @@ from app.ui.widgets.droppable_line_edit import DroppableLineEdit
 from app.ui.commands.commands import RemoveItemsCommand, ReorderItemsCommand, ClearListCommand, AddItemsCommand
 from app.utils.utils import process_file
 from app.services.logging_service import LoggingService
+from app.core.commands import command_manager
 
 # 로깅 서비스 설정
 logger = LoggingService().get_logger(__name__)
@@ -230,7 +231,7 @@ class FileListAreaComponent:
 
         if old_order != new_order:
             command = ReorderItemsCommand(self.parent.list_widget, old_order, new_order)
-            self.parent.execute_command(command)
+            command_manager.execute(command)
 
         self.sort_ascending = not self.sort_ascending
     
@@ -243,7 +244,7 @@ class FileListAreaComponent:
         if reply == QMessageBox.Yes:
             if self.parent.list_widget.count() > 0:
                 command = ClearListCommand(self.parent.list_widget)
-                self.parent.execute_command(command)
+                command_manager.execute(command)
                 self.parent.preview_label.clear()
     
     def add_files(self):
@@ -260,7 +261,7 @@ class FileListAreaComponent:
 
         if file_paths != reversed_file_paths:
             command = ReorderItemsCommand(self.parent.list_widget, file_paths, reversed_file_paths)
-            self.parent.execute_command(command)
+            command_manager.execute(command)
     
     def move_item_up(self):
         """항목 위로 이동"""
@@ -291,7 +292,7 @@ class FileListAreaComponent:
 
         if old_order != new_order:
             command = ReorderItemsCommand(self.parent.list_widget, old_order, new_order)
-            self.parent.execute_command(command)
+            command_manager.execute(command)
     
     def browse_output(self):
         """출력 파일 경로 선택"""
@@ -321,7 +322,7 @@ class FileListAreaComponent:
         selected_items = self.parent.list_widget.selectedItems()
         if selected_items:
             command = RemoveItemsCommand(self.parent.list_widget, selected_items)
-            self.parent.execute_command(command)
+            command_manager.execute(command)
     
     def on_tab_changed(self, index):
         """탭이 변경될 때 호출되는 메서드"""

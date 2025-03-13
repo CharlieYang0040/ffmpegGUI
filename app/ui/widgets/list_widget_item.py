@@ -25,17 +25,21 @@ class ListWidgetItem(QWidget):
         self.file_label.setToolTip(self.file_path)
         layout.addWidget(self.file_label)
 
-        # 트림 스핀박스 추가
+        # 트림 스핀박스 추가 (프레임 단위로 변경)
         self.trim_start_spinbox = QSpinBox()
         self.trim_start_spinbox.setPrefix("앞: ")
-        self.trim_start_spinbox.setRange(0, 100000)
+        self.trim_start_spinbox.setSuffix("f")
+        self.trim_start_spinbox.setRange(0, 10000)
         self.trim_start_spinbox.setFixedWidth(100)
+        self.trim_start_spinbox.setToolTip("앞에서부터 몇 프레임을 트림할지 설정합니다.")
         layout.addWidget(self.trim_start_spinbox)
 
         self.trim_end_spinbox = QSpinBox()
         self.trim_end_spinbox.setPrefix("뒤: ")
-        self.trim_end_spinbox.setRange(0, 100000)
+        self.trim_end_spinbox.setSuffix("f")
+        self.trim_end_spinbox.setRange(0, 10000)
         self.trim_end_spinbox.setFixedWidth(100)
+        self.trim_end_spinbox.setToolTip("뒤에서부터 몇 프레임을 트림할지 설정합니다.")
         layout.addWidget(self.trim_end_spinbox)
 
         self.setLayout(layout)
@@ -65,6 +69,12 @@ class ListWidgetItem(QWidget):
 
     def get_trim_values(self):
         return self.trim_start_spinbox.value(), self.trim_end_spinbox.value()
+
+    def set_trim_values(self, start_value, end_value):
+        """트림 값 설정"""
+        self.trim_start_spinbox.setValue(int(start_value))
+        self.trim_end_spinbox.setValue(int(end_value))
+        return True
 
     def setSelected(self, selected):
         self.is_selected = selected

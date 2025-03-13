@@ -17,6 +17,24 @@ DEBUG_MODE = settings.value('debug_mode', False, type=bool)
 # 로깅 설정
 logger = logging.getLogger(__name__)
 
+def get_resource_path(relative_path=''):
+    """리소스 파일의 절대 경로를 반환합니다.
+    
+    Args:
+        relative_path (str): 리소스 디렉토리 내의 상대 경로
+        
+    Returns:
+        str: 리소스 파일의 절대 경로
+    """
+    if getattr(sys, 'frozen', False):
+        # PyInstaller로 패키징된 경우
+        base_path = sys._MEIPASS
+    else:
+        # 개발 환경에서 실행되는 경우
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    
+    return os.path.join(base_path, 'resources', relative_path)
+
 def get_debug_mode():
     """현재 디버그 모드 상태 반환"""
     return DEBUG_MODE

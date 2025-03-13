@@ -74,19 +74,68 @@ class VideoProcessor:
 
             # 비디오 총 프레임 수 계산
             fps = float(video_properties.get('r', 30))
-            total_frames = int(duration * fps)
             
-            # 트림 후 남은 프레임 수 계산
-            new_total_frames = total_frames - trim_start - trim_end
-            if new_total_frames <= 0:
-                self.logger.warning(f"'{input_file}'의 트림 후 남은 프레임이 없습니다. 원본 파일을 사용합니다.")
-                # 트림 값을 0으로 설정하여 원본 파일 그대로 사용
-                trim_start = 0
-                trim_end = 0
-                new_total_frames = total_frames
+            # nb_frames를 직접 사용하여 총 프레임 수 계산
+            if 'nb_frames' in video_properties and int(video_properties['nb_frames']) > 0:
+                total_frames = int(video_properties['nb_frames'])
+                if debug_mode:
+                    self.logger.debug(f"nb_frames 정보 사용: {total_frames}프레임")
+            else:
+                # nb_frames가 없는 경우에만 duration * fps 사용
+                total_frames = int(duration * fps)
+                self.logger.warning(f"nb_frames 정보가 없어 duration * fps로 계산: {duration} * {fps} = {total_frames}")
             
-            # 트림 끝 프레임 계산
-            end_frame = total_frames - trim_end
+            # 오디오 스트림 존재 여부 확인
+            has_audio = 'a' in video_properties
+            if debug_mode:
+                self.logger.debug(f"오디오 스트림 존재 여부: {has_audio}")
+            
+            # 프레임 기반 트림 사용 시 트림 값 검증 및 조정
+            if use_frame_based_trim:
+                # 트림 값이 소수점인 경우 정수로 변환
+                if isinstance(trim_start, float):
+                    trim_start = int(trim_start)
+                if isinstance(trim_end, float):
+                    trim_end = int(trim_end)
+                
+                # 시작 프레임이 0이면 처음부터 시작
+                if trim_start <= 0:
+                    trim_start = 0
+                
+                # 끝 프레임이 0이면 마지막 프레임까지 사용
+                if trim_end <= 0:
+                    end_frame = total_frames - 1
+                else:
+                    # 끝 프레임이 총 프레임 수보다 크면 조정
+                    end_frame = min(total_frames - 1, trim_end)
+                
+                # 시작 프레임이 끝 프레임보다 크면 조정
+                if trim_start >= end_frame:
+                    self.logger.warning(f"시작 프레임({trim_start})이 끝 프레임({end_frame})보다 크거나 같습니다. 값을 조정합니다.")
+                    trim_start = max(0, end_frame - 1)
+                
+                # 트림 후 남은 프레임 수 계산
+                new_total_frames = end_frame - trim_start + 1
+                
+                if new_total_frames <= 0:
+                    self.logger.warning(f"'{input_file}'의 트림 후 남은 프레임이 없습니다. 기본값을 사용합니다.")
+                    # 최소 1프레임은 남기도록 조정
+                    trim_start = 0
+                    end_frame = max(1, total_frames - 1)
+                    new_total_frames = end_frame - trim_start + 1
+            else:
+                # 초 단위 트림 방식 (기존 로직)
+                # 트림 후 남은 프레임 수 계산
+                new_total_frames = total_frames - trim_start - trim_end
+                if new_total_frames <= 0:
+                    self.logger.warning(f"'{input_file}'의 트림 후 남은 프레임이 없습니다. 원본 파일을 사용합니다.")
+                    # 트림 값을 0으로 설정하여 원본 파일 그대로 사용
+                    trim_start = 0
+                    trim_end = 0
+                    new_total_frames = total_frames
+                
+                # 트림 끝 프레임 계산
+                end_frame = total_frames - trim_end - 1
             
             if debug_mode:
                 self.logger.debug(f"비디오 속성: {video_properties}")
@@ -107,14 +156,13 @@ class VideoProcessor:
                 
                 # 필터 설정 (프레임 번호로 직접 선택)
                 vf_filter = f"select=between(n\\,{trim_start}\\,{end_frame}),setpts=PTS-STARTPTS"
-                af_filter = "aselect=between(n\\,{0}\\,{1}),asetpts=PTS-STARTPTS".format(
-                    int(trim_start * (float(video_properties.get('sample_rate', 44100)) / fps)),
-                    int(end_frame * (float(video_properties.get('sample_rate', 44100)) / fps))
-                )
+                
+                # 로그 출력 추가
+                self.logger.info(f"프레임 기반 트림 적용: 파일={input_file}, 시작 프레임={trim_start}, 끝 프레임={end_frame}")
+                self.logger.info(f"비디오 필터: {vf_filter}")
                 
                 if debug_mode:
                     self.logger.debug(f"프레임 단위 트림 필터: {vf_filter}")
-                    self.logger.debug(f"오디오 트림 필터: {af_filter}")
                 
                 if progress_callback:
                     progress_callback(25)  # 옵션 설정 완료
@@ -125,22 +173,32 @@ class VideoProcessor:
                 # 비디오 필터 적용
                 video_stream = stream.video.filter('select', f'between(n,{trim_start},{end_frame})').filter('setpts', 'PTS-STARTPTS')
                 
-                # 오디오 필터 적용 (오디오 스트림이 있는 경우)
-                try:
-                    audio_stream = stream.audio.filter('aselect', f'between(n,{trim_start},{end_frame})').filter('asetpts', 'PTS-STARTPTS')
-                    # 필터 적용 후 추가 필터 적용
-                    if target_properties:
-                        video_stream = apply_filters(video_stream, target_properties)
-                    
-                    # 출력 스트림 설정 (비디오 + 오디오)
-                    stream = ffmpeg.output(video_stream, audio_stream, temp_output, **encoding_options)
-                except Exception as e:
-                    self.logger.warning(f"오디오 스트림 처리 중 오류 발생: {e}")
-                    # 오디오 스트림이 없는 경우 비디오만 처리
-                    if target_properties:
-                        video_stream = apply_filters(video_stream, target_properties)
-                    
-                    # 출력 스트림 설정 (비디오만)
+                # 필터 적용 후 추가 필터 적용
+                if target_properties:
+                    video_stream = apply_filters(video_stream, target_properties)
+                
+                # 오디오 스트림이 있는 경우에만 오디오 처리
+                if has_audio:
+                    try:
+                        # 오디오 필터 설정
+                        af_filter = f"aselect=between(n\\,{trim_start * 1470 // total_frames}\\,{end_frame * 1470 // total_frames}),asetpts=PTS-STARTPTS"
+                        self.logger.info(f"오디오 필터: {af_filter}")
+                        
+                        if debug_mode:
+                            self.logger.debug(f"오디오 트림 필터: {af_filter}")
+                        
+                        # 오디오 필터 적용
+                        audio_stream = stream.audio.filter('aselect', f'between(n,{trim_start * 1470 // total_frames},{end_frame * 1470 // total_frames})').filter('asetpts', 'PTS-STARTPTS')
+                        
+                        # 출력 스트림 설정 (비디오 + 오디오)
+                        stream = ffmpeg.output(video_stream, audio_stream, temp_output, **encoding_options)
+                    except Exception as e:
+                        self.logger.warning(f"오디오 스트림 처리 중 오류 발생: {e}")
+                        # 오디오 처리 실패 시 비디오만 출력
+                        stream = ffmpeg.output(video_stream, temp_output, **encoding_options)
+                else:
+                    # 오디오 스트림이 없는 경우 비디오만 출력
+                    self.logger.info("오디오 스트림이 없습니다. 비디오만 처리합니다.")
                     stream = ffmpeg.output(video_stream, temp_output, **encoding_options)
             else:
                 # 기존 방식: 초 단위로 변환하여 트림

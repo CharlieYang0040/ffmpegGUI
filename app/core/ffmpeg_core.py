@@ -6,6 +6,7 @@ import re
 import logging
 import ffmpeg
 import psutil
+import subprocess
 
 # 로깅 서비스 가져오기
 from app.services.logging_service import LoggingService
@@ -77,6 +78,10 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
                     return {
                         'width': width,
                         'height': height,
+                        # 이미지 시퀀스의 경우 기본값 설정
+                        'duration': len(image_files) / 30.0,  # 기본 30fps 가정
+                        'r': 30.0,  # 기본 프레임 레이트
+                        'nb_frames': len(image_files)
                     }
             except Exception as pil_error:
                 logger.warning(f"PIL로 이미지 크기를 가져오는 데 실패: {pil_error}")
@@ -84,18 +89,97 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
         else:
             probe_input = input_file
 
+        # ffprobe 명령어 실행
+        if debug_mode:
+            logger.debug(f"FFprobe 명령: {ffprobe_path} -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration,nb_frames -of default=noprint_wrappers=1:nokey=0 {probe_input}")
+        
         probe = ffmpeg.probe(probe_input, cmd=ffprobe_path)
         video_stream = next(
             (s for s in probe['streams'] if s['codec_type'] == 'video'),
             None
         )
+        
         if video_stream is None:
             logger.warning(f"'{input_file}'에서 비디오 스트림을 찾을 수 없습니다.")
             return {}
-        return {
-            'width': video_stream['width'],
-            'height': video_stream['height'],
+        
+        # 기본 비디오 속성 추출
+        properties = {
+            'width': video_stream.get('width', 0),
+            'height': video_stream.get('height', 0),
         }
+        
+        # 프레임 레이트 추출 및 계산
+        if 'r_frame_rate' in video_stream:
+            r_frame_rate = video_stream['r_frame_rate']
+            if '/' in r_frame_rate:
+                num, den = map(int, r_frame_rate.split('/'))
+                fps = num / den if den != 0 else 0
+            else:
+                fps = float(r_frame_rate)
+            properties['r'] = fps
+        else:
+            properties['r'] = 30.0  # 기본값
+        
+        # 지속 시간 추출
+        if 'duration' in video_stream:
+            properties['duration'] = float(video_stream['duration'])
+        elif 'duration' in probe['format']:
+            properties['duration'] = float(probe['format']['duration'])
+        else:
+            properties['duration'] = 0.0
+        
+        # 총 프레임 수 추출
+        if 'nb_frames' in video_stream and video_stream['nb_frames'] != 'N/A' and int(video_stream['nb_frames']) > 0:
+            properties['nb_frames'] = int(video_stream['nb_frames'])
+            if debug_mode:
+                logger.debug(f"비디오 스트림에서 직접 nb_frames 추출: {properties['nb_frames']}")
+        else:
+            # 프레임 수가 없으면 지속 시간과 프레임 레이트로 계산
+            calculated_frames = int(properties['duration'] * properties['r'])
+            properties['nb_frames'] = calculated_frames
+            if debug_mode:
+                logger.debug(f"nb_frames 정보가 없어 계산: {properties['duration']} * {properties['r']} = {calculated_frames}")
+            
+            # 추가 검증: ffprobe로 직접 프레임 수 확인 시도
+            try:
+                cmd = [
+                    ffprobe_path, 
+                    '-v', 'error', 
+                    '-count_frames', 
+                    '-select_streams', 'v:0', 
+                    '-show_entries', 'stream=nb_read_frames', 
+                    '-of', 'default=noprint_wrappers=1:nokey=1', 
+                    probe_input
+                ]
+                if debug_mode:
+                    logger.debug(f"프레임 수 확인 명령: {' '.join(cmd)}")
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                if result.returncode == 0 and result.stdout.strip() and result.stdout.strip() != 'N/A':
+                    frame_count = int(result.stdout.strip())
+                    if frame_count > 0:
+                        properties['nb_frames'] = frame_count
+                        if debug_mode:
+                            logger.debug(f"count_frames로 프레임 수 확인: {frame_count}")
+            except Exception as e:
+                if debug_mode:
+                    logger.debug(f"프레임 수 확인 중 오류: {e}")
+        
+        # 오디오 스트림 존재 여부 확인
+        audio_stream = next(
+            (s for s in probe['streams'] if s['codec_type'] == 'audio'),
+            None
+        )
+        if audio_stream:
+            properties['a'] = True
+            if 'sample_rate' in audio_stream:
+                properties['sample_rate'] = int(audio_stream['sample_rate'])
+        
+        if debug_mode:
+            logger.debug(f"비디오 속성: {properties}")
+        
+        return properties
     except ffmpeg.Error as e:
         logger.error(f"'{input_file}'를 프로브하는 중 오류 발생: {e}")
         return {}

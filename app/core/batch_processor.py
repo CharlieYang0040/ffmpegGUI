@@ -8,6 +8,8 @@ import psutil
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Tuple, Optional, Callable
 import concurrent.futures
+import glob
+import re
 
 # 다른 모듈에서 필요한 함수 가져오기
 from app.core.ffmpeg_core import get_media_properties, get_target_properties, create_temp_file_list, get_optimal_encoding_options, get_optimal_thread_count
@@ -86,6 +88,11 @@ class BatchProcessor:
         Returns:
             처리된 출력 파일 경로
         """
+        # 로그 추가: 프레임 기반 트림 사용 여부 및 미디어 파일 정보
+        self.logger.info(f"프레임 기반 트림 사용 여부: {use_frame_based_trim}")
+        for idx, (file_path, trim_start, trim_end) in enumerate(media_files):
+            self.logger.info(f"미디어 파일 #{idx+1}: 경로={file_path}, 트림 시작={trim_start}, 트림 끝={trim_end}")
+        
         temp_files = []
         temp_dirs = []
         
@@ -181,12 +188,33 @@ class BatchProcessor:
                         
                         self.logger.info(f"WebP 파일 처리 완료: {file_path} -> {image_sequence}")
                         
+                        # 추출된 프레임 정보 확인
+                        extracted_dir = os.path.dirname(image_sequence)
+                        extracted_files = sorted(glob.glob(os.path.join(extracted_dir, 'frame_*.png')))
+                        
+                        # 프레임 번호 범위 확인
+                        frame_numbers = []
+                        for file_path in extracted_files:
+                            file_name = os.path.basename(file_path)
+                            number_match = re.search(r'(\d+)', file_name)
+                            if number_match:
+                                frame_number = int(number_match.group(1))
+                                frame_numbers.append(frame_number)
+                        
+                        if frame_numbers:
+                            min_frame = min(frame_numbers)
+                            max_frame = max(frame_numbers)
+                            self.logger.info(f"추출된 프레임 번호 범위: {min_frame}~{max_frame}, 총 {len(frame_numbers)}개 프레임")
+                        
                         # 결과 반환
                         return {
                             'task_idx': task_idx,
                             'image_sequence': image_sequence,
                             'metadata': webp_metadata,
-                            'temp_dir': temp_dir
+                            'temp_dir': temp_dir,
+                            'frame_count': len(extracted_files),
+                            'frame_range': (min(frame_numbers) if frame_numbers else 0, 
+                                           max(frame_numbers) if frame_numbers else 0)
                         }
                     except Exception as e:
                         self.logger.exception(f"WebP 파일 처리 중 오류 발생: {str(e)}")
@@ -211,23 +239,82 @@ class BatchProcessor:
                             if 'error' not in result:
                                 webp_results[task_idx] = result
                                 
-                                # 원본 WebP 해상도 정보가 있으면 target_properties에 추가
-                                metadata = result['metadata']
-                                if metadata and metadata['width'] > 0 and metadata['height'] > 0:
-                                    if not target_properties:
-                                        target_properties = {}
+                                # WebP 파일에서 해상도 정보 추출
+                                if 'metadata' in result and 'width' in result['metadata'] and 'height' in result['metadata']:
+                                    width = result['metadata']['width']
+                                    height = result['metadata']['height']
+                                    self.logger.info(f"WebP 파일에서 해상도 정보 추출: {width}x{height}")
                                     
-                                    # 기존 해상도 정보가 없거나 WebP 해상도가 더 크면 업데이트
-                                    if ('width' not in target_properties or 
-                                        'height' not in target_properties or
-                                        (metadata['width'] > target_properties['width'] and 
-                                         metadata['height'] > target_properties['height'])):
-                                        target_properties['width'] = metadata['width']
-                                        target_properties['height'] = metadata['height']
-                                        self.logger.info(f"WebP 파일에서 해상도 정보 추출: {target_properties['width']}x{target_properties['height']}")
+                                    # 해상도 정보가 없으면 WebP에서 추출한 정보 사용
+                                    if not target_properties or 'width' not in target_properties or 'height' not in target_properties:
+                                        target_properties = {
+                                            'width': width,
+                                            'height': height
+                                        }
                                 
-                                # 원본 WebP 파일을 이미지 시퀀스로 대체
-                                media_files[task_idx] = (result['image_sequence'], *media_files[task_idx][1:])
+                                # WebP에서 추출한 FPS 정보가 있으면 인코딩 옵션에 추가
+                                if 'metadata' in result and 'fps' in result['metadata'] and result['metadata']['fps'] > 0:
+                                    encoding_options['r'] = str(result['metadata']['fps'])
+                                    self.logger.info(f"WebP에서 추출한 프레임레이트를 인코딩 옵션에 적용: {result['metadata']['fps']}fps")
+                                
+                                # WebP 처리 결과에서 인코딩 옵션이 있으면 업데이트
+                                if 'encoding_options' in result:
+                                    # 기존 인코딩 옵션 유지하면서 WebP 처리 결과의 옵션으로 업데이트
+                                    for key, value in result['encoding_options'].items():
+                                        encoding_options[key] = value
+                                    self.logger.info(f"WebP 처리 결과의 인코딩 옵션으로 업데이트: {result['encoding_options']}")
+                                
+                                # 이미지 시퀀스 경로 저장
+                                media_files[task_idx] = (result['image_sequence'], 0, 0)
+                                
+                                # 프레임 범위 정보가 있으면 트림 값 업데이트
+                                if 'frame_range' in result and 'frame_count' in result:
+                                    min_frame, max_frame = result['frame_range']
+                                    frame_count = result['frame_count']
+                                    
+                                    # 트림 값이 0이면 전체 프레임 범위 사용
+                                    file_path, trim_start, trim_end = media_files[task_idx]
+                                    if trim_start <= 0 and trim_end <= 0:
+                                        # 트림 값을 설정하지 않음 (전체 프레임 사용)
+                                        pass
+                                    elif trim_start > 0 and trim_end <= 0:
+                                        # 시작 프레임만 지정된 경우
+                                        if trim_start < frame_count:
+                                            # 시작 인덱스를 실제 프레임 번호로 변환
+                                            # (정렬된 프레임 번호 목록에서 trim_start 인덱스에 해당하는 값)
+                                            sorted_frames = sorted(range(min_frame, max_frame + 1))
+                                            if trim_start < len(sorted_frames):
+                                                trim_start = sorted_frames[trim_start]
+                                        else:
+                                            # 범위를 벗어나면 첫 프레임 사용
+                                            trim_start = min_frame
+                                        
+                                        media_files[task_idx] = (file_path, trim_start, 0)
+                                    elif trim_end > 0:
+                                        # 끝 프레임이 지정된 경우
+                                        if trim_end < frame_count:
+                                            # 끝 인덱스를 실제 프레임 번호로 변환
+                                            sorted_frames = sorted(range(min_frame, max_frame + 1))
+                                            if trim_end < len(sorted_frames):
+                                                trim_end = sorted_frames[trim_end]
+                                            else:
+                                                # 범위를 벗어나면 마지막 프레임 사용
+                                                trim_end = max_frame
+                                        else:
+                                            # 범위를 벗어나면 마지막 프레임 사용
+                                            trim_end = max_frame
+                                        
+                                        # 시작 프레임도 조정
+                                        if trim_start > 0 and trim_start < frame_count:
+                                            sorted_frames = sorted(range(min_frame, max_frame + 1))
+                                            if trim_start < len(sorted_frames):
+                                                trim_start = sorted_frames[trim_start]
+                                            else:
+                                                trim_start = min_frame
+                                        
+                                        media_files[task_idx] = (file_path, trim_start, trim_end)
+                                    
+                                    self.logger.info(f"WebP 프레임 범위 정보 적용: 파일={file_path}, 시작={trim_start}, 끝={trim_end}, 프레임 범위={min_frame}~{max_frame}, 총 프레임 수={frame_count}")
                                 
                                 with progress_lock:
                                     webp_processed += 1
@@ -243,11 +330,57 @@ class BatchProcessor:
             
             # 각 미디어 파일 처리
             for i, (file_path, trim_start, trim_end) in enumerate(media_files):
+                # 트림 값 검증 및 변환
+                if isinstance(trim_start, str):
+                    try:
+                        trim_start = float(trim_start)
+                    except ValueError:
+                        trim_start = 0
+                
+                if isinstance(trim_end, str):
+                    try:
+                        trim_end = float(trim_end)
+                    except ValueError:
+                        trim_end = 0
+                
+                # 소수점 트림 값을 프레임 단위로 변환 (초 단위로 잘못 입력된 경우 처리)
+                if isinstance(trim_start, float) and not trim_start.is_integer() and trim_start > 0 and trim_start < 100:
+                    try:
+                        video_properties = get_media_properties(file_path, debug_mode)
+                        fps = float(video_properties.get('r', 30))
+                        # 초 단위를 프레임 단위로 변환
+                        original_trim_start = trim_start
+                        trim_start = int(trim_start * fps)
+                        self.logger.info(f"소수점 트림 값을 프레임으로 변환: {original_trim_start:.2f}초 -> {trim_start}프레임 (fps: {fps})")
+                    except Exception as e:
+                        self.logger.warning(f"트림 값 변환 중 오류: {e}")
+                        trim_start = int(trim_start)
+                elif isinstance(trim_start, float):
+                    trim_start = int(trim_start)
+                
+                if isinstance(trim_end, float) and not trim_end.is_integer() and trim_end > 0 and trim_end < 100:
+                    try:
+                        video_properties = get_media_properties(file_path, debug_mode)
+                        fps = float(video_properties.get('r', 30))
+                        # 초 단위를 프레임 단위로 변환
+                        original_trim_end = trim_end
+                        trim_end = int(trim_end * fps)
+                        self.logger.info(f"소수점 트림 값을 프레임으로 변환: {original_trim_end:.2f}초 -> {trim_end}프레임 (fps: {fps})")
+                    except Exception as e:
+                        self.logger.warning(f"트림 값 변환 중 오류: {e}")
+                        trim_end = int(trim_end)
+                elif isinstance(trim_end, float):
+                    trim_end = int(trim_end)
+                
                 # 전역 트림 값 적용
                 if global_trim_start > 0:
+                    original_trim_start = trim_start
                     trim_start += global_trim_start
+                    self.logger.info(f"전역 트림 시작 값 적용: {original_trim_start} + {global_trim_start} = {trim_start}프레임")
                 if global_trim_end > 0:
+                    original_trim_end = trim_end
                     trim_end += global_trim_end
+                    self.logger.info(f"전역 트림 끝 값 적용: {original_trim_end} + {global_trim_end} = {trim_end}프레임")
                 
                 # 개별 트림 값이 있으면 적용
                 if trim_values and i < len(trim_values):
@@ -256,6 +389,35 @@ class BatchProcessor:
                         trim_start = custom_trim_start
                     if custom_trim_end > 0:
                         trim_end = custom_trim_end
+                
+                # 프레임 기반 트림 사용 시 로그 출력 및 값 검증
+                if use_frame_based_trim:
+                    # 비디오 속성 가져오기
+                    try:
+                        video_properties = get_media_properties(file_path, debug_mode)
+                        fps = float(video_properties.get('r', 30))
+                        
+                        # nb_frames를 직접 사용하여 총 프레임 수 계산
+                        if 'nb_frames' in video_properties and video_properties['nb_frames'] > 0:
+                            total_frames = int(video_properties['nb_frames'])
+                        else:
+                            # nb_frames가 없는 경우에만 duration * fps 사용
+                            duration = float(video_properties.get('duration', 0))
+                            total_frames = int(duration * fps)
+                            self.logger.warning(f"nb_frames 정보가 없어 duration * fps로 계산: {duration} * {fps} = {total_frames}")
+                        
+                        # 트림 값이 프레임 번호로 지정된 경우 검증
+                        if trim_start < 0:
+                            trim_start = 0
+                        
+                        # 끝 프레임이 0이면 마지막 프레임까지 사용
+                        if trim_end <= 0 and total_frames > 0:
+                            trim_end = total_frames - 1  # 0부터 시작하는 프레임 번호 체계에 맞춤
+                        
+                        self.logger.info(f"파일 {i+1} 프레임 기반 트림 적용: 시작={trim_start}, 끝={trim_end}, 총 프레임={total_frames}")
+                    except Exception as e:
+                        self.logger.warning(f"비디오 속성 가져오기 실패: {e}")
+                        self.logger.info(f"파일 {i+1} 프레임 기반 트림 적용: 시작={trim_start}, 끝={trim_end}")
                 
                 if task_callback:
                     task_callback(f"파일 처리 중... ({i+1}/{len(media_files)})")
@@ -407,6 +569,9 @@ class BatchProcessor:
         Returns:
             처리된 임시 파일 경로
         """
+        # 트림 값 로깅 추가
+        self.logger.info(f"단일 미디어 처리: 파일={input_file}, 트림 시작={trim_start}, 트림 끝={trim_end}, 프레임 기반 트림={use_frame_based_trim}")
+        
         # 파일 유형에 따라 적절한 프로세서 선택
         if '%' in input_file or os.path.isdir(input_file):
             # 이미지 시퀀스 처리

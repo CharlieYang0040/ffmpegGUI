@@ -7,6 +7,7 @@ import os
 import logging
 from app.ui.commands.commands import ChangeOutputPathCommand, ReorderItemsCommand, AddItemsCommand
 from app.ui.widgets.list_widget_item import ListWidgetItem
+from app.core.commands import command_manager
 from app.utils.utils import (
     is_media_file,
     process_image_sequences,
@@ -67,7 +68,7 @@ class DragDropListWidget(QListWidget):
         """드래그 드롭과 파일 추가시 공통으로 사용할 파일 처리 메서드"""
         if links and hasattr(self, 'main_window') and self.main_window:
             command = AddItemsCommand(self, links)
-            self.main_window.execute_command(command)
+            command_manager.execute(command)
             logger.info(f"[handle_new_files] {len(links)}개 파일 추가됨")
             
             # 자동 출력 경로 설정
@@ -98,7 +99,7 @@ class DragDropListWidget(QListWidget):
                 self.main_window.output_edit.text(),  # 이전 경로
                 new_output_path  # 새로운 경로
             )
-            self.main_window.execute_command(command)
+            command_manager.execute(command)
 
     def dropEvent(self, event: QDropEvent):
         logger.debug("[dropEvent] 드롭 이벤트 시작")
@@ -124,10 +125,10 @@ class DragDropListWidget(QListWidget):
             super().dropEvent(event)
             new_order = self.get_all_file_paths()
             
-            if self.old_order != new_order and hasattr(self.parent(), 'execute_command'):
+            if self.old_order != new_order:
                 logger.info("[dropEvent] 아이템 순서 변경 실행")
                 command = ReorderItemsCommand(self, self.old_order, new_order)
-                self.parent().execute_command(command)
+                command_manager.execute(command)
                 logger.info("[dropEvent] 아이템 목록 업데이트 완료")
                 self.update_items(new_order)
 

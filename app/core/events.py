@@ -135,4 +135,13 @@ class Events:
     UPDATE_DOWNLOAD_ERROR = "update:download_error"
     UPDATE_INSTALL_STARTED = "update:install_started"
     UPDATE_INSTALL_COMPLETED = "update:install_completed"
-    UPDATE_INSTALL_ERROR = "update:install_error" 
+    UPDATE_INSTALL_ERROR = "update:install_error"
+    
+    # 타임라인 관련 이벤트
+    TIMELINE_SET_IN_POINT = "timeline:set_in_point"
+    TIMELINE_SET_OUT_POINT = "timeline:set_out_point"
+    TIMELINE_PLAY_TOGGLE = "timeline:play_toggle"
+    TIMELINE_SEEK_PREV_FRAME = "timeline:seek_prev_frame"
+    TIMELINE_SEEK_NEXT_FRAME = "timeline:seek_next_frame"
+    TIMELINE_SEEK_START = "timeline:seek_start"
+    TIMELINE_SEEK_END = "timeline:seek_end" 

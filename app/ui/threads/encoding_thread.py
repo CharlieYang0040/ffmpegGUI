@@ -89,12 +89,41 @@ class EncodingThread(QThread):
             output_file = self.kwargs.pop('output_file', self.args[1] if len(self.args) > 1 else None)
             encoding_options = self.kwargs.pop('encoding_options', self.args[2] if len(self.args) > 2 else {})
             
+            # 프레임 기반 트림 사용 여부 확인
+            use_frame_based_trim = self.kwargs.pop('use_frame_based_trim', False)
+            
+            # 트림 값 검증
+            validated_media_files = []
+            for i, (file_path, trim_start, trim_end) in enumerate(media_files):
+                # 트림 값이 문자열인 경우 숫자로 변환
+                if isinstance(trim_start, str):
+                    try:
+                        trim_start = float(trim_start)
+                    except ValueError:
+                        trim_start = 0
+                
+                if isinstance(trim_end, str):
+                    try:
+                        trim_end = float(trim_end)
+                    except ValueError:
+                        trim_end = 0
+                
+                # 트림 값이 음수인 경우 0으로 설정
+                if trim_start < 0:
+                    trim_start = 0
+                if trim_end < 0:
+                    trim_end = 0
+                
+                validated_media_files.append((file_path, trim_start, trim_end))
+            
+            # 검증된 미디어 파일 목록 사용
             result = self.ffmpeg_utils.process_all_media(
-                media_files=media_files,
+                media_files=validated_media_files,
                 output_file=output_file,
                 encoding_options=encoding_options,
                 progress_callback=progress_callback,
                 task_callback=task_callback,
+                use_frame_based_trim=use_frame_based_trim,
                 **self.kwargs
             )
             

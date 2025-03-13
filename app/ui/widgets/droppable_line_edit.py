@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QLineEdit
 from PySide6.QtCore import Qt
 import os
 from app.ui.commands.commands import ChangeOutputPathCommand
+from app.core.commands import command_manager
 
 class DroppableLineEdit(QLineEdit):
     def __init__(self, parent=None):
@@ -25,11 +26,8 @@ class DroppableLineEdit(QLineEdit):
             current_dir = os.path.expanduser("~")
         new_path = os.path.join(current_dir, f"{file_name}.mp4")
 
-        if hasattr(self.parent(), 'execute_command'):
-            command = ChangeOutputPathCommand(self, self.text(), new_path)
-            self.parent().execute_command(command)
-        else:
-            self.setText(new_path)
+        command = ChangeOutputPathCommand(self, self.text(), new_path)
+        command_manager.execute(command)
 
         event.acceptProposedAction()
 
@@ -38,10 +36,8 @@ class DroppableLineEdit(QLineEdit):
         if current_text and not (current_text.lower().endswith('.mp4') or current_text.lower().endswith('.mov')):
             new_text = current_text + '.mp4'
 
-            if new_text != self.old_text and hasattr(self.parent(), 'execute_command'):
+            if new_text != self.old_text:
                 command = ChangeOutputPathCommand(self, self.old_text, new_text)
-                self.parent().execute_command(command)
-            else:
-                self.setText(new_text)
+                command_manager.execute(command)
 
         super().focusOutEvent(event)

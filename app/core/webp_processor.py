@@ -100,6 +100,7 @@ class WebPProcessor:
                         frame_image.seek(frame_idx)
                         
                         # 프레임 저장 (RGBA -> RGB 변환)
+                        # 중요: 프레임 번호는 0부터 시작하며, 이는 FFmpeg에서 -start_number 옵션과 함께 사용됨
                         frame_path = os.path.join(temp_dir, f'frame_{frame_idx:05d}.png')
                         
                         # RGBA 모드인 경우 RGB로 변환 (알파 채널 제거)
@@ -143,7 +144,16 @@ class WebPProcessor:
             if not extracted_files:
                 raise FileNotFoundError(f"WebP에서 추출된 이미지 파일이 없습니다: {temp_dir}")
             
-            self.logger.info(f"WebP 추출 완료: {len(extracted_files)}개 프레임")
+            # 추출된 프레임 번호 범위 확인
+            first_frame = os.path.basename(extracted_files[0])
+            last_frame = os.path.basename(extracted_files[-1])
+            first_number_match = re.search(r'(\d+)', first_frame)
+            last_number_match = re.search(r'(\d+)', last_frame)
+            
+            first_number = int(first_number_match.group(1)) if first_number_match else 0
+            last_number = int(last_number_match.group(1)) if last_number_match else 0
+            
+            self.logger.info(f"WebP 추출 완료: {len(extracted_files)}개 프레임 (번호 범위: {first_number}~{last_number})")
             
             if progress_callback:
                 progress_callback(100)  # 추출 완료

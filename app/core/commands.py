@@ -282,5 +282,127 @@ class EncodingOptionsCommand(Command):
             return False
 
 
+class SetInPointCommand(Command):
+    """시작 프레임 마커 설정 명령"""
+    
+    def __init__(self, timeline_widget, old_in_point: int, new_in_point: int):
+        """
+        시작 프레임 마커 설정 명령 초기화
+        
+        Args:
+            timeline_widget: 타임라인 위젯
+            old_in_point: 이전 시작 프레임
+            new_in_point: 새 시작 프레임
+        """
+        super().__init__(f"시작 프레임 설정: {old_in_point} → {new_in_point}")
+        self.timeline_widget = timeline_widget
+        self.old_in_point = old_in_point
+        self.new_in_point = new_in_point
+    
+    def execute(self) -> bool:
+        """시작 프레임 마커 설정 명령 실행"""
+        try:
+            self.timeline_widget.set_in_point(self.new_in_point)
+            return True
+        except Exception as e:
+            self.logger.error(f"시작 프레임 설정 명령 실행 중 오류: {str(e)}")
+            return False
+    
+    def undo(self) -> bool:
+        """시작 프레임 마커 설정 명령 취소"""
+        try:
+            self.timeline_widget.set_in_point(self.old_in_point)
+            return True
+        except Exception as e:
+            self.logger.error(f"시작 프레임 설정 명령 취소 중 오류: {str(e)}")
+            return False
+
+
+class SetOutPointCommand(Command):
+    """종료 프레임 마커 설정 명령"""
+    
+    def __init__(self, timeline_widget, old_out_point: int, new_out_point: int):
+        """
+        종료 프레임 마커 설정 명령 초기화
+        
+        Args:
+            timeline_widget: 타임라인 위젯
+            old_out_point: 이전 종료 프레임
+            new_out_point: 새 종료 프레임
+        """
+        super().__init__(f"종료 프레임 설정: {old_out_point} → {new_out_point}")
+        self.timeline_widget = timeline_widget
+        self.old_out_point = old_out_point
+        self.new_out_point = new_out_point
+    
+    def execute(self) -> bool:
+        """종료 프레임 마커 설정 명령 실행"""
+        try:
+            self.timeline_widget.set_out_point(self.new_out_point)
+            return True
+        except Exception as e:
+            self.logger.error(f"종료 프레임 설정 명령 실행 중 오류: {str(e)}")
+            return False
+    
+    def undo(self) -> bool:
+        """종료 프레임 마커 설정 명령 취소"""
+        try:
+            self.timeline_widget.set_out_point(self.old_out_point)
+            return True
+        except Exception as e:
+            self.logger.error(f"종료 프레임 설정 명령 취소 중 오류: {str(e)}")
+            return False
+
+
+class SeekFrameCommand(Command):
+    """프레임 이동 명령"""
+    
+    def __init__(self, timeline_widget, current_frame: int, target_frame: int, video_thread=None):
+        """
+        프레임 이동 명령 초기화
+        
+        Args:
+            timeline_widget: 타임라인 위젯
+            current_frame: 현재 프레임
+            target_frame: 이동할 프레임
+            video_thread: 비디오 스레드 (선택 사항)
+        """
+        super().__init__(f"프레임 이동: {current_frame} → {target_frame}")
+        self.timeline_widget = timeline_widget
+        self.current_frame = current_frame
+        self.target_frame = target_frame
+        self.video_thread = video_thread
+    
+    def execute(self) -> bool:
+        """프레임 이동 명령 실행"""
+        try:
+            # 타임라인 위젯 프레임 설정
+            self.timeline_widget.set_current_frame(self.target_frame)
+            
+            # 비디오 스레드가 있으면 해당 프레임으로 이동
+            if self.video_thread:
+                self.video_thread.seek_to_frame(self.target_frame)
+                
+            return True
+        except Exception as e:
+            self.logger.error(f"프레임 이동 명령 실행 중 오류: {str(e)}")
+            return False
+    
+    def undo(self) -> bool:
+        """프레임 이동 명령 취소"""
+        try:
+            # 타임라인 위젯 프레임 설정
+            self.timeline_widget.set_current_frame(self.current_frame)
+            
+            # 비디오 스레드가 있으면 해당 프레임으로 이동
+            if self.video_thread:
+                self.video_thread.seek_to_frame(self.current_frame)
+                
+            return True
+        except Exception as e:
+            self.logger.error(f"프레임 이동 명령 취소 중 오류: {str(e)}")
+            return False
+
+
 # 전역 명령 관리자 인스턴스
 command_manager = CommandManager() 

@@ -146,8 +146,6 @@ class FFmpegGui(QWidget):
             "color_range": "limited"
         }
         self.speed = 1.0
-        self.undo_stack = []
-        self.redo_stack = []
         self.update_checker = UpdateChecker()
     
     def init_tab_list_widget(self):
@@ -181,8 +179,8 @@ class FFmpegGui(QWidget):
         self.create_top_layout(main_layout)
         self.create_content_layout(main_layout)
         self.setup_update_checker()
-        self.setGeometry(100, 100, 750, 600)
-        self.setMinimumWidth(750)
+        self.setGeometry(100, 100, 900, 600)
+        self.setMinimumWidth(900)
 
         self.debug_checkbox.setChecked(get_debug_mode())
         set_logger_level(self.debug_checkbox.isChecked())
@@ -204,6 +202,11 @@ class FFmpegGui(QWidget):
         self.preview_area.create_preview_area(top_layout)
         self.control_area.create_control_area(top_layout)
         main_layout.addLayout(top_layout)
+        
+        # 타임라인 단축키 설정
+        if hasattr(self.preview_area, 'timeline') and self.preview_area.timeline:
+            self.preview_area.timeline.setup_shortcuts()
+            logger.debug("타임라인 단축키 설정 완료")
 
     def create_content_layout(self, main_layout):
         """콘텐츠 레이아웃 생성"""
@@ -366,31 +369,23 @@ class FFmpegGui(QWidget):
 
     def execute_command(self, command: Command):
         """명령 실행"""
-        command.execute()
-        self.undo_stack.append(command)
-        self.redo_stack.clear()
+        command_manager.execute(command)
         self.update_undo_redo_buttons()
 
     def undo(self):
         """실행 취소"""
-        if self.undo_stack:
-            command = self.undo_stack.pop()
-            command.undo()
-            self.redo_stack.append(command)
-            self.update_undo_redo_buttons()
+        command_manager.undo()
+        self.update_undo_redo_buttons()
 
     def redo(self):
         """다시 실행"""
-        if self.redo_stack:
-            command = self.redo_stack.pop()
-            command.execute()
-            self.undo_stack.append(command)
-            self.update_undo_redo_buttons()
+        command_manager.redo()
+        self.update_undo_redo_buttons()
 
     def update_undo_redo_buttons(self):
         """실행 취소/다시 실행 버튼 상태 업데이트"""
-        self.undo_button.setEnabled(bool(self.undo_stack))
-        self.redo_button.setEnabled(bool(self.redo_stack))
+        self.undo_button.setEnabled(command_manager.can_undo())
+        self.redo_button.setEnabled(command_manager.can_redo())
 
     def keyPressEvent(self, event):
         """키 입력 이벤트 처리"""
@@ -430,9 +425,111 @@ class FFmpegGui(QWidget):
                 item = self.list_widget.item(i)
                 item_widget = self.list_widget.itemWidget(item)
                 file_path = item_widget.file_path
-                trim_start, trim_end = item_widget.get_trim_values()
+                
+                # 타임라인에서 트림 포인트 가져오기
+                if i == self.list_widget.currentRow() and hasattr(self, 'preview_area') and self.preview_area.timeline:
+                    # 현재 선택된 항목이고 타임라인이 있는 경우
+                    in_point, out_point = self.preview_area.get_trim_points()
+                    
+                    # 비디오 정보 가져오기
+                    if self.preview_area.video_thread:
+                        video_info = self.preview_area.video_thread.get_video_info()
+                        fps = video_info.get('fps', 30)
+                        frame_count = video_info.get('frame_count', 0)
+                        
+                        # 프레임 값을 그대로 사용 (초 단위로 변환하지 않음)
+                        trim_start = in_point
+                        trim_end = out_point
+                        
+                        # 프레임 번호와 초 단위 시간 모두 로그에 기록
+                        logger.info(f"타임라인 트림 포인트: {in_point}~{out_point} 프레임 ({in_point/fps:.2f}~{out_point/fps:.2f}초), 총 프레임 수: {frame_count}")
+                    else:
+                        # 비디오 스레드가 없는 경우 기존 트림 값 사용
+                        trim_start, trim_end = item_widget.get_trim_values()
+                else:
+                    # 타임라인이 없거나 현재 선택된 항목이 아닌 경우 기존 트림 값 사용
+                    trim_start, trim_end = item_widget.get_trim_values()
+                
                 ordered_input.append((file_path, trim_start, trim_end))
 
+            # 트림 값 로그 출력
+            for i, (file_path, trim_start, trim_end) in enumerate(ordered_input):
+                # 트림 값이 소수점인 경우 정수로 변환
+                if isinstance(trim_start, float):
+                    # 소수점이 있는 경우 프레임 단위로 변환 (초 단위로 잘못 입력된 경우 처리)
+                    if not trim_start.is_integer() and trim_start > 0 and trim_start < 100:
+                        # 비디오 정보 가져오기
+                        try:
+                            video_properties = FFmpegUtils.get_media_properties(file_path, get_debug_mode())
+                            fps = float(video_properties.get('r', 30))
+                            
+                            # nb_frames를 직접 사용하여 총 프레임 수 계산
+                            if 'nb_frames' in video_properties and video_properties['nb_frames'] != 'N/A' and int(video_properties.get('nb_frames', 0)) > 0:
+                                total_frames = int(video_properties['nb_frames'])
+                                logger.debug(f"nb_frames 정보 사용: {total_frames}프레임")
+                            else:
+                                # nb_frames가 없는 경우에만 duration * fps 사용
+                                duration = float(video_properties.get('duration', 0))
+                                total_frames = int(duration * fps)
+                                logger.warning(f"nb_frames 정보가 없어 duration * fps로 계산: {duration} * {fps} = {total_frames}")
+                            
+                            # 초 단위를 프레임 단위로 변환
+                            original_trim_start = trim_start
+                            trim_start = int(trim_start * fps)
+                            logger.info(f"소수점 트림 값을 프레임으로 변환: {original_trim_start:.2f}초 -> {trim_start}프레임 (fps: {fps}, 총 프레임: {total_frames})")
+                        except Exception as e:
+                            logger.warning(f"트림 값 변환 중 오류: {e}")
+                            trim_start = int(trim_start)
+                    else:
+                        trim_start = int(trim_start)
+                
+                if isinstance(trim_end, float):
+                    # 소수점이 있는 경우 프레임 단위로 변환 (초 단위로 잘못 입력된 경우 처리)
+                    if not trim_end.is_integer() and trim_end > 0 and trim_end < 100:
+                        # 비디오 정보 가져오기
+                        try:
+                            video_properties = FFmpegUtils.get_media_properties(file_path, get_debug_mode())
+                            fps = float(video_properties.get('r', 30))
+                            
+                            # nb_frames를 직접 사용하여 총 프레임 수 계산
+                            if 'nb_frames' in video_properties and video_properties['nb_frames'] != 'N/A' and int(video_properties.get('nb_frames', 0)) > 0:
+                                total_frames = int(video_properties['nb_frames'])
+                                logger.debug(f"nb_frames 정보 사용: {total_frames}프레임")
+                            else:
+                                # nb_frames가 없는 경우에만 duration * fps 사용
+                                duration = float(video_properties.get('duration', 0))
+                                total_frames = int(duration * fps)
+                                logger.warning(f"nb_frames 정보가 없어 duration * fps로 계산: {duration} * {fps} = {total_frames}")
+                            
+                            # 초 단위를 프레임 단위로 변환
+                            original_trim_end = trim_end
+                            trim_end = int(trim_end * fps)
+                            logger.info(f"소수점 트림 값을 프레임으로 변환: {original_trim_end:.2f}초 -> {trim_end}프레임 (fps: {fps}, 총 프레임: {total_frames})")
+                        except Exception as e:
+                            logger.warning(f"트림 값 변환 중 오류: {e}")
+                            trim_end = int(trim_end)
+                    else:
+                        trim_end = int(trim_end)
+                
+                # 트림 값이 음수인 경우 0으로 설정
+                if trim_start < 0:
+                    trim_start = 0
+                if trim_end < 0:
+                    trim_end = 0
+                
+                # 업데이트된 트림 값으로 ordered_input 갱신
+                ordered_input[i] = (file_path, trim_start, trim_end)
+                
+                logger.info(f"인코딩 파일 {i+1}: {file_path}, 앞 트림: {trim_start}프레임, 뒤 트림: {trim_end}프레임")
+
+            # 전역 트림 값 가져오기
+            global_trim_start = self.control_area.global_trim_start if hasattr(self, 'control_area') and self.control_area.use_global_trim else 0
+            global_trim_end = self.control_area.global_trim_end if hasattr(self, 'control_area') and self.control_area.use_global_trim else 0
+            
+            # 전역 트림 값 로그 출력
+            if global_trim_start > 0 or global_trim_end > 0:
+                logger.info(f"전역 트림 값 적용: 시작={global_trim_start}프레임, 끝={global_trim_end}프레임")
+            
             # 진행 상황 다이얼로그 표시
             self.progress_dialog = EncodingProgressDialog(self)
             self.progress_dialog.show()
@@ -440,7 +537,11 @@ class FFmpegGui(QWidget):
 
             # 인코딩 스레드 시작
             self.encoding_thread = EncodingThread(
-                ordered_input, output_file, self.encoding_options
+                ordered_input, output_file, self.encoding_options,
+                use_frame_based_trim=True,  # 프레임 기반 트림 사용
+                debug_mode=get_debug_mode(),  # 디버그 모드 전달
+                global_trim_start=global_trim_start,  # 전역 트림 시작 값
+                global_trim_end=global_trim_end  # 전역 트림 끝 값
             )
             self.encoding_thread.progress_updated.connect(self.update_progress)
             self.encoding_thread.task_updated.connect(self.update_task)
