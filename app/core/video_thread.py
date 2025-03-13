@@ -78,34 +78,38 @@ class VideoThread(QThread):
         self.ffmpeg_manager = FFmpegManager()
         self.logger = LoggingService().get_logger(__name__)
         
+        # 파일 정보
         self.file_path = file_path
-        self.running = False
-        self.paused = False
-        self.is_playing = False  # 재생 상태 플래그
-        self.mutex = QMutex()
-        self.condition = QWaitCondition()
-        self.speed = 1.0
-        self.process = None
-        self.width = 0
-        self.height = 0
-        self.fps = 0
-        self.duration = 0
-        self.frame_count = 0
-        self.current_frame = 0
         self.is_image_sequence = '%' in file_path
         self.is_single_image = not self.is_image_sequence and file_path.lower().endswith(
             ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
         )
         
-        # 프레임 탐색 관련 변수
+        # 비디오 정보
+        self.width = 0
+        self.height = 0
+        self.fps = 0
+        self.frame_count = 0
+        self.duration = 0
+        
+        # 재생 제어
+        self._state = VideoThreadState.STOPPED
+        self.is_playing = False  # 이전 코드와의 호환성을 위해 유지
+        self.paused = False      # 이전 코드와의 호환성을 위해 유지
+        self.running = False     # 스레드 실행 상태
         self.seek_requested = False
         self.seek_frame = 0
-        self.seek_mutex = QMutex()
-        
-        # 재생 완료 상태 초기화
+        self.current_frame = 1  # 1-based 인덱스
+        self.speed = 1.0
         self.is_completed = False
+        self.process = None
         
-        # 이미지 시퀀스 캐싱 관련 변수 추가
+        # 동기화 객체
+        self.mutex = QMutex()
+        self.seek_mutex = QMutex()
+        self.condition = QWaitCondition()
+        
+        # 이미지 시퀀스 캐싱 관련 변수
         self.image_cache = {}
         self.cache_size = 30  # 캐시할 최대 이미지 수
         self.preload_count = 10  # 미리 로드할 이미지 수
@@ -115,9 +119,8 @@ class VideoThread(QThread):
         # 다운샘플링 관련 변수
         self.preview_mode = False  # 미리보기 모드 (저해상도)
         self.preview_scale = 0.5  # 미리보기 스케일 (50%)
-        
-        # 비디오 스레드 상태 초기화
-        self._state = VideoThreadState.STOPPED
+        self.target_width = 0
+        self.target_height = 0
         
         # 이미지 시퀀스 처리를 위한 설정
         self.preload_executor = ThreadPoolExecutor(max_workers=4)
@@ -291,7 +294,7 @@ class VideoThread(QThread):
     def run(self):
         """스레드 실행"""
         self.running = True
-        self.is_playing = True
+        self.state = VideoThreadState.PLAYING  # 상태 관리 시스템 사용
         self.is_completed = False  # 재생 시작 시 완료 상태 초기화
         
         try:
@@ -385,7 +388,7 @@ class VideoThread(QThread):
                 
                 # 일시 정지 처리
                 self.mutex.lock()
-                if self.paused:
+                if self.state == VideoThreadState.PAUSED:
                     self.condition.wait(self.mutex)
                 self.mutex.unlock()
                 
@@ -696,7 +699,7 @@ class VideoThread(QThread):
                 
                 # 일시 정지 처리
                 self.mutex.lock()
-                if self.paused:
+                if self.state == VideoThreadState.PAUSED:
                     self.condition.wait(self.mutex)
                 self.mutex.unlock()
                 
@@ -1103,7 +1106,7 @@ class VideoThread(QThread):
         
         # 일시 정지 상태인 경우 깨우기
         self.mutex.lock()
-        if self.paused:
+        if self.state == VideoThreadState.PAUSED:
             self.logger.debug("일시 정지 상태에서 깨우기")
             self.condition.wakeAll()
         self.mutex.unlock()

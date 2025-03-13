@@ -262,6 +262,10 @@ class PreviewAreaComponent:
             self.video_thread.video_info_ready.connect(self.set_video_info)
             self.video_thread.frame_changed.connect(self.on_frame_changed)
             
+            # 상태 변경 이벤트 연결
+            if hasattr(self.video_thread, 'state_changed'):
+                self.video_thread.state_changed.connect(self.on_video_state_changed)
+            
             # 비디오 스레드 생성 로깅
             logger.debug(f"비디오 스레드 생성: {file_path}")
         except Exception as e:
@@ -372,6 +376,10 @@ class PreviewAreaComponent:
         if hasattr(self.parent, 'play_button'):
             self.parent.play_button.setIcon(QIcon(os.path.join(get_resource_path(), 'icons', 'play.png')))
             self.parent.play_button.setToolTip("재생")
+            
+        # 상태 업데이트
+        if hasattr(self.video_thread, 'state'):
+            self.video_thread.state = VideoThreadState.STOPPED
     
     def reset_to_first_frame(self):
         """비디오를 첫 프레임으로 초기화"""
@@ -418,6 +426,10 @@ class PreviewAreaComponent:
             if hasattr(self.parent, 'play_button'):
                 self.parent.play_button.setIcon(QIcon(os.path.join(get_resource_path(), 'icons', 'play.png')))
                 self.parent.play_button.setToolTip("재생")
+                
+            # 상태 업데이트
+            if hasattr(self.video_thread, 'state'):
+                self.video_thread.state = VideoThreadState.STOPPED
         else:
             # 일반 정지인 경우 현재 프레임 유지
             logger.debug("비디오가 완료 상태가 아님, 현재 프레임 유지")
@@ -520,3 +532,16 @@ class PreviewAreaComponent:
             # seek_to_frame 메서드 내부에서 1-based에서 0-based로 변환
             self.video_thread.seek_to_frame(frame)
             logger.debug(f"프레임 탐색 요청: {frame}") 
+
+    def on_video_state_changed(self, state):
+        """비디오 상태 변경 이벤트 처리"""
+        logger.debug(f"비디오 상태 변경: {state.name}")
+        
+        # 재생 버튼 상태 업데이트
+        if hasattr(self.parent, 'play_button'):
+            if state == VideoThreadState.PLAYING:
+                self.parent.play_button.setText('⏹️ 정지')
+            elif state == VideoThreadState.PAUSED:
+                self.parent.play_button.setText('▶️ 재생')
+            elif state == VideoThreadState.STOPPED:
+                self.parent.play_button.setText('▶️ 재생') 
