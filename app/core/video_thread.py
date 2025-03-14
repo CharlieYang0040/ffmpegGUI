@@ -94,8 +94,6 @@ class VideoThread(QThread):
         
         # 재생 제어
         self._state = VideoThreadState.STOPPED
-        self.is_playing = False  # 이전 코드와의 호환성을 위해 유지
-        self.paused = False      # 이전 코드와의 호환성을 위해 유지
         self.running = False     # 스레드 실행 상태
         self.seek_requested = False
         self.seek_frame = 0
@@ -140,17 +138,6 @@ class VideoThread(QThread):
         if self._state != new_state:
             old_state = self._state
             self._state = new_state
-            
-            # 이전 코드와의 호환성을 위한 상태 변수 업데이트
-            if new_state == VideoThreadState.PLAYING:
-                self.is_playing = True
-                self.paused = False
-            elif new_state == VideoThreadState.PAUSED:
-                self.is_playing = True
-                self.paused = True
-            elif new_state == VideoThreadState.STOPPED:
-                self.is_playing = False
-                self.paused = False
             
             # 상태 변경 로깅
             self.logger.debug(f"비디오 스레드 상태 변경: {old_state.name} -> {new_state.name}")
@@ -293,55 +280,68 @@ class VideoThread(QThread):
     
     def run(self):
         """스레드 실행"""
-        self.running = True
-        self.state = VideoThreadState.PLAYING  # 상태 관리 시스템 사용
-        self.is_completed = False  # 재생 시작 시 완료 상태 초기화
-        
         try:
-            if self.is_single_image:
-                # 단일 이미지 처리
-                self.process_fallback()
-            elif self.is_image_sequence:
-                # 이미지 시퀀스 처리
-                self.process_image_sequence()
-            else:
-                # 비디오 파일 처리
-                # 비디오 속성 가져오기
-                properties = self.get_video_properties(self.file_path)
-                
-                if not properties:
-                    self.logger.warning(f"비디오 속성을 가져올 수 없습니다: {self.file_path}")
-                    properties = self.get_fallback_properties()
-                
-                # 비디오 정보 설정
-                self.width = int(properties.get('width', 1920))
-                self.height = int(properties.get('height', 1080))
-                self.fps = float(properties.get('fps', 30))
-                self.duration = float(properties.get('duration', 0))
-                
-                # nb_frames를 직접 사용하여 총 프레임 수 계산
-                if 'nb_frames' in properties and properties['nb_frames'] != 'N/A' and int(properties.get('nb_frames', 0)) > 0:
-                    self.frame_count = int(properties['nb_frames'])
-                    self.logger.debug(f"nb_frames 정보 사용: {self.frame_count}프레임")
+            self.running = True
+            self.state = VideoThreadState.PLAYING
+            self.is_completed = False  # 재생 시작 시 완료 상태 초기화
+            
+            self.logger.debug("===== 비디오 스레드 실행 시작 =====")
+            
+            try:
+                if self.is_single_image:
+                    # 단일 이미지 처리
+                    self.logger.debug("단일 이미지 처리 시작")
+                    self.process_fallback()
+                elif self.is_image_sequence:
+                    # 이미지 시퀀스 처리
+                    self.logger.debug("이미지 시퀀스 처리 시작")
+                    self.process_image_sequence()
                 else:
-                    # nb_frames가 없는 경우에만 duration * fps 사용
-                    if self.duration > 0 and self.fps > 0:
-                        self.frame_count = int(self.duration * self.fps)
-                        self.logger.warning(f"nb_frames 정보가 없어 duration * fps로 계산: {self.duration} * {self.fps} = {self.frame_count}")
-                
-                # 비디오 정보 시그널 발생
-                self.video_info_ready.emit(self.width, self.height)
-                
-                # 비디오 프레임 처리 함수 호출
-                self.process_video_frames()
-        
+                    # 비디오 파일 처리
+                    self.logger.debug("비디오 파일 처리 시작")
+                    # 비디오 속성 가져오기
+                    properties = self.get_video_properties(self.file_path)
+                    
+                    if not properties:
+                        self.logger.warning(f"비디오 속성을 가져올 수 없습니다: {self.file_path}")
+                        properties = self.get_fallback_properties()
+                    
+                    # 비디오 정보 설정
+                    self.width = int(properties.get('width', 1920))
+                    self.height = int(properties.get('height', 1080))
+                    self.fps = float(properties.get('fps', 30))
+                    self.duration = float(properties.get('duration', 0))
+                    
+                    # nb_frames를 직접 사용하여 총 프레임 수 계산
+                    if 'nb_frames' in properties and properties['nb_frames'] != 'N/A' and int(properties.get('nb_frames', 0)) > 0:
+                        self.frame_count = int(properties['nb_frames'])
+                        self.logger.debug(f"nb_frames 정보 사용: {self.frame_count}프레임")
+                    else:
+                        # nb_frames가 없는 경우에만 duration * fps 사용
+                        if self.duration > 0 and self.fps > 0:
+                            self.frame_count = int(self.duration * self.fps)
+                            self.logger.warning(f"nb_frames 정보가 없어 duration * fps로 계산: {self.duration} * {self.fps} = {self.frame_count}")
+                    
+                    # 비디오 정보 시그널 발생
+                    self.video_info_ready.emit(self.width, self.height)
+                    
+                    # 비디오 프레임 처리 함수 호출
+                    self.process_video_frames()
+            
+            except Exception as e:
+                self.logger.exception(f"비디오 처리 실패: {e}")
+                self.state = VideoThreadState.ERROR
+            
+            self.logger.debug("===== 비디오 스레드 실행 종료 =====")
         except Exception as e:
-            self.logger.exception(f"비디오 처리 실패: {e}")
-        
+            self.logger.error(f"비디오 스레드 run() 메서드에서 예외 발생: {str(e)}", exc_info=True)
         finally:
-            self.running = False
-            self.is_playing = False
-            self.finished.emit()
+            try:
+                self.running = False
+                self.state = VideoThreadState.STOPPED
+                self.finished.emit()
+            except Exception as e:
+                self.logger.error(f"비디오 스레드 종료 처리 중 오류: {str(e)}", exc_info=True)
     
     def process_image_sequence_frames(self):
         """이미지 시퀀스 프레임 처리 - 최적화 버전"""
@@ -762,40 +762,127 @@ class VideoThread(QThread):
     
     def stop(self):
         """비디오 재생 중지"""
-        self.logger.debug("비디오 재생 중지 요청")
-        
-        # 상태 변경
-        self.state = VideoThreadState.STOPPED
-        self.running = False
-        
-        # 일시 정지 상태인 경우 해제하여 스레드가 종료될 수 있도록 함
-        self.mutex.lock()
-        self.condition.wakeAll()
-        self.mutex.unlock()
-        
-        # 프로세스 정리
-        if self.process:
+        try:
+            self.logger.debug("===== 비디오 스레드 중지 시작 =====")
+            
+            # 상태 확인
+            self.logger.debug(f"현재 상태: {self.state.name}, 실행 중: {self.running}")
+            
+            # 이미 중지된 경우
+            if not self.running and self.state == VideoThreadState.STOPPED:
+                self.logger.debug("이미 중지된 상태입니다.")
+                return
+            
+            # 상태 변경
             try:
-                self.process.terminate()
-                self.process = None
-                self.logger.debug("FFmpeg 프로세스 종료됨")
+                self.logger.debug("상태를 STOPPED로 변경")
+                self.state = VideoThreadState.STOPPED
+                self.running = False
             except Exception as e:
-                self.logger.warning(f"프로세스 종료 실패: {e}")
-        
-        # 스레드가 종료될 때까지 대기
-        if self.isRunning():
-            self.logger.debug("스레드 종료 대기 중...")
-            # 최대 3초 대기
-            if not self.wait(3000):
-                self.logger.warning("스레드가 3초 내에 종료되지 않음")
-        
-        self.logger.debug("비디오 재생 중지 완료")
+                self.logger.error(f"상태 변경 중 오류: {str(e)}")
+            
+            # 일시 정지 상태인 경우 해제
+            try:
+                self.logger.debug("뮤텍스 잠금 및 조건 변수 깨우기 시작")
+                self.mutex.lock()
+                self.condition.wakeAll()
+                self.mutex.unlock()
+                self.logger.debug("뮤텍스 잠금 및 조건 변수 깨우기 완료")
+            except Exception as e:
+                self.logger.error(f"뮤텍스/조건 변수 처리 중 오류: {str(e)}")
+            
+            # 프로세스 정리 - 핵심 수정 부분
+            process_local = self.process  # 로컬 변수에 복사하여 안전하게 처리
+            self.process = None  # 즉시 참조 제거
+            
+            if process_local:
+                try:
+                    self.logger.debug("FFmpeg 프로세스 종료 시작")
+                    # 프로세스 상태 확인
+                    poll_result = None
+                    try:
+                        poll_result = process_local.poll()
+                        self.logger.debug(f"프로세스 상태: {poll_result}")
+                    except Exception as e:
+                        self.logger.error(f"프로세스 상태 확인 중 오류: {str(e)}")
+                        poll_result = -1  # 오류 발생 시 이미 종료된 것으로 간주
+                    
+                    # None인 경우만 종료 시도 (아직 실행 중인 경우)
+                    if poll_result is None:
+                        try:
+                            self.logger.debug("프로세스 terminate() 호출")
+                            process_local.terminate()
+                            
+                            try:
+                                self.logger.debug("프로세스 종료 대기 (최대 0.5초)")
+                                # 대기 시간을 짧게 설정하여 블로킹 최소화
+                                process_local.wait(timeout=0.5)
+                                self.logger.debug("프로세스 정상 종료됨")
+                            except subprocess.TimeoutExpired:
+                                self.logger.warning("프로세스 종료 타임아웃")
+                                # 강제 종료는 시도하지 않음 - 이 부분이 충돌의 원인일 수 있음
+                        except Exception as e:
+                            self.logger.error(f"프로세스 terminate() 실패: {str(e)}")
+                    else:
+                        self.logger.debug(f"프로세스가 이미 종료됨 (반환 코드: {poll_result})")
+                    
+                    self.logger.debug("FFmpeg 프로세스 참조 제거 완료")
+                except Exception as e:
+                    self.logger.error(f"프로세스 종료 중 오류: {str(e)}", exc_info=True)
+            else:
+                self.logger.debug("FFmpeg 프로세스가 없음")
+            
+            # 스레드 풀 정리
+            thread_pool_local = None
+            if hasattr(self, 'thread_pool') and self.thread_pool:
+                thread_pool_local = self.thread_pool
+                self.thread_pool = None  # 참조 즉시 제거
+                
+            if thread_pool_local:
+                try:
+                    if not thread_pool_local._shutdown:
+                        self.logger.debug("스레드 풀 종료 시작")
+                        thread_pool_local.shutdown(wait=False)
+                        self.logger.debug("스레드 풀 종료 완료")
+                    else:
+                        self.logger.debug("스레드 풀이 이미 종료됨")
+                except Exception as e:
+                    self.logger.error(f"스레드 풀 종료 중 오류: {str(e)}")
+            
+            # 이미지 캐시 및 큐 정리
+            try:
+                self.logger.debug("이미지 캐시 및 큐 정리 시작")
+                if hasattr(self, 'image_cache'):
+                    cache_size = len(self.image_cache)
+                    self.image_cache.clear()
+                    self.logger.debug(f"이미지 캐시 정리됨 (항목 수: {cache_size})")
+                
+                if hasattr(self, 'image_queue') and hasattr(self.image_queue, 'mutex'):
+                    queue_size = 0
+                    try:
+                        queue_size = self.image_queue.qsize()
+                    except:
+                        pass
+                    
+                    try:
+                        with self.image_queue.mutex:
+                            self.image_queue.queue.clear()
+                    except Exception as e:
+                        self.logger.error(f"이미지 큐 정리 중 오류: {str(e)}")
+                    
+                    self.logger.debug(f"이미지 큐 정리됨 (항목 수: {queue_size})")
+                self.logger.debug("이미지 캐시 및 큐 정리 완료")
+            except Exception as e:
+                self.logger.error(f"캐시/큐 정리 중 오류: {str(e)}")
+            
+            self.logger.debug("===== 비디오 스레드 중지 완료 =====")
+        except Exception as e:
+            self.logger.error(f"비디오 스레드 중지 전체 과정에서 오류 발생: {str(e)}", exc_info=True)
     
     def reset(self):
         """스레드 리셋"""
         self.stop()
         self.current_frame = 0
-        self.paused = False
         self.speed = 1.0
     
     def set_speed(self, speed: float):
@@ -1183,7 +1270,7 @@ class VideoThread(QThread):
                     if self.duration > 0 and self.fps > 0:
                         self.frame_count = int(self.duration * self.fps)
                         self.logger.warning(f"nb_frames 정보가 없어 duration * fps로 계산: {self.duration} * {self.fps} = {self.frame_count}")
-                
+                    
                 self.logger.debug(f"비디오 정보: {self.width}x{self.height}, {self.frame_count} 프레임, {self.fps} fps")
             else:
                 # 정보를 가져올 수 없는 경우 기본값 사용

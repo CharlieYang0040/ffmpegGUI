@@ -98,7 +98,7 @@ class PreviewAreaComponent:
             return
         
         logger.debug("현재 미리보기 정리 시작")
-        if self.video_thread.is_playing:
+        if self.video_thread.state != VideoThreadState.STOPPED:
             self.stop_video_playback()
         
         self.video_thread = None
@@ -222,29 +222,24 @@ class PreviewAreaComponent:
             return
 
         # 비디오 스레드가 없거나 정지 상태인 경우 재생 시작
-        if not self.video_thread or (hasattr(self.video_thread, 'state') and 
-                                     self.video_thread.state == VideoThreadState.STOPPED):
+        if not self.video_thread or self.video_thread.state == VideoThreadState.STOPPED:
             self.start_video_playback()
         # 재생 중인 경우 정지
-        elif hasattr(self.video_thread, 'state') and self.video_thread.state == VideoThreadState.PLAYING:
+        elif self.video_thread.state == VideoThreadState.PLAYING:
             # 사용자가 직접 정지 버튼을 누른 경우, 첫 프레임으로 돌아가지 않음
             self.stop_video_playback(reset_to_first_frame=False)
         # 일시 정지 상태인 경우 재생 재개
-        elif hasattr(self.video_thread, 'state') and self.video_thread.state == VideoThreadState.PAUSED:
+        elif self.video_thread.state == VideoThreadState.PAUSED:
             # 일시 정지 상태에서 재생 재개
             is_playing = self.video_thread.toggle_pause()
             self.parent.play_button.setText('⏹️ 정지' if is_playing else '▶️ 재생')
             logger.debug(f"비디오 일시정지 해제: {is_playing}")
-        # 이전 버전과의 호환성을 위한 코드
-        else:
-            if not self.video_thread.is_playing:
-                self.start_video_playback()
-            else:
-                self.stop_video_playback(reset_to_first_frame=False)
     
     def create_video_thread(self, file_path=None):
         """비디오 스레드 생성"""
         try:
+            logger.debug("===== 비디오 스레드 생성 시작 =====")
+            
             if file_path is None:
                 file_path = self.parent.list_widget.get_selected_file_path()
                 
@@ -252,25 +247,89 @@ class PreviewAreaComponent:
                 logger.warning("선택된 파일이 없습니다.")
                 return
                 
+            logger.debug(f"파일 경로: {file_path}")
+            
+            # 기존 스레드가 있으면 완전히 정리
             if self.video_thread:
-                self.stop_video_playback()
+                logger.debug("기존 비디오 스레드 정리 시작")
                 
-            self.video_thread = VideoThread(file_path)
-            self.video_thread.frame_ready.connect(self.update_video_frame)
-            self.video_thread.finished.connect(self.on_video_finished)
-            self.video_thread.playback_completed.connect(self.on_playback_completed)
-            self.video_thread.video_info_ready.connect(self.set_video_info)
-            self.video_thread.frame_changed.connect(self.on_frame_changed)
+                # 스레드가 실행 중인지 확인
+                is_running = self.video_thread.isRunning()
+                logger.debug(f"기존 스레드 실행 중: {is_running}")
+                
+                if is_running:
+                    try:
+                        logger.debug("실행 중인 스레드 중지 시도")
+                        self.stop_video_playback()
+                        
+                        # 스레드가 여전히 실행 중이면 추가 대기
+                        if self.video_thread.isRunning():
+                            logger.warning("스레드가 여전히 실행 중, 추가 대기 중...")
+                            if not self.video_thread.wait(2000):  # 2초 더 대기
+                                logger.error("스레드를 종료할 수 없습니다. 새 스레드 생성을 중단합니다.")
+                                return
+                        else:
+                            logger.debug("추가 대기 후 스레드 종료 확인")
+                    except Exception as e:
+                        logger.error(f"스레드 중지 중 오류: {str(e)}", exc_info=True)
+                        return
+                
+                # 스레드 객체 연결 해제 (try-except로 각 시그널 개별 처리)
+                logger.debug("시그널 연결 해제 시작")
+                
+                # 각 시그널 연결 해제를 개별적으로 처리
+                self._disconnect_signal(self.video_thread.frame_ready, self.update_video_frame, "frame_ready")
+                self._disconnect_signal(self.video_thread.finished, self.on_video_finished, "finished")
+                self._disconnect_signal(self.video_thread.playback_completed, self.on_playback_completed, "playback_completed")
+                self._disconnect_signal(self.video_thread.video_info_ready, self.set_video_info, "video_info_ready")
+                self._disconnect_signal(self.video_thread.frame_changed, self.on_frame_changed, "frame_changed")
+                self._disconnect_signal(self.video_thread.state_changed, self.on_video_state_changed, "state_changed")
+                
+                logger.debug("시그널 연결 해제 완료")
+                
+                # 스레드 객체 삭제 전 참조 제거
+                logger.debug("비디오 스레드 참조 제거")
+                self.video_thread = None
+            else:
+                logger.debug("기존 비디오 스레드 없음")
             
-            # 상태 변경 이벤트 연결
-            if hasattr(self.video_thread, 'state_changed'):
+            # 새 비디오 스레드 생성
+            try:
+                logger.debug("새 비디오 스레드 인스턴스 생성")
+                self.video_thread = VideoThread(file_path)
+                
+                # 시그널 연결
+                logger.debug("시그널 연결 시작")
+                self.video_thread.frame_ready.connect(self.update_video_frame)
+                self.video_thread.finished.connect(self.on_video_finished)
+                self.video_thread.playback_completed.connect(self.on_playback_completed)
+                self.video_thread.video_info_ready.connect(self.set_video_info)
+                self.video_thread.frame_changed.connect(self.on_frame_changed)
                 self.video_thread.state_changed.connect(self.on_video_state_changed)
+                logger.debug("시그널 연결 완료")
+                
+                logger.debug(f"비디오 스레드 생성 완료: {file_path}")
+            except Exception as e:
+                logger.error(f"새 비디오 스레드 생성 중 오류: {str(e)}", exc_info=True)
+                self.video_thread = None
             
-            # 비디오 스레드 생성 로깅
-            logger.debug(f"비디오 스레드 생성: {file_path}")
+            logger.debug("===== 비디오 스레드 생성 완료 =====")
         except Exception as e:
-            logger.error(f"비디오 스레드 생성 중 오류: {str(e)}")
+            logger.error(f"비디오 스레드 생성 전체 과정에서 오류 발생: {str(e)}", exc_info=True)
             self.video_thread = None
+
+    def _disconnect_signal(self, signal, slot, signal_name):
+        """시그널 연결 해제 헬퍼 메서드"""
+        try:
+            # 시그널이 존재하고 수신자가 있는지 확인
+            if signal and signal.receivers() > 0:
+                logger.debug(f"{signal_name} 시그널 연결 해제 시도")
+                signal.disconnect(slot)
+                logger.debug(f"{signal_name} 시그널 연결 해제 성공")
+            else:
+                logger.debug(f"{signal_name} 시그널에 연결된 수신자 없음")
+        except Exception as e:
+            logger.warning(f"{signal_name} 시그널 연결 해제 실패: {str(e)}")
     
     def start_video_playback(self):
         """비디오 재생 시작"""
@@ -284,16 +343,10 @@ class PreviewAreaComponent:
         # 비디오 스레드가 이미 실행 중인 경우
         if self.video_thread and self.video_thread.isRunning():
             # 일시 정지 상태인 경우 재생 재개
-            if hasattr(self.video_thread, 'state') and self.video_thread.state == VideoThreadState.PAUSED:
+            if self.video_thread.state == VideoThreadState.PAUSED:
                 is_playing = self.video_thread.toggle_pause()
                 self.parent.play_button.setText('⏹️ 정지' if is_playing else '▶️ 재생')
                 logger.debug(f"비디오 일시정지 토글: {is_playing}")
-                return
-            # 이전 버전과의 호환성을 위한 코드
-            elif hasattr(self.video_thread, 'paused'):
-                is_playing = self.video_thread.toggle_pause()
-                self.parent.play_button.setText('⏹️ 정지' if is_playing else '▶️ 재생')
-                logger.debug(f"비디오 일시정지 토글(레거시): {is_playing}")
                 return
             
         # 비디오 스레드가 없는 경우 생성
@@ -317,12 +370,7 @@ class PreviewAreaComponent:
             self.video_thread.current_frame = 1
 
         # 상태 설정 및 재생 시작
-        if hasattr(self.video_thread, 'state'):
-            self.video_thread.state = VideoThreadState.PLAYING
-        else:
-            # 이전 버전과의 호환성을 위한 코드
-            self.video_thread.is_playing = True
-            self.video_thread.paused = False
+        self.video_thread.state = VideoThreadState.PLAYING
             
         # 재생 속도 설정
         current_speed = self.parent.speed_slider.value() / 100
@@ -342,28 +390,87 @@ class PreviewAreaComponent:
         Args:
             reset_to_first_frame (bool): 첫 프레임으로 되돌릴지 여부. 기본값은 False.
         """
-        if not hasattr(self, 'video_thread') or not self.video_thread:
-            return
-        
-        # 이미 정지 상태인 경우 아무 작업도 하지 않음
-        if hasattr(self.video_thread, 'state') and self.video_thread.state == VideoThreadState.STOPPED:
-            return
-        # 이전 버전과의 호환성을 위한 코드
-        elif not hasattr(self.video_thread, 'state') and not self.video_thread.is_playing:
-            return
-        
-        logger.debug(f"비디오 재생 중지 시작 (첫 프레임 리셋: {reset_to_first_frame})")
-        
-        # 비디오 스레드 중지
-        self.video_thread.stop()
-        self.video_thread.wait()
-        
-        # UI 업데이트
-        self.update_ui_after_stop()
-        
-        # 첫 프레임으로 되돌리기 옵션이 활성화된 경우에만 실행
-        if reset_to_first_frame:
-            self.reset_to_first_frame()
+        try:
+            logger.debug("===== 비디오 재생 중지 시작 =====")
+            
+            if not hasattr(self, 'video_thread') or not self.video_thread:
+                logger.debug("비디오 스레드가 없습니다.")
+                return
+            
+            # 스레드 상태 로깅
+            logger.debug(f"비디오 스레드 상태: {self.video_thread.state.name if hasattr(self.video_thread, 'state') else 'Unknown'}")
+            logger.debug(f"비디오 스레드 실행 중: {self.video_thread.isRunning()}")
+            
+            # 이미 정지 상태인 경우 아무 작업도 하지 않음
+            if self.video_thread.state == VideoThreadState.STOPPED and not self.video_thread.isRunning():
+                logger.debug("이미 정지 상태입니다.")
+                return
+            
+            logger.debug(f"비디오 재생 중지 진행 (첫 프레임 리셋: {reset_to_first_frame})")
+            
+            # 시그널 연결 임시 해제 - 중복 호출 방지
+            try:
+                self.video_thread.finished.disconnect(self.on_video_finished)
+                self.video_thread.frame_changed.disconnect(self.on_frame_changed)
+                logger.debug("시그널 임시 연결 해제 완료")
+            except Exception as e:
+                logger.debug(f"시그널 임시 연결 해제 중 오류 (무시 가능): {str(e)}")
+            
+            # 비디오 스레드 중지 전 상태 저장
+            try:
+                current_state = self.video_thread.state
+                logger.debug(f"중지 전 상태: {current_state.name}")
+            except Exception as e:
+                logger.error(f"상태 확인 중 오류: {str(e)}")
+            
+            # 비디오 스레드 중지 시도
+            try:
+                logger.debug("비디오 스레드 stop() 메서드 호출 시작")
+                self.video_thread.stop()
+                logger.debug("비디오 스레드 stop() 메서드 호출 완료")
+            except Exception as e:
+                logger.error(f"비디오 스레드 stop() 호출 중 오류: {str(e)}")
+            
+            # 스레드가 종료될 때까지 대기 (최대 1초)
+            try:
+                if self.video_thread.isRunning():
+                    logger.debug("스레드가 여전히 실행 중, 대기 시작...")
+                    if not self.video_thread.wait(1000):
+                        logger.warning("비디오 스레드가 1초 내에 종료되지 않음")
+                    else:
+                        logger.debug("스레드 종료 대기 완료")
+            except Exception as e:
+                logger.error(f"스레드 대기 중 오류: {str(e)}")
+            
+            # UI 업데이트
+            try:
+                logger.debug("UI 업데이트 시작")
+                self.update_ui_after_stop()
+                logger.debug("UI 업데이트 완료")
+            except Exception as e:
+                logger.error(f"UI 업데이트 중 오류: {str(e)}")
+            
+            # 첫 프레임으로 되돌리기 옵션이 활성화된 경우에만 실행
+            if reset_to_first_frame:
+                try:
+                    logger.debug("첫 프레임으로 리셋 시작")
+                    self.reset_to_first_frame()
+                    logger.debug("첫 프레임으로 리셋 완료")
+                except Exception as e:
+                    logger.error(f"첫 프레임 리셋 중 오류: {str(e)}")
+            
+            # 시그널 다시 연결
+            try:
+                if self.video_thread:
+                    self.video_thread.finished.connect(self.on_video_finished)
+                    self.video_thread.frame_changed.connect(self.on_frame_changed)
+                    logger.debug("시그널 다시 연결 완료")
+            except Exception as e:
+                logger.error(f"시그널 다시 연결 중 오류: {str(e)}")
+            
+            logger.debug("===== 비디오 재생 중지 완료 =====")
+        except Exception as e:
+            logger.error(f"비디오 재생 중지 전체 과정에서 오류 발생: {str(e)}", exc_info=True)
     
     def on_playback_completed(self):
         """비디오 재생 완료 처리 (playback_completed 시그널에 의해 호출)"""
@@ -378,7 +485,7 @@ class PreviewAreaComponent:
             self.parent.play_button.setToolTip("재생")
             
         # 상태 업데이트
-        if hasattr(self.video_thread, 'state'):
+        if self.video_thread:
             self.video_thread.state = VideoThreadState.STOPPED
     
     def reset_to_first_frame(self):
@@ -417,8 +524,13 @@ class PreviewAreaComponent:
         
         logger.debug("비디오 재생 finished 시그널 수신")
         
+        # 중복 호출 방지를 위한 상태 확인
+        if self.video_thread.state == VideoThreadState.STOPPED:
+            logger.debug("이미 정지 상태에서 finished 시그널 수신, 무시")
+            return
+        
         # 비디오가 완료 상태인 경우에만 첫 프레임으로 초기화
-        if hasattr(self.video_thread, 'is_completed') and self.video_thread.is_completed:
+        if self.video_thread.is_completed:
             logger.debug("비디오가 완료 상태로 확인됨, 첫 프레임으로 초기화")
             self.reset_to_first_frame()
             
@@ -428,12 +540,12 @@ class PreviewAreaComponent:
                 self.parent.play_button.setToolTip("재생")
                 
             # 상태 업데이트
-            if hasattr(self.video_thread, 'state'):
-                self.video_thread.state = VideoThreadState.STOPPED
+            self.video_thread.state = VideoThreadState.STOPPED
         else:
             # 일반 정지인 경우 현재 프레임 유지
             logger.debug("비디오가 완료 상태가 아님, 현재 프레임 유지")
-            self.stop_video_playback(reset_to_first_frame=False)
+            # UI만 업데이트
+            self.update_ui_after_stop()
     
     def on_frame_changed(self, frame: int):
         """프레임 변경 이벤트 처리"""
@@ -447,12 +559,8 @@ class PreviewAreaComponent:
     def update_ui_after_stop(self):
         """비디오 정지 후 UI 업데이트"""
         if self.video_thread:
-            # 새로운 상태 관리 시스템 사용
-            if hasattr(self.video_thread, 'state'):
-                self.video_thread.state = VideoThreadState.STOPPED
-            else:
-                # 이전 버전과의 호환성을 위한 코드
-                self.video_thread.is_playing = False
+            # 상태 업데이트
+            self.video_thread.state = VideoThreadState.STOPPED
         
         # 재생 버튼 텍스트 변경
         if hasattr(self.parent, 'play_button'):
@@ -545,3 +653,57 @@ class PreviewAreaComponent:
                 self.parent.play_button.setText('▶️ 재생')
             elif state == VideoThreadState.STOPPED:
                 self.parent.play_button.setText('▶️ 재생') 
+
+    def __del__(self):
+        """소멸자: 리소스 정리"""
+        try:
+            logger.debug("PreviewAreaComponent 소멸자 호출")
+            # 비디오 스레드 정리
+            if hasattr(self, 'video_thread') and self.video_thread:
+                try:
+                    logger.debug("소멸자에서 비디오 스레드 정리 시도")
+                    if self.video_thread.isRunning():
+                        self.video_thread.stop()
+                        # 짧게 대기 (블로킹 방지)
+                        if not self.video_thread.wait(500):
+                            logger.warning("소멸자에서 스레드 종료 대기 시간 초과")
+                
+                    # 시그널 연결 해제
+                    try:
+                        self._disconnect_all_signals()
+                    except Exception as e:
+                        logger.warning(f"소멸자에서 시그널 연결 해제 실패: {str(e)}")
+                
+                    self.video_thread = None
+                    logger.debug("소멸자에서 비디오 스레드 정리 완료")
+                except Exception as e:
+                    logger.error(f"소멸자에서 비디오 스레드 정리 중 오류: {str(e)}")
+            
+            # 이벤트 리스너 해제
+            try:
+                event_emitter.off(Events.TIMELINE_SEEK_PREV_FRAME, self.on_timeline_seek_frame)
+                event_emitter.off(Events.TIMELINE_SEEK_NEXT_FRAME, self.on_timeline_seek_frame)
+                event_emitter.off(Events.TIMELINE_SEEK_START, self.on_timeline_seek_frame)
+                event_emitter.off(Events.TIMELINE_SEEK_END, self.on_timeline_seek_frame)
+                logger.debug("이벤트 리스너 해제 완료")
+            except Exception as e:
+                logger.error(f"이벤트 리스너 해제 중 오류: {str(e)}")
+        except Exception as e:
+            logger.error(f"PreviewAreaComponent 소멸자에서 오류 발생: {str(e)}")
+
+    def _disconnect_all_signals(self):
+        """모든 시그널 연결 해제"""
+        if not hasattr(self, 'video_thread') or not self.video_thread:
+            return
+        
+        # 모든 시그널 연결 해제
+        try:
+            self.video_thread.frame_ready.disconnect()
+            self.video_thread.finished.disconnect()
+            self.video_thread.playback_completed.disconnect()
+            self.video_thread.video_info_ready.disconnect()
+            self.video_thread.frame_changed.disconnect()
+            self.video_thread.state_changed.disconnect()
+            logger.debug("모든 시그널 연결 해제 완료")
+        except Exception as e:
+            logger.warning(f"모든 시그널 연결 해제 중 오류: {str(e)}") 

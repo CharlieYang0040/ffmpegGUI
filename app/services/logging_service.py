@@ -2,6 +2,8 @@
 import logging
 import os
 import sys
+import traceback
+import datetime
 
 class LoggingService:
     """
@@ -58,7 +60,6 @@ class LoggingService:
         os.makedirs(log_dir, exist_ok=True)
         
         # 로그 파일 경로 설정
-        import datetime
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         self.log_file_path = os.path.join(log_dir, f'ffmpegGUI_{timestamp}.log')
         
@@ -118,3 +119,30 @@ class LoggingService:
         """
         level = logging.DEBUG if enabled else logging.INFO
         self.set_level(level)
+
+    def setup_crash_handler(self):
+        """충돌 시 로그 기록을 위한 핸들러 설정"""
+        def exception_handler(exc_type, exc_value, exc_traceback):
+            """예외 처리 핸들러"""
+            # 기본 예외 처리기 호출 방지
+            if issubclass(exc_type, KeyboardInterrupt):
+                sys.__excepthook__(exc_type, exc_value, exc_traceback)
+                return
+            
+            # 로그에 예외 정보 기록
+            logger = self.get_logger("crash_handler")
+            logger.critical("미처리 예외 발생:", exc_info=(exc_type, exc_value, exc_traceback))
+            
+            # 예외 정보를 파일에 기록
+            try:
+                with open("crash_log.txt", "a", encoding="utf-8") as f:
+                    f.write("\n\n===== 애플리케이션 충돌 =====\n")
+                    f.write(f"시간: {datetime.datetime.now()}\n")
+                    f.write("예외 정보:\n")
+                    traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
+                    f.write("========================\n")
+            except:
+                pass
+        
+        # 전역 예외 핸들러 설정
+        sys.excepthook = exception_handler

@@ -661,37 +661,3 @@ class MediaMerger:
                     self.logger.warning(f"실패한 출력 파일 제거 실패: {remove_error}")
             
             raise
-
-
-# # 이전 버전과의 호환성을 위한 함수
-# def concat_media_files(
-#     input_files: List[str],
-#     output_file: str,
-#     encoding_options: Dict[str, str],
-#     target_properties: Dict[str, str] = None,
-#     debug_mode: bool = False,
-#     progress_callback=None,
-#     task_callback=None
-# ) -> str:
-#     """
-#     여러 미디어 파일을 하나로 병합합니다.
-    
-#     이 함수는 이전 버전과의 호환성을 위해 유지됩니다.
-#     """
-#     merger = MediaMerger()
-#     return merger.concat_media_files(
-#         input_files, output_file, encoding_options, target_properties,
-#         debug_mode, progress_callback, task_callback
-#     )
-
-# def check_merge_compatibility(
-#     input_files: List[str], 
-#     debug_mode: bool = False
-# ) -> Dict[str, bool]:
-#     """
-#     병합될 파일들의 호환성을 검사합니다.
-    
-#     이 함수는 이전 버전과의 호환성을 위해 유지됩니다.
-#     """
-#     merger = MediaMerger()
-#     return merger.check_merge_compatibility(input_files, debug_mode)

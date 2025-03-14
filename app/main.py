@@ -76,6 +76,10 @@ def main():
         window = FFmpegGui()
         window.show()
         
+        # 로깅 서비스 초기화 및 충돌 핸들러 설정
+        logging_service = LoggingService()
+        logging_service.setup_crash_handler()
+        
         # 애플리케이션 실행
         return app.exec()
         

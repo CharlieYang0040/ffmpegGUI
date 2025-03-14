@@ -323,36 +323,3 @@ class VideoProcessor:
             self.logger.warning(f"진행률 파싱 중 오류: {e}")
         
         return None
-
-
-# # 이전 버전과의 호환성을 위한 함수
-# def process_video_file(
-#     input_file: str,
-#     trim_start: int,
-#     trim_end: int,
-#     encoding_options: dict,
-#     target_properties: dict,
-#     debug_mode: bool,
-#     idx: int,
-#     progress_callback=None,
-#     use_frame_based_trim: bool = False
-# ) -> str:
-#     """
-#     비디오 파일을 처리하고 임시 출력 파일을 반환합니다.
-    
-#     이 함수는 이전 버전과의 호환성을 위해 유지됩니다.
-#     """
-#     processor = VideoProcessor()
-#     return processor.process_video_file(
-#         input_file, trim_start, trim_end, encoding_options, target_properties,
-#         debug_mode, idx, progress_callback, use_frame_based_trim
-#     )
-
-# def parse_ffmpeg_progress(output: str) -> float:
-#     """
-#     FFmpeg 출력에서 진행률 파싱
-    
-#     이 함수는 이전 버전과의 호환성을 위해 유지됩니다.
-#     """
-#     processor = VideoProcessor()
-#     return processor.parse_ffmpeg_progress(output)
