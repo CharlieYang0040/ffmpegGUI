@@ -92,38 +92,46 @@ class DownloadWorker(QThread):
         self.output_file = output_file
         self.ffmpeg_path = ffmpeg_path
         self.cookies = cookies
+        self.ydl_opts = {}  # ydl_opts 초기화
+        
+    def progress_hook(self, d):
+        if d['status'] == 'downloading':
+            downloaded = d.get('downloaded_bytes', 0)
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+            
+            if total > 0:  # total이 유효한 값일 때만 진행률 계산
+                progress = int((downloaded / total) * 100)
+                self.progress_signal.emit(progress, 100)
+                
+                speed = d.get('speed', 0)
+                eta = d.get('eta', 0)
+                
+                if speed and speed > 1024*1024:  # speed가 None이 아닐 때만 계산
+                    speed_str = f"{speed/(1024*1024):.2f} MB/s"
+                elif speed and speed > 1024:
+                    speed_str = f"{speed/1024:.2f} KB/s"
+                else:
+                    speed_str = f"{speed:.2f} B/s" if speed else "Unknown speed"
+                    
+                eta_str = f"{eta}s" if eta else "Unknown"
+                self.log_signal.emit(f"다운로드 진행률: {progress}% | 속도: {speed_str} | 남은 시간: {eta_str}")
+        
+        elif d['status'] == 'started':
+            self.log_signal.emit("FFmpeg로 인코딩 중입니다. 잠시 기다려주세요...")
+            self.progress_signal.emit(0, 0)
+        
+        elif d['status'] == 'processing':
+            # FFmpeg 처리 상태 표시
+            progress = d.get('percent', 0)
+            if progress:
+                self.progress_signal.emit(int(progress), 100)
+                self.log_signal.emit(f"FFmpeg 인코딩 진행률: {int(progress)}%")
+        
+        elif d['status'] == 'finished':
+            self.log_signal.emit("인코딩이 완료되었습니다!")
+            self.progress_signal.emit(100, 100)
         
     def run(self):
-        def progress_hook(d):
-            if d['status'] == 'downloading':
-                downloaded = d.get('downloaded_bytes', 0)
-                total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-                
-                if total > 0:  # total이 유효한 값일 때만 진행률 계산
-                    progress = int((downloaded / total) * 100)
-                    self.progress_signal.emit(progress, 100)
-                    
-                    speed = d.get('speed', 0)
-                    eta = d.get('eta', 0)
-                    
-                    if speed and speed > 1024*1024:  # speed가 None이 아닐 때만 계산
-                        speed_str = f"{speed/(1024*1024):.2f} MB/s"
-                    elif speed and speed > 1024:
-                        speed_str = f"{speed/1024:.2f} KB/s"
-                    else:
-                        speed_str = f"{speed:.2f} B/s" if speed else "Unknown speed"
-                        
-                    eta_str = f"{eta}s" if eta else "Unknown"
-                    self.log_signal.emit(f"Download progress: {progress}% | Speed: {speed_str} | ETA: {eta_str}")
-            
-            elif d['status'] == 'started':
-                self.log_signal.emit("FFmpeg로 인코딩 중입니다. 잠시 기다려주세요...")
-                self.progress_signal.emit(0, 0)
-            
-            elif d['status'] == 'finished':
-                self.log_signal.emit("인코딩이 완료되었습니다!")
-                self.progress_signal.emit(100, 100)
-
         try:
             if not os.path.exists(self.ffmpeg_path):
                 self.log_signal.emit(f"Warning: FFmpeg not found at {self.ffmpeg_path}")
@@ -142,20 +150,26 @@ class DownloadWorker(QThread):
                 'no_warnings': False,
                 'format': self.format_data['format_id'],
                 'outtmpl': self.output_file,
-                'progress_hooks': [progress_hook],
+                'progress_hooks': [self.progress_hook],
                 'merge_output_format': 'mp4',
                 'ffmpeg_location': self.ffmpeg_path,
                 'force_overwrites': True,
                 'writethumbnail': True,
                 'concurrent_fragment_downloads': 8,
-                'postprocessor_args': [
-                    '-c:v', 'libx264',
-                    '-preset', 'medium',
-                    '-crf', '23',
-                    '-c:a', 'aac',
-                    '-b:a', '192k',
-                    '-movflags', '+faststart'
-                ],
+                'postprocessor_args': {
+                    'ffmpeg': [
+                        '-loglevel', 'info',
+                        '-progress', 'pipe:1'
+                    ],
+                    'default': [
+                        '-c:v', 'libx264',
+                        '-preset', 'medium',
+                        '-crf', '23',
+                        '-c:a', 'aac',
+                        '-b:a', '192k',
+                        '-movflags', '+faststart'
+                    ]
+                },
                 'postprocessors': [
                     {
                         'key': 'FFmpegVideoConvertor',
@@ -170,6 +184,17 @@ class DownloadWorker(QThread):
 
             if self.cookies:
                 ydl_opts['cookiefile'] = self.cookies
+                
+            # 저장된 옵션 병합
+            if self.ydl_opts:
+                for key, value in self.ydl_opts.items():
+                    if key != 'postprocessor_args':
+                        ydl_opts[key] = value
+                    else:
+                        # postprocessor_args는 딕셔너리 병합이 필요함
+                        for pp_key, pp_value in value.items():
+                            if pp_key not in ydl_opts['postprocessor_args']:
+                                ydl_opts['postprocessor_args'][pp_key] = pp_value
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([self.url])
@@ -364,7 +389,9 @@ class VideoDownloaderApp(QMainWindow):
             output_file = f"{base_name}_{counter}.mp4"
             counter += 1
 
-        ffmpeg_path = r'\\192.168.2.215\Share_151\art\ffmpeg-7.1\bin\ffmpeg.exe'
+        # 사용자 이름을 이용한 동적 ffmpeg 경로 설정
+        user_name = os.getenv('USERNAME') or os.getenv('USER')
+        ffmpeg_path = rf'C:\Users\{user_name}\AppData\Local\LHCinema\ffmpegGUI\ffmpeg\ffmpeg.exe'
 
         self.download_thread = DownloadWorker(
             self.url_input.text(), 
@@ -373,6 +400,8 @@ class VideoDownloaderApp(QMainWindow):
             ffmpeg_path,
             self.youtube_cookies  # 쿠키 전달
         )
+        
+        # progress_hook은 이미 DownloadWorker 클래스 내에 있으므로 직접 설정할 필요 없음
         self.download_thread.progress_signal.connect(self.update_progress_bar)
         self.download_thread.log_signal.connect(self.append_log)
         self.download_thread.finished_signal.connect(self.download_finished)
