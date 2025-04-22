@@ -161,6 +161,15 @@ class TimelineMarker(QWidget):
                 # 마커를 항상 위에 표시
                 self.raise_()
 
+    def reset_in_out_points(self):
+        """In/Out 지점을 초기 상태로 재설정합니다."""
+        if self.parent() and self.parent().frame_count > 0:
+            initial_in = 1
+            initial_out = self.parent().frame_count
+            self.parent().set_in_point(initial_in)
+            self.parent().set_out_point(initial_out)
+            logger.debug(f"타임라인 In/Out 지점 초기화: In={initial_in}, Out={initial_out}")
+
 
 class TimelineWidget(QWidget):
     """타임라인 위젯"""
@@ -264,12 +273,15 @@ class TimelineWidget(QWidget):
         
         logger.debug(f"타임라인 위젯 비디오 정보 설정 완료: {self.frame_count} 프레임")
     
-    def set_current_frame(self, frame: int):
+    def set_current_frame(self, frame: int, emit_signal: bool = True):
         """현재 프레임 설정"""
         if 1 <= frame <= self.frame_count:  # 1부터 시작
-            self.current_frame = frame
-            self.current_marker.set_frame_position(frame)
-            self.update()
+            if self.current_frame != frame: # 실제 프레임 변경이 있을 때만 업데이트
+                self.current_frame = frame
+                self.current_marker.set_frame_position(frame)
+                self.update()
+                if emit_signal:
+                    self.frame_changed.emit(frame)
     
     def set_in_point(self, frame: int):
         """시작 프레임 설정"""
@@ -697,12 +709,19 @@ class TimelineComponent:
             if self.play_button:
                 self.play_button.setEnabled(True)
     
-    def set_current_frame(self, frame: int):
+    def set_current_frame(self, frame: int, emit_signal: bool = True):
         """현재 프레임 설정"""
         if self.timeline_widget:
-            self.timeline_widget.set_current_frame(frame)
-            self.frame_spinbox.setValue(frame)
+            # TimelineWidget의 set_current_frame 호출 시 emit_signal 전달
+            self.timeline_widget.set_current_frame(frame, emit_signal)
+            # 스핀박스 값 업데이트 (스핀박스 변경 시 시그널 발생하므로 emit_signal은 여기서 직접 사용 안함)
+            if self.frame_spinbox.value() != frame:
+                self.frame_spinbox.setValue(frame)
     
+    def get_current_frame(self) -> int:
+        """현재 프레임 번호 반환 (1-based)"""
+        return self.timeline_widget.current_frame if self.timeline_widget else 1
+
     def get_in_point(self) -> int:
         """시작 프레임 반환"""
         return self.timeline_widget.in_point if self.timeline_widget else 0
@@ -754,22 +773,25 @@ class TimelineComponent:
             # 타임라인 위젯 업데이트
             self.timeline_widget.set_current_frame(value)
             
-            # 명령 패턴 활용 - 프레임 이동 명령 생성 및 실행
-            from app.core.commands import SeekFrameCommand, command_manager
+            # 명령 패턴 활용 - 프레임 이동 명령 생성 및 실행 -> 제거 (이벤트 기반 처리)
+            # from app.core.commands import SeekFrameCommand, command_manager
             
-            # 비디오 스레드 참조 가져오기
-            video_thread = None
-            if hasattr(self.parent, 'preview_area') and self.parent.preview_area.video_thread:
-                video_thread = self.parent.preview_area.video_thread
+            # 비디오 스레드 참조 가져오기 -> 제거
+            # video_thread = None
+            # if hasattr(self.parent, 'preview_area') and self.parent.preview_area.video_thread:
+            #     video_thread = self.parent.preview_area.video_thread
             
-            # 명령 생성 및 실행
-            seek_command = SeekFrameCommand(
-                self.timeline_widget, 
-                old_frame, 
-                value, 
-                video_thread
-            )
-            command_manager.execute(seek_command)
+            # 명령 생성 및 실행 -> 제거
+            # seek_command = SeekFrameCommand(
+            #     self.timeline_widget, 
+            #     old_frame, 
+            #     value, 
+            #     video_thread
+            # )
+            # command_manager.execute(seek_command)
+            
+            # 프레임 변경 시그널 직접 발생시키기 (Seek 이벤트 사용) -> 제거
+            # event_emitter.emit(Events.TIMELINE_SEEK_FRAME, value)
     
     def _on_in_spinbox_changed(self, value: int):
         """시작 프레임 스핀박스 변경 이벤트 처리"""
@@ -1017,4 +1039,19 @@ class TimelineComponent:
         
         # 이벤트 발행
         event_emitter.emit(Events.TIMELINE_SEEK_END, last_frame)
-        logger.debug(f"마지막 프레임으로 이동: {last_frame}") 
+        logger.debug(f"마지막 프레임으로 이동: {last_frame}")
+
+    def reset_in_out_points(self):
+        """In/Out 지점을 초기 상태로 재설정합니다."""
+        if self.timeline_widget:
+            initial_in = 1
+            initial_out = self.timeline_widget.frame_count if self.timeline_widget.frame_count > 0 else 1
+            self.timeline_widget.set_in_point(initial_in)
+            self.timeline_widget.set_out_point(initial_out)
+            # UI 업데이트 (SpinBox 등)
+            if self.in_point_spinbox: self.in_point_spinbox.setValue(initial_in)
+            if self.out_point_spinbox: self.out_point_spinbox.setValue(initial_out)
+            logger.debug(f"타임라인 In/Out 지점 초기화 완료: In={initial_in}, Out={initial_out}")
+
+    # TODO: Add method to get trim points for encoding
+    # def get_trim_points(self) -> Tuple[int, int]: ... 

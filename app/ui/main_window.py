@@ -28,7 +28,6 @@ from app.ui.widgets.drag_drop_list_widget import DragDropListWidget
 from app.ui.widgets.droppable_line_edit import DroppableLineEdit
 from app.ui.widgets.list_widget_item import ListWidgetItem
 from app.ui.widgets.tab_list_widget import TabListWidget
-from app.core.video_thread import VideoThread
 from app.utils.utils import (
     process_file,
     is_video_file,
@@ -90,7 +89,7 @@ class FFmpegGui(QWidget):
         
         self.init_shortcuts()
         self.init_ui()
-        self.position_window_near_mouse()
+        # self.position_window_near_mouse() # 윈도우 위치 조정 주석 처리
         self.setStyleSheet(Styles.get_unreal_style())
         self.set_icon()
         
@@ -425,31 +424,30 @@ class FFmpegGui(QWidget):
                 item = self.list_widget.item(i)
                 item_widget = self.list_widget.itemWidget(item)
                 file_path = item_widget.file_path
-                
+
                 # 타임라인에서 트림 포인트 가져오기
+                trim_start, trim_end = item_widget.get_trim_values() # 기본값 설정
+
                 if i == self.list_widget.currentRow() and hasattr(self, 'preview_area') and self.preview_area.timeline:
                     # 현재 선택된 항목이고 타임라인이 있는 경우
-                    in_point, out_point = self.preview_area.get_trim_points()
-                    
-                    # 비디오 정보 가져오기
-                    if self.preview_area.video_thread:
-                        video_info = self.preview_area.video_thread.get_video_info()
-                        fps = video_info.get('fps', 30)
-                        frame_count = video_info.get('frame_count', 0)
-                        
-                        # 프레임 값을 그대로 사용 (초 단위로 변환하지 않음)
+                    # 미리보기 영역의 현재 미디어와 일치하고 유효한 FPS 정보가 있는지 확인
+                    if self.preview_area.current_media_path == file_path and self.preview_area.current_media_fps > 0:
+                        # 타임라인 컴포넌트에서 In/Out 포인트 직접 가져오기 (메소드가 존재한다고 가정)
+                        in_point, out_point = self.preview_area.timeline.get_in_out_points()
+                        fps = self.preview_area.current_media_fps
+                        frame_count = self.preview_area.current_media_frame_count
+
+                        # 프레임 값을 그대로 사용
                         trim_start = in_point
                         trim_end = out_point
-                        
+
                         # 프레임 번호와 초 단위 시간 모두 로그에 기록
-                        logger.info(f"타임라인 트림 포인트: {in_point}~{out_point} 프레임 ({in_point/fps:.2f}~{out_point/fps:.2f}초), 총 프레임 수: {frame_count}")
+                        logger.info(f"타임라인 트림 포인트 사용: {in_point}~{out_point} 프레임 ({in_point/fps:.2f}~{out_point/fps:.2f}초), 총 프레임 수: {frame_count}")
                     else:
-                        # 비디오 스레드가 없는 경우 기존 트림 값 사용
-                        trim_start, trim_end = item_widget.get_trim_values()
-                else:
-                    # 타임라인이 없거나 현재 선택된 항목이 아닌 경우 기존 트림 값 사용
-                    trim_start, trim_end = item_widget.get_trim_values()
-                
+                        logger.warning(f"현재 선택 항목({os.path.basename(file_path)})과 미리보기 불일치 또는 정보 부족, 개별 트림 값 사용.")
+                        # 기본값 (item_widget.get_trim_values()) 사용 유지
+                # else: # 선택되지 않은 항목은 기본값 사용 유지
+
                 ordered_input.append((file_path, trim_start, trim_end))
 
             # 트림 값 로그 출력

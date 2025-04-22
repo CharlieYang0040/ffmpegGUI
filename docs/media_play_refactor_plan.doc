@@ -1,0 +1,50 @@
+# Media Playback Logic Refactoring Plan
+
+**Current Status (as of last update):**
+
+*   Phases 1 and 2 (transitioning to `QMediaPlayer` for video and implementing the new Qt-based image sequence playback) are functionally complete.
+*   The original `VideoThread` class has been removed, and its functionality (media info fetching) has been integrated into `PreviewAreaComponent` using `QRunnable` and `QThreadPool`.
+*   A unified state management system using the `PreviewState` enum has been implemented in `PreviewAreaComponent`.
+*   Basic error handling improvements (image load failures) have been made.
+*   The next steps focus on thorough testing, further refinement, performance tuning, and final code cleanup within Phase 3.
+
+**Goal:**
+
+*   **Video Playback:** Replace the current FFmpeg direct decoding method with Qt's `QMediaPlayer`. (✅ **Completed**)
+*   **Image Sequence Playback:** Replace the current PIL + ThreadPool method with the proposed high-performance Qt approach (dedicated worker thread + native `QPixmap` loading + frame buffer + `QTimer`). (✅ **Completed**)
+
+**Phase 1: Foundation and Video Playback Refactoring (`QMediaPlayer`)** (✅ **Completed**)
+
+1.  **Prepare UI Elements:** (✅ Completed) Added `QVideoWidget` for video and kept `QLabel` for images/sequences.
+2.  **Integrate `QMediaPlayer`:** (✅ Completed) Added `QMediaPlayer` and `QAudioOutput`, connected to `QVideoWidget`.
+3.  **Remove Existing `VideoThread` Video Logic:** (✅ Completed) FFmpeg video processing removed from `VideoThread` (and the class was later removed entirely).
+4.  **Modify Playback Control Logic:** (✅ Completed) Updated control methods to use `QMediaPlayer`.
+5.  **Link Video Information and State:** (✅ Completed) Connected `QMediaPlayer` signals, implemented time/frame conversion.
+6.  **Resource Cleanup:** (✅ Completed) Implemented cleanup for `QMediaPlayer`.
+
+**Phase 2: Image Sequence Playback Refactoring (High-Performance Qt Approach)** (✅ **Completed**)
+
+1.  **Implement `ImageSequenceLoaderThread`:** (✅ Completed) Created the worker thread.
+2.  **Implement Frame Buffer:** (✅ Completed) Implemented `queue.Queue` as the frame buffer.
+3.  **Set Up Main Thread Timer (`QTimer`):** (✅ Completed) Added `QTimer` for frame display.
+4.  **Implement Screen Update Logic:** (✅ Completed) Implemented the timer slot `_update_sequence_frame`.
+5.  **Remove Existing `VideoThread` Image Sequence Logic:** (✅ Completed) Removed PIL/ThreadPool logic from `VideoThread` (and the class was later removed entirely).
+6.  **Integrate with `PreviewAreaComponent`:** (✅ Completed) Integrated loader thread and timer control.
+7.  **Resource Cleanup:** (✅ Completed) Implemented cleanup for the loader thread, timer, and buffer.
+
+**Phase 3: Integration, Testing, and Refactoring** (⚠️ **In Progress**)
+
+1.  **Redefine `VideoThread` Role:** (✅ **Completed**) Functionality integrated into `PreviewAreaComponent` using `QRunnable`; `video_thread.py` deleted.
+2.  **Refactor `PreviewAreaComponent`:** (✅ **Completed**) Unified state management implemented using `PreviewState` enum.
+3.  **Verify Timeline Integration:** (🟡 **Needs Testing**) Ensure timeline accurately displays and controls position/In-Out points for both video and sequences. Review suggests basic integration is correct, but requires thorough testing for edge cases and accuracy.
+4.  **Enhance Error Handling:** (🟡 **Partially Completed, Needs Further Work**) Improved feedback for image load failures. *Remaining:* Handle specific frame load errors more robustly (e.g., visual indicator, skipping logic refinement), log more detailed `QMediaPlayer` errors.
+5.  **Code Cleanup:** (🟡 **Needs Review/Manual Intervention**) Remove any remaining unused imports, variables, methods, and comments. Automated attempts failed, may require manual review.
+6.  **Performance Testing and Tuning:** (🔴 **To Do**) Test performance with various media types (resolutions, lengths, large sequences). Tune image sequence buffer size (`maxsize` in `frame_buffer`) and potentially loader logic for optimal balance between smooth playback and memory usage.
+7.  **Comprehensive Testing:** (🔴 **To Do**) Thoroughly test all functionalities: file loading, play, stop, pause, seek (accuracy and responsiveness), speed control, In/Out point setting and usage, switching between different file types, application closing/resource release.
+
+**Considerations:** (Still Relevant)
+
+*   **UI Rendering Method:** `QVideoWidget` is used for video, `QLabel` for images/sequences. (Decision made)
+*   **Frame vs. Time:** Conversion logic is implemented, needs verification during testing. (Implementation done, needs verification)
+*   **Thread Safety:** `queue.Queue` provides thread safety for the buffer. Other interactions seem safe but require review during testing. (Implementation done, needs verification)
+*   **Resource Release:** Cleanup logic implemented in `stop_current_preview` and `__del__`, needs verification during testing. (Implementation done, needs verification)

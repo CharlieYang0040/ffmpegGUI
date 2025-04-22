@@ -1,0 +1,1827 @@
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-11 15:57:10.675247
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 799, in _on_play_button_clicked
+    self.parent.preview_area.toggle_play()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 319, in toggle_play
+    self.video_thread.play() # Use play to resume
+    ^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'VideoThread' object has no attribute 'play'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-11 15:57:12.550487
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 799, in _on_play_button_clicked
+    self.parent.preview_area.toggle_play()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 319, in toggle_play
+    self.video_thread.play() # Use play to resume
+    ^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'VideoThread' object has no attribute 'play'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 11:41:25.520787
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\core\video_thread.py", line 309, in run
+    self.logger.info(f"VideoThread run() method entered. Thread ID: {int(QThread.currentThreadId())}")
+                                                                         ^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'PySide6.QtCore.QThread' has no attribute 'currentThreadId'. Did you mean: 'currentThread'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 11:41:28.195914
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\core\video_thread.py", line 309, in run
+    self.logger.info(f"VideoThread run() method entered. Thread ID: {int(QThread.currentThreadId())}")
+                                                                         ^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'PySide6.QtCore.QThread' has no attribute 'currentThreadId'. Did you mean: 'currentThread'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 11:41:29.538732
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\core\video_thread.py", line 309, in run
+    self.logger.info(f"VideoThread run() method entered. Thread ID: {int(QThread.currentThreadId())}")
+                                                                         ^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'PySide6.QtCore.QThread' has no attribute 'currentThreadId'. Did you mean: 'currentThread'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 11:41:58.038313
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\core\video_thread.py", line 309, in run
+    self.logger.info(f"VideoThread run() method entered. Thread ID: {int(QThread.currentThreadId())}")
+                                                                         ^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'PySide6.QtCore.QThread' has no attribute 'currentThreadId'. Did you mean: 'currentThread'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 16:56:45.072137
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 306, in update_preview
+    self.stop_current_preview()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 465, in stop_current_preview
+    self._clear_preview_widgets() # 위젯 숨기기 및 초기화
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 434, in _clear_preview_widgets
+    self.timeline.reset_timeline()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'reset_timeline'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\widgets\tab_list_widget.py", line 59, in on_item_selection_changed
+    self.main_window.file_list_area.on_item_selection_changed()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\file_list_area.py", line 341, in on_item_selection_changed
+    self.parent.preview_area.update_preview()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 325, in update_preview
+    self._clear_preview_widgets()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 434, in _clear_preview_widgets
+    self.timeline.reset_timeline()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'reset_timeline'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 16:56:48.526075
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 306, in update_preview
+    self.stop_current_preview()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 465, in stop_current_preview
+    self._clear_preview_widgets() # 위젯 숨기기 및 초기화
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 434, in _clear_preview_widgets
+    self.timeline.reset_timeline()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'reset_timeline'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\widgets\tab_list_widget.py", line 59, in on_item_selection_changed
+    self.main_window.file_list_area.on_item_selection_changed()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\file_list_area.py", line 341, in on_item_selection_changed
+    self.parent.preview_area.update_preview()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 325, in update_preview
+    self._clear_preview_widgets()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 434, in _clear_preview_widgets
+    self.timeline.reset_timeline()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'reset_timeline'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 16:56:51.598225
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 366, in closeEvent
+    self.preview_area.stop_current_preview()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 465, in stop_current_preview
+    self._clear_preview_widgets() # 위젯 숨기기 및 초기화
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 434, in _clear_preview_widgets
+    self.timeline.reset_timeline()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'reset_timeline'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 16:59:24.018750
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 306, in update_preview
+    self.stop_current_preview()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 467, in stop_current_preview
+    self._clear_preview_widgets() # 위젯 숨기기 및 초기화
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 436, in _clear_preview_widgets
+    self.timeline.reset_in_out_points() # In/Out 지점 초기화
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'reset_in_out_points'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\widgets\tab_list_widget.py", line 59, in on_item_selection_changed
+    self.main_window.file_list_area.on_item_selection_changed()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\file_list_area.py", line 341, in on_item_selection_changed
+    self.parent.preview_area.update_preview()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 325, in update_preview
+    self._clear_preview_widgets()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 436, in _clear_preview_widgets
+    self.timeline.reset_in_out_points() # In/Out 지점 초기화
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'reset_in_out_points'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 16:59:37.046544
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 366, in closeEvent
+    self.preview_area.stop_current_preview()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 467, in stop_current_preview
+    self._clear_preview_widgets() # 위젯 숨기기 및 초기화
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 436, in _clear_preview_widgets
+    self.timeline.reset_in_out_points() # In/Out 지점 초기화
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'reset_in_out_points'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:01:38.069136
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 756, in on_media_status_changed
+    self.update_play_button_state(QMediaPlayer.StoppedState) # 아이콘/텍스트 업데이트
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 790, in update_play_button_state
+    self.media_player.mediaStatus() >= QMediaPlayer.LoadedMedia and \
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: '>=' not supported between instances of 'MediaStatus' and 'MediaStatus'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:01:42.792361
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 808, in _on_play_button_clicked
+    self.parent.preview_area.toggle_play()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'toggle_play'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:01:50.133066
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 808, in _on_play_button_clicked
+    self.parent.preview_area.toggle_play()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'toggle_play'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:01:54.049178
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 366, in closeEvent
+    self.preview_area.stop_current_preview()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 451, in stop_current_preview
+    self._stop_image_sequence_playback() # 내부에서 스레드/타이머 중지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 650, in _stop_image_sequence_playback
+    self.update_play_button_state(PlaybackState.STOPPED)
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 790, in update_play_button_state
+    self.media_player.mediaStatus() >= QMediaPlayer.LoadedMedia and \
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: '>=' not supported between instances of 'MediaStatus' and 'MediaStatus'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.263233
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.309883
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.359080
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.410500
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.458824
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.508721
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.558936
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.609758
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.659641
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.709200
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.759378
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.809841
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.859693
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.909819
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:53.960544
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.009808
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.059336
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.109649
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.158804
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.209067
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.259759
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.308933
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.359883
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.410634
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.459095
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.508725
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.560536
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.609797
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.659195
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.709795
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.758645
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.808965
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.859048
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.909064
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:54.959128
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:55.009698
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:55.012204
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:02:55.015203
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 731, in on_media_status_changed
+    self.reset_to_first_frame() # 첫 프레임 이동 및 UI 업데이트
+    ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'reset_to_first_frame'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:00.684568
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:00.736768
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:00.786772
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:00.837490
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:00.886586
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:00.937486
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:00.986686
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.037296
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.087537
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.136615
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.186728
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.236762
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.286585
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.336855
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.386859
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.436841
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.487397
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.537444
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.586785
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.635615
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.686860
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.736730
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.787435
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.837268
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.885746
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.937321
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:01.986770
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.036314
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.087442
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.136706
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.186683
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.235570
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.286849
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.336850
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.386860
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.435611
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.487035
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.489036
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 701, in on_position_changed
+    self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: TimelineComponent.set_current_frame() got an unexpected keyword argument 'emit_signal'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:03:02.491544
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 731, in on_media_status_changed
+    self.reset_to_first_frame() # 첫 프레임 이동 및 UI 업데이트
+    ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'reset_to_first_frame'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:17:44.724233
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 430, in on_media_info_ready
+    self._display_sequence_frame(start_frame_index)
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 567, in _display_sequence_frame
+    scaled_pixmap = self.resize_keeping_aspect_ratio(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'resize_keeping_aspect_ratio'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:19:07.230858
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 777, in _on_frame_spinbox_changed
+    if hasattr(self.parent, 'preview_area') and self.parent.preview_area.video_thread:
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'video_thread'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:19:07.233366
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 434, in on_media_info_ready
+    self._start_image_sequence_loading(file_path, self.current_media_start_frame)
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 667, in _start_image_sequence_loading
+    self.image_loader_thread = ImageSequenceLoaderThread(file_path, self.frame_buffer) # TODO: start_frame 전달
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: ImageSequenceLoaderThread.__init__() missing 1 required positional argument: 'target_fps'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:19:07.240385
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:19:08.389220
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:36.882675
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 777, in _on_frame_spinbox_changed
+    if hasattr(self.parent, 'preview_area') and self.parent.preview_area.video_thread:
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'video_thread'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:36.903962
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 434, in on_media_info_ready
+    self._start_image_sequence_loading(file_path, self.current_media_start_frame)
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 673, in _start_image_sequence_loading
+    self.thread_pool.start(self.image_loader_thread)
+TypeError: 'PySide6.QtCore.QThreadPool.start' called with wrong argument types:
+  PySide6.QtCore.QThreadPool.start(ImageSequenceLoaderThread)
+Supported signatures:
+  PySide6.QtCore.QThreadPool.start(Callable, int = 0)
+  PySide6.QtCore.QThreadPool.start(PySide6.QtCore.QRunnable, int = 0)
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:36.910962
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:38.358111
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:38.776112
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:39.675255
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 596, in _update_sequence_frame
+    frame_index, pixmap = self.frame_buffer.get_nowait()
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python312\Lib\queue.py", line 199, in get_nowait
+    return self.get(block=False)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python312\Lib\queue.py", line 168, in get
+    raise Empty
+_queue.Empty
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 777, in _on_frame_spinbox_changed
+    if hasattr(self.parent, 'preview_area') and self.parent.preview_area.video_thread:
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'video_thread'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:39.682764
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:40.440572
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:41.246813
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.273262
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.275262
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.278264
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.281772
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.283772
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.286772
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.290771
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.293157
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.295159
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.298158
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.299158
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.301677
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.303677
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.306678
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.308677
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.310678
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.312694
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.314693
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:46.316695
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:50.004811
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 822, in _on_speed_changed
+    self.parent.preview_area.change_speed()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'change_speed'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:53.367627
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 777, in _on_frame_spinbox_changed
+    if hasattr(self.parent, 'preview_area') and self.parent.preview_area.video_thread:
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'video_thread'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:53.375858
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 434, in on_media_info_ready
+    self._start_image_sequence_loading(file_path, self.current_media_start_frame)
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 673, in _start_image_sequence_loading
+    self.thread_pool.start(self.image_loader_thread)
+TypeError: 'PySide6.QtCore.QThreadPool.start' called with wrong argument types:
+  PySide6.QtCore.QThreadPool.start(ImageSequenceLoaderThread)
+Supported signatures:
+  PySide6.QtCore.QThreadPool.start(Callable, int = 0)
+  PySide6.QtCore.QThreadPool.start(PySide6.QtCore.QRunnable, int = 0)
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:53.384584
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:54.022480
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:20:54.490783
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 359, in resizeEvent
+    self.preview_area.update_preview_label()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 518, in update_preview_label
+    current_frame_index = max(0, self.timeline.get_current_frame() - 1)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'TimelineComponent' object has no attribute 'get_current_frame'. Did you mean: 'set_current_frame'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 17:29:13.204022
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\timeline.py", line 794, in _on_frame_spinbox_changed
+    event_emitter.emit(Events.TIMELINE_SEEK_FRAME, value)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'Events' has no attribute 'TIMELINE_SEEK_FRAME'. Did you mean: 'TIMELINE_SEEK_START'?
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-21 18:06:15.741966
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\main_window.py", line 366, in closeEvent
+    self.preview_area.stop_current_preview()
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 545, in stop_current_preview
+    try: self.image_loader_thread.error.disconnect(self.on_image_loader_error)
+                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'on_image_loader_error'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:24:44.119632
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:24:44.122141
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:24:50.278274
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:24:50.283777
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:25:10.907770
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:25:10.909770
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:25:20.760725
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:25:20.764142
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:25:32.882366
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:25:32.888367
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:28:22.537706
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:28:22.540212
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:28:24.594686
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:28:24.596686
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 847, in _cleanup_image_loader_thread
+    sender_thread = self.sender()
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:31:11.981610
+예외 정보:
+TypeError: PreviewAreaComponent._cleanup_image_loader_thread() missing 1 required positional argument: 'thread_object'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:31:11.982610
+예외 정보:
+TypeError: PreviewAreaComponent._cleanup_image_loader_thread() missing 1 required positional argument: 'thread_object'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:31:25.047976
+예외 정보:
+TypeError: PreviewAreaComponent._cleanup_image_loader_thread() missing 1 required positional argument: 'thread_object'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:31:25.049982
+예외 정보:
+TypeError: PreviewAreaComponent._cleanup_image_loader_thread() missing 1 required positional argument: 'thread_object'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:39:27.430123
+예외 정보:
+TypeError: PreviewAreaComponent._cleanup_image_loader_thread() missing 1 required positional argument: 'thread_object'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:39:27.432629
+예외 정보:
+TypeError: PreviewAreaComponent._cleanup_image_loader_thread() missing 1 required positional argument: 'thread_object'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:39:32.109672
+예외 정보:
+TypeError: PreviewAreaComponent._cleanup_image_loader_thread() missing 1 required positional argument: 'thread_object'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:39:32.114742
+예외 정보:
+TypeError: PreviewAreaComponent._cleanup_image_loader_thread() missing 1 required positional argument: 'thread_object'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:54:01.590053
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 858, in _cleanup_image_loader_thread
+    sender_thread = self.sender() # 시그널을 보낸 스레드 객체 가져오기
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
+
+
+===== 애플리케이션 충돌 =====
+시간: 2025-04-22 15:54:01.592052
+예외 정보:
+Traceback (most recent call last):
+  File "D:\WORKDATA\ffmpegGUI\app\ui\components\preview_area.py", line 858, in _cleanup_image_loader_thread
+    sender_thread = self.sender() # 시그널을 보낸 스레드 객체 가져오기
+                    ^^^^^^^^^^^
+AttributeError: 'PreviewAreaComponent' object has no attribute 'sender'
+========================
