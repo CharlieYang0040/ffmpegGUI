@@ -11,7 +11,10 @@ from utils import (
     is_media_file,
     process_image_sequences,
     process_file,
-    format_drag_to_output
+    format_drag_to_output,
+    get_total_frames,
+    is_image_sequence,
+    get_frame_range_from_sequence
 )
 
 # 로깅 설정
@@ -140,7 +143,13 @@ class DragDropListWidget(QListWidget):
 
     def add_items(self, file_paths):
         for file_path in file_paths:
-            item_widget = ListWidgetItem(file_path)
+            start_frame, end_frame = 0, 0
+            if is_image_sequence(file_path):
+                start_frame, end_frame = get_frame_range_from_sequence(file_path)
+            else: # 비디오 파일
+                end_frame = get_total_frames(file_path)
+
+            item_widget = ListWidgetItem(file_path, start_frame=start_frame, end_frame=end_frame)
             list_item = QListWidgetItem(self)
             list_item.setSizeHint(item_widget.sizeHint())
             list_item.setData(Qt.UserRole, file_path)
@@ -153,7 +162,13 @@ class DragDropListWidget(QListWidget):
         self.clear()
         for file_path in new_file_paths:
             logger.debug(f"[update_items] 아이템 추가: {file_path}")
-            item_widget = ListWidgetItem(file_path)
+            start_frame, end_frame = 0, 0
+            if is_image_sequence(file_path):
+                start_frame, end_frame = get_frame_range_from_sequence(file_path)
+            else: # 비디오 파일
+                end_frame = get_total_frames(file_path)
+
+            item_widget = ListWidgetItem(file_path, start_frame=start_frame, end_frame=end_frame)
             list_item = QListWidgetItem(self)
             list_item.setSizeHint(item_widget.sizeHint())
             list_item.setData(Qt.UserRole, file_path)

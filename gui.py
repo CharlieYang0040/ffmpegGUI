@@ -882,16 +882,16 @@ class FFmpegGui(QWidget):
             return None
 
         input_files = []
-        trim_values = []
+        frame_ranges = []
         for i in range(self.list_widget.count()):
             list_item = self.list_widget.item(i)
             item_widget = self.list_widget.itemWidget(list_item)
             file_path = item_widget.file_path
-            trim_start, trim_end = item_widget.get_trim_values()
+            start_frame, end_frame = item_widget.get_frame_range()
             input_files.append(file_path)
-            trim_values.append((trim_start, trim_end))
+            frame_ranges.append((start_frame, end_frame))
 
-        return (output_file, self.encoding_options, get_debug_mode(), input_files, trim_values)
+        return (output_file, self.encoding_options, get_debug_mode(), input_files, frame_ranges)
 
     def browse_output(self):
         last_path = self.settings.value("last_output_path", "")
@@ -908,7 +908,7 @@ class FFmpegGui(QWidget):
 
         params = self.get_encoding_parameters()
         if params:
-            output_file, encoding_options, debug_mode, input_files, trim_values = params
+            output_file, encoding_options, debug_mode, input_files, frame_ranges = params
             logger.info(f"인코딩 옵션: {encoding_options}")
             logger.info(f"출력 파일: {output_file}")
 
@@ -920,8 +920,8 @@ class FFmpegGui(QWidget):
                     item = self.list_widget.item(i)
                     item_widget = self.list_widget.itemWidget(item)
                     file_path = item_widget.file_path
-                    trim_start, trim_end = item_widget.get_trim_values()
-                    ordered_input.append((file_path, trim_start, trim_end))
+                    start_frame, end_frame = item_widget.get_frame_range()
+                    ordered_input.append((file_path, start_frame, end_frame))
 
                 self.progress_dialog = EncodingProgressDialog(self)
                 self.progress_dialog.show()
@@ -1302,8 +1302,8 @@ class FFmpegGui(QWidget):
             item = self.list_widget.item(i)
             item_widget = self.list_widget.itemWidget(item)
             file_path = item_widget.file_path
-            trim_start, trim_end = item_widget.get_trim_values()
-            clips.append((file_path, trim_start, trim_end))
+            start_frame, end_frame = item_widget.get_frame_range()
+            clips.append((file_path, start_frame, end_frame))
         
         try:
             from otio_utils import generate_and_open_otio

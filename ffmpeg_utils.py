@@ -106,14 +106,15 @@ def apply_filters(stream, target_properties):
 
 def process_video_file(
     input_file: str,
-    trim_start: int,
-    trim_end: int,
+    start_frame: int,
+    end_frame: int,
     encoding_options: Dict[str, str],
     target_properties: Dict[str, str],
     debug_mode: bool,
     idx: int
 ) -> str:
     """비디오 파일을 트림하고 필터를 적용하여 처리된 파일을 반환합니다."""
+    input_file = input_file.replace('\\', '/')
     temp_output = f'temp_output_{idx}.mp4'
     logger.info(f"비디오 처리 시작: {input_file}")
 
@@ -156,17 +157,19 @@ def process_video_file(
     stream = ffmpeg.input(input_file, **input_options)
 
     # 프레임 기반 트림 필터 적용
-    if trim_start > 0 or trim_end > 0:
-        end_frame = total_frames - trim_end if trim_end > 0 else total_frames
-        
+    if start_frame > 0 or end_frame > 0:
         if debug_mode:
             logger.debug(f"트림 정보:")
-            logger.debug(f"  - 시작 프레임: {trim_start}")
+            logger.debug(f"  - 시작 프레임: {start_frame}")
             logger.debug(f"  - 끝 프레임: {end_frame}")
-            logger.debug(f"  - 잘린 프레임 수: {trim_start + trim_end}")
-            logger.debug(f"  - 예상 출력 프레임 수: {end_frame - trim_start}")
+            logger.debug(f"  - 예상 출력 프레임 수: {end_frame - start_frame}")
         
-        stream = stream.filter('select', f'between(n,{trim_start},{end_frame})')
+        # 'end_frame'이 0이거나 지정되지 않은 경우, 영상 끝까지를 의미할 수 있도록 처리
+        if end_frame > 0:
+            stream = stream.filter('select', f'between(n,{start_frame},{end_frame})')
+        else: # end_frame이 0 또는 음수이면 start_frame부터 끝까지
+            stream = stream.filter('select', f'gte(n,{start_frame})')
+
         stream = stream.filter('setpts', 'PTS-STARTPTS')  # 타임스탬프 리셋
     
     stream = apply_filters(stream, target_properties)
@@ -195,14 +198,15 @@ def process_video_file(
 
 def process_image_sequence(
     input_file: str,
-    trim_start: int,
-    trim_end: int,
+    start_frame: int,
+    end_frame: int,
     encoding_options: Dict[str, str],
     target_properties: Dict[str, str],
     debug_mode: bool,
     idx: int
 ) -> str:
     try:
+        input_file = input_file.replace('\\', '/')
         temp_output = f'temp_output_{idx}.mp4'
         logger.info(f"이미지 시퀀스 처리 시작: {input_file}")
 
@@ -226,8 +230,12 @@ def process_image_sequence(
             raise ValueError(f"Cannot extract frame number from '{first_image}'")
 
         original_start_frame = int(match.group(1))
-        new_start_frame = original_start_frame + trim_start
-        new_total_frames = total_frames - trim_start - trim_end
+
+        # end_frame이 0이거나 지정되지 않았으면 시퀀스의 마지막 프레임을 사용
+        if end_frame <= 0:
+            end_frame = total_frames + original_start_frame -1
+
+        new_total_frames = end_frame - start_frame + 1
 
         if new_total_frames <= 0:
             raise ValueError("트림 후 남은 프레임이 없습니다.")
@@ -241,14 +249,14 @@ def process_image_sequence(
             'framerate': str(framerate),
             'probesize': '100M',
             'analyzeduration': '100M',
-            'start_number': str(new_start_frame)  # 트림된 시작 프레임
+            'start_number': str(start_frame)  # 트림된 시작 프레임
         }
 
         # frames 옵션 추가 (트림된 총 프레임 수)
-        encoding_options['frames'] = str(new_total_frames)
+        encoding_options['vframes'] = str(new_total_frames)
 
         if debug_mode:
-            logger.debug(f"트림 정보 - 시작: {new_start_frame}, 프레임 수: {new_total_frames}")
+            logger.debug(f"트림 정보 - 시작: {start_frame}, 프레임 수: {new_total_frames}")
             logger.debug(f"입력 옵션: {input_args}")
             logger.debug(f"인코딩 옵션: {encoding_options}")
 
@@ -495,7 +503,7 @@ def process_all_media(
     output_file: str,
     encoding_options: Dict[str, str],
     debug_mode: bool = False,
-    trim_values: List[Tuple[int, int]] = None,
+    frame_ranges: List[Tuple[int, int]] = None,
     global_trim_start: int = 0,
     global_trim_end: int = 0,
     progress_callback: Optional[callable] = None,
@@ -505,22 +513,23 @@ def process_all_media(
     모든 미디어 파일을 처리하고 하나의 파일로 합칩니다.
     """
     try:
-        if trim_values is None:
-            # media_files의 개별 트림 값을 사용
-            trim_values = [(media_file[1], media_file[2]) for media_file in media_files]
+        if frame_ranges is None:
+            # media_files의 개별 프레임 범위를 사용
+            frame_ranges = [(media_file[1], media_file[2]) for media_file in media_files]
 
         if debug_mode:
             logger.debug(f"전역 트림 값 - 시작: {global_trim_start}, 끝: {global_trim_end}")
-            logger.debug(f"개별 트림 값: {trim_values}")
+            logger.debug(f"개별 프레임 범위: {frame_ranges}")
 
-        # 전역 트림 값과 개별 트림 값을 합산
-        combined_trim_values = [
-            (ts + global_trim_start, te + global_trim_end) 
-            for ts, te in trim_values
+        # 전역 트림 값과 개별 트림 값을 합산 (이 부분은 유지하거나, 새 정책에 맞게 변경 필요)
+        # 여기서는 기존 로직을 유지하여 global trim을 시작/끝 프레임에 더하고 빼는 것으로 해석
+        combined_frame_ranges = [
+            (sf + global_trim_start, ef - global_trim_end if ef > 0 else 0)
+            for sf, ef in frame_ranges
         ]
 
         if debug_mode:
-            logger.debug(f"합산된 트림 값: {combined_trim_values}")
+            logger.debug(f"합산된 프레임 범위: {combined_frame_ranges}")
 
         # 디버그 모드일 때 -v quiet 옵션 제거, 아닐 때 추가
         if debug_mode:
@@ -550,16 +559,16 @@ def process_all_media(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             
-            for idx, ((input_file, _, _), (trim_start, trim_end)) in enumerate(zip(media_files, combined_trim_values)):
+            for idx, ((input_file, _, _), (start_frame, end_frame)) in enumerate(zip(media_files, combined_frame_ranges)):
                 if debug_mode:
                     logger.debug(f"파일 처리: {input_file}")
-                    logger.debug(f"적용될 트림 값 - 시작: {trim_start}, 끝: {trim_end}")
+                    logger.debug(f"적용될 프레임 범위 - 시작: {start_frame}, 끝: {end_frame}")
 
                 future = executor.submit(
                     process_single_media,
                     input_file,
-                    trim_start,
-                    trim_end,
+                    start_frame,
+                    end_frame,
                     encoding_options.copy(),
                     debug_mode,
                     idx,
@@ -616,8 +625,8 @@ def process_all_media(
 
 def process_single_media(
     input_file: str,
-    trim_start: int,
-    trim_end: int,
+    start_frame: int,
+    end_frame: int,
     encoding_options: Dict[str, str],
     debug_mode: bool,
     idx: int,
@@ -637,12 +646,12 @@ def process_single_media(
         # 이미지 시퀀스인지 확인
         if is_image_sequence(input_file):
             return process_image_sequence(
-                input_file, trim_start, trim_end,
+                input_file, start_frame, end_frame,
                 encoding_options, target_properties, debug_mode, idx
             )
         else:
             return process_video_file(
-                input_file, trim_start, trim_end,
+                input_file, start_frame, end_frame,
                 encoding_options, target_properties, debug_mode, idx
             )
 
