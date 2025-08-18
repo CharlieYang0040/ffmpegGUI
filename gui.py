@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
     QMessageBox, QSlider, QDoubleSpinBox, QSpinBox,
-    QProgressBar, QDialog, QPushButton
+    QProgressBar, QDialog, QPushButton, QApplication
 )
 from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread, QTimer, QTime
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator, QShortcut, QKeySequence
@@ -181,7 +181,7 @@ class FFmpegGui(QWidget):
         self.init_attributes()
         self.init_shortcuts()
         self.init_ui()
-        self.position_window_near_mouse()
+        self.position_window()
         self.setStyleSheet(self.get_unreal_style())
         self.set_icon()
         self.sort_ascending = True
@@ -974,18 +974,25 @@ class FFmpegGui(QWidget):
         logger.info(f"디버그 모드 {'활성화' if is_checked else '비활성화'}")
         set_logger_level(is_checked)
 
-    def position_window_near_mouse(self):
+    def position_window(self):
+        """창을 화면 상단 1/3 지점에 위치시켜 하단이 잘리지 않도록 합니다."""
         cursor_pos = QCursor.pos()
-        screen = self.screen()
+        screen = QApplication.screenAt(cursor_pos)
+        if not screen:
+            screen = QApplication.primaryScreen()
+
         screen_geometry = screen.availableGeometry()
-
-        window_width = self.width()
-        window_height = self.height()
-
-        x = max(screen_geometry.left(), min(cursor_pos.x() - window_width // 2, screen_geometry.right() - window_width))
-        y = max(screen_geometry.top(), min(cursor_pos.y() - window_height // 2, screen_geometry.bottom() - window_height))
-
-        self.move(x, y)
+        
+        x = screen_geometry.left() + (screen_geometry.width() - self.width()) / 2
+        
+        # 창의 세로 중앙을 화면 상단 1/3 지점에 맞춤
+        y = screen_geometry.top() + (screen_geometry.height() / 3) - (self.height() / 2)
+        
+        # 창이 화면 상단 밖으로 나가지 않도록 보정
+        if y < screen_geometry.top():
+            y = screen_geometry.top()
+            
+        self.move(int(x), int(y))
 
     def clear_settings(self):
         reply = QMessageBox.question(
