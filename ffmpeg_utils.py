@@ -183,6 +183,11 @@ def process_video_file(
     except ffmpeg.Error as e:
         error_message = e.stderr.decode() if e.stderr else str(e)
         logger.error(f"FFmpeg 실행 중 오류 발생: {error_message}")
+        
+        # NVENC 관련 오류 확인
+        if "nvenc" in error_message.lower():
+            raise RuntimeError("NVENC를 사용할 수 없습니다. NVIDIA 드라이버를 확인하거나 다른 코덱을 선택하세요.")
+        
         raise
 
     return temp_output

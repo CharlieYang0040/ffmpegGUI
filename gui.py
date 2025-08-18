@@ -38,6 +38,64 @@ logging.basicConfig(level=logging.INFO)
 
 from PySide6.QtCore import QTimer, QTime
 
+class ColorOptionsDialog(QDialog):
+    """
+    색상 옵션을 설정하는 다이얼로그
+    """
+    def __init__(self, current_options, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("색상 옵션")
+        self.setMinimumWidth(300)
+        self.options = current_options.copy()
+
+        layout = QVBoxLayout(self)
+        self.option_widgets = {}
+
+        color_options = [
+            ("colorspace", ["bt709", "bt2020nc", "none"]),
+            ("color_primaries", ["bt709", "bt2020", "none"]),
+            ("color_trc", ["bt709", "bt2020-10", "none"]),
+            ("color_range", ["limited", "full", "none"])
+        ]
+
+        for option, values in color_options:
+            hbox = QHBoxLayout()
+            label = QLabel(option)
+            combo = QComboBox()
+            combo.addItems(values)
+            
+            # 현재 설정된 값으로 콤보박스 초기화
+            current_value = self.options.get(option)
+            if current_value in values:
+                combo.setCurrentText(current_value)
+            
+            combo.currentTextChanged.connect(lambda value, opt=option: self.update_option(opt, value))
+            
+            hbox.addWidget(label)
+            hbox.addWidget(combo)
+            layout.addLayout(hbox)
+            self.option_widgets[option] = combo
+
+        # OK and Cancel buttons
+        button_box = QHBoxLayout()
+        ok_button = QPushButton("확인")
+        ok_button.clicked.connect(self.accept)
+        cancel_button = QPushButton("취소")
+        cancel_button.clicked.connect(self.reject)
+        button_box.addStretch()
+        button_box.addWidget(ok_button)
+        button_box.addWidget(cancel_button)
+        layout.addLayout(button_box)
+
+    def update_option(self, option, value):
+        if value != "none":
+            self.options[option] = value
+        else:
+            self.options.pop(option, None)
+
+    def get_options(self):
+        return self.options
+
 class EncodingProgressDialog(QDialog):
     """
     인코딩 진행 상황을 표시하는 다이얼로그
@@ -82,7 +140,7 @@ class EncodingThread(QThread):
     인코딩 작업을 별도의 스레드에서 실행하기 위한 클래스
     """
     progress_updated = Signal(int)
-    encoding_finished = Signal()
+    encoding_finished = Signal(bool)
 
     def __init__(self, process_all_media_func, *args, **kwargs):
         super().__init__()
@@ -91,8 +149,11 @@ class EncodingThread(QThread):
         self.kwargs = kwargs
 
     def run(self):
-        self.process_all_media_func(*self.args, **self.kwargs, progress_callback=self.progress_updated.emit)
-        self.encoding_finished.emit()
+        try:
+            self.process_all_media_func(*self.args, **self.kwargs, progress_callback=self.progress_updated.emit)
+            self.encoding_finished.emit(True)
+        except Exception:
+            self.encoding_finished.emit(False)
 
 
 class FFmpegGui(QWidget):
@@ -129,7 +190,9 @@ class FFmpegGui(QWidget):
 
     def init_attributes(self):
         self.encoding_options = {
-            "c:v": "libx264",
+            "c:v": "h264_nvenc",
+            "preset": "slow",
+            "cq": "21",
             "pix_fmt": "yuv420p",
             "colorspace": "bt709",
             "color_primaries": "bt709",
@@ -439,22 +502,55 @@ class FFmpegGui(QWidget):
         self.options_group = QGroupBox("인코딩 옵션")
         options_layout = QVBoxLayout()
 
-        encoding_options = [
-            ("c:v", ["libx264", "libx265", "none"]),
-            ("pix_fmt", ["yuv420p", "yuv422p", "yuv444p", "none"]),
-            ("colorspace", ["bt709", "bt2020nc", "none"]),
-            ("color_primaries", ["bt709", "bt2020", "none"]),
-            ("color_trc", ["bt709", "bt2020-10", "none"]),
-            ("color_range", ["limited", "full", "none"])
-        ]
-
         self.option_widgets = {}
 
-        for option, values in encoding_options:
-            self.create_option_widget(options_layout, option, values)
+        # Codec
+        self.create_option_widget(options_layout, "c:v", ["h264_nvenc", "hevc_nvenc", "libx264", "libx265", "none"])
+        self.option_widgets["c:v"].setToolTip(
+            "비디오 인코딩 코덱을 선택합니다.\n"
+            "- h264_nvenc / hevc_nvenc: NVIDIA GPU를 사용해 빠르게 인코딩합니다.\n"
+            "- libx264 / libx265: CPU를 사용해 인코딩하며, 호환성이 높습니다."
+        )
+
+        # Preset
+        self.create_option_widget(options_layout, "preset", [])
+        self.option_widgets["preset"].setToolTip(
+            "인코딩 속도와 품질의 균형을 설정합니다.\n"
+            "느린 프리셋일수록 품질과 압축률이 좋아집니다."
+        )
+
+        # Quality
+        quality_layout = QHBoxLayout()
+        self.quality_label = QLabel("Quality (CQ/CRF):")
+        self.quality_label.setToolTip(
+            "비디오의 품질을 설정합니다. (CQ/CRF)\n"
+            "낮은 값일수록 고품질이며, 파일 크기가 커집니다.\n"
+            "NVENC(CQ): 18-24 추천, libx264/265(CRF): 18-28 추천."
+        )
+        self.quality_spinbox = QSpinBox()
+        self.quality_spinbox.setRange(0, 51)
+        self.quality_spinbox.valueChanged.connect(self.update_quality_option)
+        self.quality_spinbox.setToolTip(self.quality_label.toolTip()) # 라벨과 동일한 툴팁 설정
+        quality_layout.addWidget(self.quality_label)
+        quality_layout.addWidget(self.quality_spinbox)
+        options_layout.addLayout(quality_layout)
+        self.option_widgets["quality_spinbox"] = self.quality_spinbox
+
+        # Other options (Pixel Format)
+        self.create_option_widget(options_layout, "pix_fmt", ["yuv420p", "yuv422p", "yuv444p", "none"])
+        self.option_widgets["pix_fmt"].setToolTip("픽셀 포맷을 설정합니다. 대부분의 경우 yuv420p로 충분합니다.")
+
+        # Color Options Button
+        self.color_options_button = QPushButton("색상 옵션 설정...")
+        self.color_options_button.clicked.connect(self.open_color_options_dialog)
+        options_layout.addWidget(self.color_options_button)
+
 
         self.options_group.setLayout(options_layout)
         left_layout.addWidget(self.options_group)
+
+        # 초기 코덱 설정에 맞게 UI 업데이트
+        self.update_codec_options(self.encoding_options.get("c:v"))
 
     def create_option_widget(self, options_layout, option, values):
         hbox = QHBoxLayout()
@@ -467,6 +563,13 @@ class FFmpegGui(QWidget):
         hbox.addWidget(combo)
         options_layout.addLayout(hbox)
         self.option_widgets[option] = combo
+
+    def open_color_options_dialog(self):
+        dialog = ColorOptionsDialog(self.encoding_options, self)
+        if dialog.exec():
+            self.encoding_options.update(dialog.get_options())
+            logger.info(f"색상 옵션 업데이트됨: {self.encoding_options}")
+
 
     def create_output_layout(self, left_layout):
         output_layout = QHBoxLayout()
@@ -716,10 +819,57 @@ class FFmpegGui(QWidget):
             self.execute_command(command)
 
     def update_option(self, option: str, value: str):
+        if option == "c:v":
+            self.update_codec_options(value)
+
         if value != "none":
             self.encoding_options[option] = value
         else:
             self.encoding_options.pop(option, None)
+
+    def update_codec_options(self, codec: str):
+        self.encoding_options.pop("crf", None)
+        self.encoding_options.pop("cq", None)
+
+        preset_combo = self.option_widgets.get("preset")
+        quality_spinbox = self.option_widgets.get("quality_spinbox")
+
+        if codec in ["h264_nvenc", "hevc_nvenc"]:
+            # NVENC presets
+            presets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fast"]
+            quality_label = "CQ"
+            quality_value = 21
+            self.encoding_options["cq"] = str(quality_value)
+        elif codec in ["libx264", "libx265"]:
+            # x264/x265 presets
+            presets = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"]
+            quality_label = "CRF"
+            quality_value = 23
+            self.encoding_options["crf"] = str(quality_value)
+        else:
+            presets = []
+            quality_label = "Quality"
+            quality_value = 0
+            preset_combo.setEnabled(False)
+            quality_spinbox.setEnabled(False)
+
+        if presets:
+            preset_combo.setEnabled(True)
+            quality_spinbox.setEnabled(True)
+            preset_combo.clear()
+            preset_combo.addItems(presets)
+            preset_combo.setCurrentText(self.encoding_options.get("preset", "medium"))
+            self.quality_label.setText(f"{quality_label}:")
+            quality_spinbox.setValue(quality_value)
+            
+    def update_quality_option(self, value: int):
+        codec = self.encoding_options.get("c:v")
+        if codec in ["h264_nvenc", "hevc_nvenc"]:
+            self.encoding_options["cq"] = str(value)
+            self.encoding_options.pop("crf", None)
+        elif codec in ["libx264", "libx265"]:
+            self.encoding_options["crf"] = str(value)
+            self.encoding_options.pop("cq", None)
 
     def get_encoding_parameters(self):
         output_file = self.output_edit.text()
@@ -790,13 +940,20 @@ class FFmpegGui(QWidget):
                 self.encoding_thread.encoding_finished.connect(self.on_encoding_finished)
                 self.encoding_thread.start()
 
+            except RuntimeError as e:
+                QMessageBox.critical(self, "NVENC 오류", str(e))
+                self.on_encoding_finished(False) # 오류 발생 시 프로그레스 다이얼로그 닫기
             except Exception as e:
                 QMessageBox.critical(self, "에러", f"인코딩 중 에러가 발생했습니다:\n{e}")
+                self.on_encoding_finished(False)
 
-    def on_encoding_finished(self):
-        self.progress_dialog.stop_timer()  # 타이머 중지
-        self.progress_dialog.close()
-        QMessageBox.information(self, "완료", "인코딩이 완료되었습니다.")
+    def on_encoding_finished(self, success: bool):
+        if self.progress_dialog:
+            self.progress_dialog.stop_timer()
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        if success:
+            QMessageBox.information(self, "완료", "인코딩이 완료되었습니다.")
 
     def update_encoding_options(self, encoding_options):
         if self.use_custom_framerate:
