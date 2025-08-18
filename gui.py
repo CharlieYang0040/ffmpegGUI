@@ -536,6 +536,21 @@ class FFmpegGui(QWidget):
         options_layout.addLayout(quality_layout)
         self.option_widgets["quality_spinbox"] = self.quality_spinbox
 
+        # 최대 동시 작업 수 설정 (NVENC 전용)
+        self.max_workers_label = QLabel("최대 동시 작업 수:")
+        self.option_widgets["max_workers_label"] = self.max_workers_label
+        options_layout.addWidget(self.max_workers_label)
+
+        self.max_workers_spinbox = QSpinBox()
+        self.max_workers_spinbox.setRange(1, 16)
+        self.max_workers_spinbox.setValue(5)
+        self.max_workers_spinbox.setToolTip(
+            "NVENC 코덱 사용 시 동시에 인코딩할 최대 파일 수입니다.\n"
+            "CPU 코덱은 이 설정에 영향을 받지 않습니다."
+        )
+        self.option_widgets["max_workers_spinbox"] = self.max_workers_spinbox
+        options_layout.addWidget(self.max_workers_spinbox)
+
         # Other options (Pixel Format)
         self.create_option_widget(options_layout, "pix_fmt", ["yuv420p", "yuv422p", "yuv444p", "none"])
         self.option_widgets["pix_fmt"].setToolTip("픽셀 포맷을 설정합니다. 대부분의 경우 yuv420p로 충분합니다.")
@@ -830,28 +845,35 @@ class FFmpegGui(QWidget):
     def update_codec_options(self, codec: str):
         self.encoding_options.pop("crf", None)
         self.encoding_options.pop("cq", None)
+        self.encoding_options.pop("max_workers", None) # 기존 최대 작업자 수 제거
 
         preset_combo = self.option_widgets.get("preset")
         quality_spinbox = self.option_widgets.get("quality_spinbox")
+        max_workers_label = self.option_widgets.get("max_workers_label")
+        max_workers_spinbox = self.option_widgets.get("max_workers_spinbox")
 
         if codec in ["h264_nvenc", "hevc_nvenc"]:
-            # NVENC presets
             presets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fast"]
             quality_label = "CQ"
-            quality_value = 21
+            quality_value = self.encoding_options.get("cq", "21")
             self.encoding_options["cq"] = str(quality_value)
+            max_workers_label.setVisible(True)
+            max_workers_spinbox.setVisible(True)
         elif codec in ["libx264", "libx265"]:
-            # x264/x265 presets
             presets = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"]
             quality_label = "CRF"
-            quality_value = 23
+            quality_value = self.encoding_options.get("crf", "23")
             self.encoding_options["crf"] = str(quality_value)
+            max_workers_label.setVisible(False)
+            max_workers_spinbox.setVisible(False)
         else:
             presets = []
             quality_label = "Quality"
             quality_value = 0
             preset_combo.setEnabled(False)
             quality_spinbox.setEnabled(False)
+            max_workers_label.setVisible(False)
+            max_workers_spinbox.setVisible(False)
 
         if presets:
             preset_combo.setEnabled(True)
@@ -860,7 +882,7 @@ class FFmpegGui(QWidget):
             preset_combo.addItems(presets)
             preset_combo.setCurrentText(self.encoding_options.get("preset", "medium"))
             self.quality_label.setText(f"{quality_label}:")
-            quality_spinbox.setValue(quality_value)
+            quality_spinbox.setValue(int(quality_value))
             
     def update_quality_option(self, value: int):
         codec = self.encoding_options.get("c:v")
@@ -927,14 +949,23 @@ class FFmpegGui(QWidget):
                 self.progress_dialog.show()
                 self.progress_dialog.start_timer()  # 타이머 시작
 
+                debug_mode = self.debug_checkbox.isChecked()
+
+                # 인코딩 옵션 복사
+                encoding_options = self.encoding_options.copy()
+                
+                # 최대 작업자 수 가져오기
+                max_workers = self.max_workers_spinbox.value()
+
                 self.encoding_thread = EncodingThread(
-                    process_all_media,  # 업데이트된 함수 사용
-                    ordered_input,  # 전체 튜플을 그대로 전달
+                    process_all_media,
+                    ordered_input,
                     output_file,
                     encoding_options,
                     debug_mode=debug_mode,
                     global_trim_start=self.global_trim_start,
-                    global_trim_end=self.global_trim_end
+                    global_trim_end=self.global_trim_end,
+                    max_workers_override=max_workers
                 )
                 self.encoding_thread.progress_updated.connect(self.progress_dialog.update_progress)
                 self.encoding_thread.encoding_finished.connect(self.on_encoding_finished)

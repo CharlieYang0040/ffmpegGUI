@@ -181,7 +181,7 @@ def process_video_file(
 
     # FFmpeg 실행
     try:
-        ffmpeg.run(stream, cmd=FFMPEG_PATH)
+        ffmpeg.run(stream, cmd=FFMPEG_PATH, capture_stderr=True)
         logger.info(f"비디오 처리 완료: {input_file}")
     except ffmpeg.Error as e:
         error_message = e.stderr.decode() if e.stderr else str(e)
@@ -276,7 +276,7 @@ def process_image_sequence(
 
         # FFmpeg 실행
         try:
-            ffmpeg.run(stream, cmd=FFMPEG_PATH)
+            ffmpeg.run(stream, cmd=FFMPEG_PATH, capture_stderr=True)
             logger.info(f"이미지 시퀀스 처리 완료: {input_file}")
         except ffmpeg.Error as e:
             error_message = e.stderr.decode() if e.stderr else str(e)
@@ -507,7 +507,8 @@ def process_all_media(
     global_trim_start: int = 0,
     global_trim_end: int = 0,
     progress_callback: Optional[callable] = None,
-    target_properties: Dict[str, str] = {}
+    target_properties: Dict[str, str] = {},
+    max_workers_override: Optional[int] = None
 ):
     """
     모든 미디어 파일을 처리하고 하나의 파일로 합칩니다.
@@ -549,9 +550,19 @@ def process_all_media(
         temp_files_to_remove = []
         processed_files = [None] * len(media_files)  # 순서 유지를 위한 초기화
 
-        # 최적의 스레드 수 계산
-        max_workers = min(len(media_files), os.cpu_count() or 1)
-        
+        # NVENC 코덱 사용 시 동시 작업 수를 2로 제한, 그 외에는 CPU 코어 수만큼 사용
+        codec = encoding_options.get("c:v")
+        if codec in ["h264_nvenc", "hevc_nvenc"]:
+            if max_workers_override:
+                max_workers = max_workers_override
+                logger.info(f"사용자 설정에 따라 NVENC 최대 작업 수를 {max_workers}개로 설정합니다.")
+            else:
+                max_workers = 2 # 기본값
+                logger.info(f"NVENC 코덱({codec}) 사용으로 최대 작업 수를 {max_workers}개로 제한합니다.")
+        else:
+            max_workers = os.cpu_count()
+            logger.info(f"CPU 코덱({codec}) 사용으로 최대 작업 수를 {max_workers}개로 설정합니다.")
+
         # 메모리 사용량 모니터링 설정
         total_memory = psutil.virtual_memory().total
         memory_threshold = total_memory * 0.8
