@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread, QTimer, QTime
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator, QShortcut, QKeySequence
 
-from ffmpeg_utils import process_all_media
+from ffmpeg_utils import process_all_media, estimate_final_filesize
 from ffmpeg_utils import set_ffmpeg_path as set_ffmpeg_utils_path
 from update import UpdateChecker
 from commands import RemoveItemsCommand, ReorderItemsCommand, ClearListCommand, AddItemsCommand, Command
@@ -29,7 +29,8 @@ from utils import (
     ffmpeg_manager,
     get_debug_mode,
     set_debug_mode,
-    set_logger_level
+    set_logger_level,
+    set_ffprobe_path as set_utils_ffprobe_path
 )
 
 # 로깅 설정
@@ -135,6 +136,33 @@ class EncodingProgressDialog(QDialog):
         self.progress_bar.setValue(value)
 
 
+class EstimateFilesizeThread(QThread):
+    """
+    파일 크기 예상을 별도의 스레드에서 실행하기 위한 클래스
+    """
+    estimation_finished = Signal(float)
+
+    def __init__(self, media_files, encoding_options, target_properties, debug_mode):
+        super().__init__()
+        self.media_files = media_files
+        self.encoding_options = encoding_options
+        self.target_properties = target_properties
+        self.debug_mode = debug_mode
+
+    def run(self):
+        try:
+            estimated_size = estimate_final_filesize(
+                self.media_files,
+                self.encoding_options,
+                self.target_properties,
+                self.debug_mode
+            )
+            self.estimation_finished.emit(estimated_size)
+        except Exception as e:
+            logger.error(f"파일 크기 예상 스레드에서 오류 발생: {e}")
+            self.estimation_finished.emit(0.0)
+
+
 class EncodingThread(QThread):
     """
     인코딩 작업을 별도의 스레드에서 실행하기 위한 클래스
@@ -177,6 +205,8 @@ class FFmpegGui(QWidget):
         # FFmpeg 경로 설정
         set_video_thread_path(self.current_ffmpeg_path)
         set_ffmpeg_utils_path(self.current_ffmpeg_path)
+        ffprobe_path = os.path.join(os.path.dirname(self.current_ffmpeg_path), 'ffprobe.exe')
+        set_utils_ffprobe_path(ffprobe_path)
 
         self.init_attributes()
         self.init_shortcuts()
@@ -427,6 +457,7 @@ class FFmpegGui(QWidget):
         self.create_button_layout(left_layout)
         self.create_options_group(left_layout)
         self.create_output_layout(left_layout)
+        self.create_estimation_layout(left_layout) # 예상 크기 UI 추가
         self.create_encode_button(left_layout)
         self.create_update_button(left_layout)
         self.create_undo_redo_buttons(left_layout)
@@ -625,17 +656,16 @@ class FFmpegGui(QWidget):
         ffmpeg_layout.addWidget(self.ffmpeg_browse)
         left_layout.addLayout(ffmpeg_layout)
 
-    def browse_ffmpeg(self):
-        ffmpeg_path, _ = QFileDialog.getOpenFileName(
-            self, 'FFmpeg 실행 파일 선택',
-            self.ffmpeg_edit.text(),
-            'FFmpeg (ffmpeg.exe);;모든 파일 (*.*)'
-        )
-        if ffmpeg_path:
-            self.ffmpeg_edit.setText(ffmpeg_path)
-            self.settings.setValue("ffmpeg_path", ffmpeg_path)
-            set_video_thread_path(ffmpeg_path)
-            set_ffmpeg_utils_path(ffmpeg_path)
+    def create_estimation_layout(self, left_layout):
+        estimation_layout = QHBoxLayout()
+        self.estimate_button = QPushButton('📏 예상 크기 계산')
+        self.estimate_button.clicked.connect(self.start_estimation)
+        self.estimate_label = QLabel("예상 파일 크기: - MB")
+        self.estimate_label.setAlignment(Qt.AlignCenter)
+        
+        estimation_layout.addWidget(self.estimate_button)
+        estimation_layout.addWidget(self.estimate_label, 1) # 라벨이 남은 공간을 차지하도록
+        left_layout.addLayout(estimation_layout)
 
     def create_encode_button(self, left_layout):
         self.encode_button = QPushButton('🎬 인코딩 시작')
@@ -921,6 +951,68 @@ class FFmpegGui(QWidget):
         if output_file:
             self.output_edit.setText(output_file)
             self.settings.setValue("last_output_path", output_file)
+
+    def start_estimation(self):
+        if self.list_widget.count() == 0:
+            QMessageBox.warning(self, "경고", "파일 목록이 비어있습니다.")
+            return
+
+        self.estimate_button.setEnabled(False)
+        self.estimate_label.setText("계산 중...")
+
+        # 현재 GUI 설정값 가져오기
+        media_files = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            item_widget = self.list_widget.itemWidget(item)
+            file_path = item_widget.file_path
+            start_frame, end_frame = item_widget.get_frame_range()
+            media_files.append((file_path, start_frame, end_frame))
+            
+        encoding_options = self.encoding_options.copy()
+        self.update_encoding_options(encoding_options) # 해상도, 프레임레이트 등 최종 옵션 반영
+
+        target_properties = {}
+        if self.use_custom_resolution:
+            target_properties['width'] = self.video_width
+            target_properties['height'] = self.video_height
+        else: # 자동 해상도 감지 (첫 번째 파일 기준)
+            if media_files:
+                from ffmpeg_utils import get_media_properties
+                first_file_props = get_media_properties(media_files[0][0])
+                if first_file_props:
+                    target_properties = first_file_props
+        
+        debug_mode = self.debug_checkbox.isChecked()
+
+        # 스레드 생성 및 시작
+        self.estimation_thread = EstimateFilesizeThread(
+            media_files, encoding_options, target_properties, debug_mode
+        )
+        self.estimation_thread.estimation_finished.connect(self.on_estimation_finished)
+        self.estimation_thread.start()
+
+    def on_estimation_finished(self, estimated_size_mb):
+        if estimated_size_mb > 0:
+            self.estimate_label.setText(f"예상 파일 크기: {estimated_size_mb:.2f} MB")
+        else:
+            self.estimate_label.setText("예상 크기: 계산 실패")
+        
+        self.estimate_button.setEnabled(True)
+
+    def browse_ffmpeg(self):
+        ffmpeg_path, _ = QFileDialog.getOpenFileName(
+            self, 'FFmpeg 실행 파일 선택',
+            self.ffmpeg_edit.text(),
+            'FFmpeg (ffmpeg.exe);;모든 파일 (*.*)'
+        )
+        if ffmpeg_path:
+            self.ffmpeg_edit.setText(ffmpeg_path)
+            self.settings.setValue("ffmpeg_path", ffmpeg_path)
+            set_video_thread_path(ffmpeg_path)
+            set_ffmpeg_utils_path(ffmpeg_path)
+            ffprobe_path = os.path.join(os.path.dirname(ffmpeg_path), 'ffprobe.exe')
+            set_utils_ffprobe_path(ffprobe_path)
 
     def start_encoding(self):
         ffmpeg_path = self.ffmpeg_edit.text()

@@ -13,6 +13,7 @@ import gc
 from typing import List, Dict, Tuple, Optional
 import ffmpeg
 import logging
+from utils import is_image_sequence
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -83,13 +84,6 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> Dict[str,
     except Exception as e:
         logger.exception(f"'{input_file}'의 속성을 가져오는 중 예외 발생: {e}")
         return {}
-
-
-def is_image_sequence(input_file: str) -> bool:
-    """
-    입력 파일이 이미지 시퀀스인지 확인합니다.
-    """
-    return '%' in input_file or re.search(r'%\d*d', input_file) is not None
 
 
 def apply_filters(stream, target_properties):
@@ -690,3 +684,194 @@ def get_optimal_encoding_options(encoding_options: dict) -> dict:
     })
     
     return optimal_options
+
+
+def get_total_duration(media_files: List[Tuple[str, int, int]], encoding_options: Dict[str, str]) -> float:
+    """
+    모든 미디어 파일의 총 길이를 초 단위로 계산합니다.
+    """
+    total_duration = 0.0
+    framerate = float(encoding_options.get('r', 30))
+
+    for input_file, start_frame, end_frame in media_files:
+        if is_image_sequence(input_file):
+            pattern = input_file.replace('\\', '/')
+            glob_pattern = re.sub(r'%\d*d', '*', pattern)
+            image_files = sorted(glob.glob(glob_pattern))
+            
+            if not image_files:
+                continue
+
+            total_frames = len(image_files)
+            
+            # 프레임 번호 추출하여 원본 시작 프레임 확인
+            frame_number_pattern = re.compile(r'(\d+)\.(\w+)$')
+            first_image_match = frame_number_pattern.search(os.path.basename(image_files[0]))
+            original_start_frame = int(first_image_match.group(1)) if first_image_match else 0
+
+            # 실제 사용될 프레임 범위 계산
+            actual_start = start_frame
+            actual_end = end_frame if end_frame > 0 else total_frames + original_start_frame - 1
+            
+            num_frames = actual_end - actual_start + 1
+            if num_frames > 0:
+                total_duration += num_frames / framerate
+        else:
+            try:
+                probe = ffmpeg.probe(input_file, cmd=FFPROBE_PATH)
+                duration = float(probe['format']['duration'])
+                
+                # 비디오는 프레임 기반 트림이 아닌 시간 기반으로 길이를 다시 계산해야 할 수 있으나,
+                # 여기서는 단순화를 위해 전체 길이를 사용합니다.
+                # 정확도를 높이려면 process_video_file의 트림 로직을 반영해야 합니다.
+                total_duration += duration
+            except (ffmpeg.Error, KeyError) as e:
+                logger.warning(f"'{input_file}'의 길이를 가져오는 중 오류: {e}")
+
+    return total_duration
+
+
+def run_sample_analysis(
+    sample_info: Dict,
+    encoding_options: Dict[str, str],
+    target_properties: Dict[str, str],
+    debug_mode: bool
+) -> float:
+    """단일 샘플 지점에서 비트레이트를 분석하여 반환합니다."""
+    
+    file_path = sample_info['file_path']
+    start_time = sample_info.get('start_time') # 비디오용
+    start_frame = sample_info.get('start_frame') # 이미지 시퀀스용
+    
+    try:
+        # 스트림 생성
+        if is_image_sequence(file_path):
+            framerate = float(encoding_options.get('r', 30))
+            input_args = {'framerate': str(framerate), 'start_number': str(start_frame)}
+            stream = ffmpeg.input(file_path, **input_args)
+        else:
+            stream = ffmpeg.input(file_path, ss=start_time)
+
+        # 공통 필터 적용
+        stream = apply_filters(stream, target_properties)
+        
+        # 분석용 인코딩 옵션 설정
+        analysis_options = get_optimal_encoding_options(encoding_options)
+        analysis_options.pop('pass', None)
+
+        if is_image_sequence(file_path):
+            framerate = float(encoding_options.get('r', 30))
+            analysis_options['vframes'] = int(2 * framerate)  # 2초 분량
+        else:
+            analysis_options['t'] = 2  # 2초만 인코딩
+
+        stream = ffmpeg.output(
+            stream, 'NUL' if os.name == 'nt' else '/dev/null', **analysis_options, f='null'
+        ).overwrite_output()
+        
+        if debug_mode:
+            logger.debug(f"샘플 분석 명령어 ({sample_info['type']}): {' '.join(ffmpeg.compile(stream, cmd=FFMPEG_PATH))}")
+
+        # 분석 실행 및 stderr 캡처
+        _, stderr_bytes = ffmpeg.run(stream, cmd=FFMPEG_PATH, capture_stdout=True, capture_stderr=True)
+        stderr_str = stderr_bytes.decode(errors='ignore')
+
+        # 비트레이트 계산
+        match_size = re.search(r"video:(\d+)KiB", stderr_str)
+        matches_time = re.findall(r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})", stderr_str)
+
+        if match_size and matches_time:
+            sample_size_kib = int(match_size.group(1))
+            h, m, s = matches_time[-1]
+            sample_time_sec = int(h) * 3600 + int(m) * 60 + float(s)
+            if sample_time_sec > 0:
+                bitrate = (sample_size_kib * 8) / sample_time_sec  # kbits/s
+                logger.info(f"샘플 분석 성공 ({sample_info['type']}): {bitrate:.2f} kb/s")
+                return bitrate
+    
+    except Exception as e:
+        logger.warning(f"샘플 분석 중 오류 ({sample_info['type']}): {e}")
+
+    return 0.0
+
+
+def estimate_final_filesize(
+    media_files: List[Tuple[str, int, int]],
+    encoding_options: Dict[str, str],
+    target_properties: Dict[str, str],
+    debug_mode: bool = False
+) -> float:
+    """
+    다중 지점 샘플링을 통해 예상 파일 크기를 MB 단위로 반환합니다.
+    """
+    if not media_files:
+        return 0.0
+
+    total_duration_sec = get_total_duration(media_files, encoding_options)
+    if total_duration_sec <= 0:
+        return 0.0
+
+    # 1. 비트레이트가 직접 지정된 경우
+    if 'b:v' in encoding_options:
+        # ... (이전과 동일한 로직)
+        bitrate_str = encoding_options['b:v']
+        bitrate_kbps = 0
+        if isinstance(bitrate_str, str):
+            if bitrate_str.lower().endswith('k'): bitrate_kbps = float(bitrate_str[:-1])
+            elif bitrate_str.lower().endswith('m'): bitrate_kbps = float(bitrate_str[:-1]) * 1024
+            else: bitrate_kbps = float(bitrate_str) / 1000
+        else: bitrate_kbps = float(bitrate_str) / 1000
+        return (bitrate_kbps * total_duration_sec) / (8 * 1024)
+
+    # 2. 품질 기반인 경우 (다중 지점 샘플링)
+    sampling_points = []
+    
+    # 샘플링 지점 결정
+    # Case 1: 파일이 하나인 경우
+    if len(media_files) == 1:
+        file_path, start_f, end_f = media_files[0]
+        duration = get_total_duration([(file_path, start_f, end_f)], encoding_options)
+        if duration > 6:
+            sampling_points.append({'type': 'start', 'file_path': file_path, 'start_time': 0, 'start_frame': start_f})
+            sampling_points.append({'type': 'middle', 'file_path': file_path, 'start_time': duration / 2, 'start_frame': start_f + int((end_f - start_f) / 2)})
+            sampling_points.append({'type': 'end', 'file_path': file_path, 'start_time': duration - 4, 'start_frame': end_f - (2*int(encoding_options.get('r', 30)))})
+        else:
+             sampling_points.append({'type': 'start', 'file_path': file_path, 'start_time': 0, 'start_frame': start_f})
+    # Case 2: 파일이 여러 개인 경우
+    else:
+        start_file, start_sf, _ = media_files[0]
+        sampling_points.append({'type': 'start', 'file_path': start_file, 'start_time': 0, 'start_frame': start_sf})
+
+        middle_idx = len(media_files) // 2
+        mid_file, mid_sf, mid_ef = media_files[middle_idx]
+        mid_duration = get_total_duration([(mid_file, mid_sf, mid_ef)], encoding_options)
+        sampling_points.append({'type': 'middle', 'file_path': mid_file, 'start_time': mid_duration / 2, 'start_frame': mid_sf + int((mid_ef-mid_sf)/2)})
+
+        end_file, end_sf, end_ef = media_files[-1]
+        end_duration = get_total_duration([(end_file, end_sf, end_ef)], encoding_options)
+        sampling_points.append({'type': 'end', 'file_path': end_file, 'start_time': max(0, end_duration - 4), 'start_frame': end_ef - (2*int(encoding_options.get('r', 30)))})
+
+    # 각 지점에서 비트레이트 분석 실행
+    total_bitrate = 0
+    valid_samples = 0
+    
+    # ThreadPoolExecutor를 사용하여 병렬로 샘플 분석 (선택적 개선)
+    # with ThreadPoolExecutor(max_workers=len(sampling_points)) as executor:
+    #     futures = [executor.submit(run_sample_analysis, ...) for ... in ...]
+    #     for future in as_completed(futures):
+    #         ...
+
+    for point in sampling_points:
+        bitrate = run_sample_analysis(point, encoding_options, target_properties, debug_mode)
+        if bitrate > 0:
+            total_bitrate += bitrate
+            valid_samples += 1
+            
+    if valid_samples > 0:
+        avg_bitrate_kbps = total_bitrate / valid_samples
+        logger.info(f"최종 평균 비트레이트: {avg_bitrate_kbps:.2f} kb/s ({valid_samples}개 샘플 기준)")
+        estimated_size_mb = (avg_bitrate_kbps * total_duration_sec) / (8 * 1024)
+        return estimated_size_mb
+    else:
+        logger.error("모든 샘플 지점에서 비트레이트 분석에 실패했습니다.")
+        return 0.0

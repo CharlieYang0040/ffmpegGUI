@@ -10,7 +10,21 @@ import appdirs
 import shutil
 import sys
 import ffmpeg
-from ffmpeg_utils import is_image_sequence, FFPROBE_PATH
+
+# FFprobe 경로를 위한 전역 변수
+FFPROBE_PATH = None
+
+def set_ffprobe_path(path: str):
+    """FFprobe 경로를 설정합니다."""
+    global FFPROBE_PATH
+    FFPROBE_PATH = path
+    logger.info(f"utils.py에 FFprobe 경로 설정: {FFPROBE_PATH}")
+
+def is_image_sequence(input_file: str) -> bool:
+    """
+    입력 파일이 이미지 시퀀스인지 확인합니다.
+    """
+    return '%' in input_file or re.search(r'%\d*d', input_file) is not None
 
 # 설정에서 디버그 모드 상태 로드
 settings = QSettings('LHCinema', 'ffmpegGUI')
