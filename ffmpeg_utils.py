@@ -795,14 +795,14 @@ def run_sample_analysis(
     return 0.0
 
 
-def estimate_final_filesize(
+def estimate_filesize_fast(
     media_files: List[Tuple[str, int, int]],
     encoding_options: Dict[str, str],
     target_properties: Dict[str, str],
     debug_mode: bool = False
 ) -> float:
     """
-    다중 지점 샘플링을 통해 예상 파일 크기를 MB 단위로 반환합니다.
+    다중 지점 샘플링을 통해 예상 파일 크기를 MB 단위로 반환합니다. (빠르지만 부정확)
     """
     if not media_files:
         return 0.0
@@ -813,7 +813,6 @@ def estimate_final_filesize(
 
     # 1. 비트레이트가 직접 지정된 경우
     if 'b:v' in encoding_options:
-        # ... (이전과 동일한 로직)
         bitrate_str = encoding_options['b:v']
         bitrate_kbps = 0
         if isinstance(bitrate_str, str):
@@ -827,7 +826,6 @@ def estimate_final_filesize(
     sampling_points = []
     
     # 샘플링 지점 결정
-    # Case 1: 파일이 하나인 경우
     if len(media_files) == 1:
         file_path, start_f, end_f = media_files[0]
         duration = get_total_duration([(file_path, start_f, end_f)], encoding_options)
@@ -837,7 +835,6 @@ def estimate_final_filesize(
             sampling_points.append({'type': 'end', 'file_path': file_path, 'start_time': duration - 4, 'start_frame': end_f - (2*int(encoding_options.get('r', 30)))})
         else:
              sampling_points.append({'type': 'start', 'file_path': file_path, 'start_time': 0, 'start_frame': start_f})
-    # Case 2: 파일이 여러 개인 경우
     else:
         start_file, start_sf, _ = media_files[0]
         sampling_points.append({'type': 'start', 'file_path': start_file, 'start_time': 0, 'start_frame': start_sf})
@@ -851,16 +848,8 @@ def estimate_final_filesize(
         end_duration = get_total_duration([(end_file, end_sf, end_ef)], encoding_options)
         sampling_points.append({'type': 'end', 'file_path': end_file, 'start_time': max(0, end_duration - 4), 'start_frame': end_ef - (2*int(encoding_options.get('r', 30)))})
 
-    # 각 지점에서 비트레이트 분석 실행
     total_bitrate = 0
     valid_samples = 0
-    
-    # ThreadPoolExecutor를 사용하여 병렬로 샘플 분석 (선택적 개선)
-    # with ThreadPoolExecutor(max_workers=len(sampling_points)) as executor:
-    #     futures = [executor.submit(run_sample_analysis, ...) for ... in ...]
-    #     for future in as_completed(futures):
-    #         ...
-
     for point in sampling_points:
         bitrate = run_sample_analysis(point, encoding_options, target_properties, debug_mode)
         if bitrate > 0:
@@ -869,9 +858,107 @@ def estimate_final_filesize(
             
     if valid_samples > 0:
         avg_bitrate_kbps = total_bitrate / valid_samples
-        logger.info(f"최종 평균 비트레이트: {avg_bitrate_kbps:.2f} kb/s ({valid_samples}개 샘플 기준)")
-        estimated_size_mb = (avg_bitrate_kbps * total_duration_sec) / (8 * 1024)
-        return estimated_size_mb
+        logger.info(f"최종 평균 비트레이트 (빠른 예상): {avg_bitrate_kbps:.2f} kb/s ({valid_samples}개 샘플 기준)")
+        return (avg_bitrate_kbps * total_duration_sec) / (8 * 1024)
     else:
         logger.error("모든 샘플 지점에서 비트레이트 분석에 실패했습니다.")
         return 0.0
+
+
+def estimate_filesize_accurate(
+    media_files: List[Tuple[str, int, int]],
+    encoding_options: Dict[str, str],
+    target_properties: Dict[str, str],
+    debug_mode: bool = False,
+    max_workers_override: Optional[int] = None
+) -> float:
+    """
+    가장 빠른 프리셋으로 전체 영상을 분석하여 예상 파일 크기를 MB 단위로 반환합니다. (정확하지만 느림)
+    """
+    if not media_files:
+        return 0.0
+
+    total_duration_sec = get_total_duration(media_files, encoding_options)
+    if total_duration_sec <= 0: return 0.0
+
+    if 'b:v' in encoding_options:
+        # 비트레이트 모드는 계산이 정확하므로 빠른 모드와 동일하게 처리
+        return estimate_filesize_fast(media_files, encoding_options, target_properties, debug_mode)
+
+    # 1. 모든 미디어를 처리하는 임시 파일들 생성
+    temp_files = []
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+
+        # 작업자 수 결정
+        codec = encoding_options.get("c:v")
+        if codec in ["h264_nvenc", "hevc_nvenc"]:
+            max_workers = max_workers_override if max_workers_override else 2
+        else:
+            max_workers = os.cpu_count()
+
+        # 실제 인코딩과 동일하게 병렬로 임시 파일 생성
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for idx, (input_file, start_frame, end_frame) in enumerate(media_files):
+                future = executor.submit(
+                    process_single_media,
+                    input_file, start_frame, end_frame,
+                    encoding_options.copy(), debug_mode, idx,
+                    psutil.virtual_memory().total * 0.9, # 메모리 임계값
+                    target_properties
+                )
+                futures.append(future)
+            
+            for future in futures:
+                temp_files.append(future.result())
+
+        if not temp_files:
+            raise RuntimeError("임시 파일 생성에 실패했습니다.")
+
+        # 2. 생성된 임시 파일들을 concat demuxer로 연결
+        file_list_path = create_temp_file_list(temp_files)
+        
+        analysis_options = get_optimal_encoding_options(encoding_options)
+        analysis_options.pop('pass', None)
+        
+        # 가장 빠른 프리셋으로 강제 변경
+        codec = analysis_options.get("c:v")
+        if codec in ["h264_nvenc", "hevc_nvenc"]:
+            analysis_options['preset'] = 'p1'
+        elif codec in ["libx264", "libx265"]:
+            analysis_options['preset'] = 'ultrafast'
+
+        input_options = {'safe': '0', 'f': 'concat', 'protocol_whitelist': 'file,pipe'}
+        stream = ffmpeg.input(file_list_path, **input_options)
+        stream = ffmpeg.output(
+            stream, 'NUL' if os.name == 'nt' else '/dev/null', **analysis_options, f='null'
+        ).overwrite_output()
+
+        if debug_mode:
+            logger.debug(f"정밀 분석 명령어: {' '.join(ffmpeg.compile(stream, cmd=FFMPEG_PATH))}")
+
+        # 3. 전체 분석 실행
+        _, stderr_bytes = ffmpeg.run(stream, cmd=FFMPEG_PATH, capture_stdout=True, capture_stderr=True)
+        stderr_str = stderr_bytes.decode(errors='ignore')
+
+        match_size = re.search(r"video:(\d+)KiB", stderr_str)
+        if match_size:
+            total_size_kib = int(match_size.group(1))
+            estimated_size_mb = total_size_kib / 1024
+            logger.info(f"정밀 분석 성공: 총 비디오 크기 {total_size_kib} KiB -> {estimated_size_mb:.2f} MB")
+            return estimated_size_mb
+        else:
+            logger.error(f"정밀 분석 결과에서 비디오 크기를 찾지 못했습니다. stderr: {stderr_str}")
+            return 0.0
+
+    except Exception as e:
+        logger.exception(f"정밀 분석 중 예외 발생: {e}")
+        return 0.0
+    finally:
+        # 모든 임시 파일 정리
+        if 'file_list_path' in locals() and os.path.exists(file_list_path):
+            os.remove(file_list_path)
+        for f in temp_files:
+            if os.path.exists(f):
+                os.remove(f)

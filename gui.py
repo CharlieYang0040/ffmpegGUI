@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread, QTimer, QTime
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator, QShortcut, QKeySequence
 
-from ffmpeg_utils import process_all_media, estimate_final_filesize
+from ffmpeg_utils import process_all_media, estimate_filesize_fast, estimate_filesize_accurate
 from ffmpeg_utils import set_ffmpeg_path as set_ffmpeg_utils_path
 from update import UpdateChecker
 from commands import RemoveItemsCommand, ReorderItemsCommand, ClearListCommand, AddItemsCommand, Command
@@ -142,21 +142,14 @@ class EstimateFilesizeThread(QThread):
     """
     estimation_finished = Signal(float)
 
-    def __init__(self, media_files, encoding_options, target_properties, debug_mode):
+    def __init__(self, estimation_function, **kwargs):
         super().__init__()
-        self.media_files = media_files
-        self.encoding_options = encoding_options
-        self.target_properties = target_properties
-        self.debug_mode = debug_mode
+        self.estimation_function = estimation_function
+        self.kwargs = kwargs
 
     def run(self):
         try:
-            estimated_size = estimate_final_filesize(
-                self.media_files,
-                self.encoding_options,
-                self.target_properties,
-                self.debug_mode
-            )
+            estimated_size = self.estimation_function(**self.kwargs)
             self.estimation_finished.emit(estimated_size)
         except Exception as e:
             logger.error(f"파일 크기 예상 스레드에서 오류 발생: {e}")
@@ -455,13 +448,16 @@ class FFmpegGui(QWidget):
         left_layout = QVBoxLayout()
         self.create_list_widget(left_layout)
         self.create_button_layout(left_layout)
-        self.create_options_group(left_layout)
+        
+        options_and_misc_layout = QHBoxLayout()
+        self.create_options_group(options_and_misc_layout)
+        self.create_misc_group(options_and_misc_layout)
+        left_layout.addLayout(options_and_misc_layout)
+
         self.create_output_layout(left_layout)
-        self.create_estimation_layout(left_layout) # 예상 크기 UI 추가
+        self.create_estimation_layout(left_layout)
         self.create_encode_button(left_layout)
-        self.create_update_button(left_layout)
-        self.create_undo_redo_buttons(left_layout)
-        self.setup_otio_controls(left_layout)
+        self.create_bottom_controls(left_layout)
         content_layout.addLayout(left_layout)
 
     def create_list_widget(self, left_layout):
@@ -529,7 +525,7 @@ class FFmpegGui(QWidget):
 
         left_layout.addLayout(button_layout)
 
-    def create_options_group(self, left_layout):
+    def create_options_group(self, parent_layout):
         self.options_group = QGroupBox("인코딩 옵션")
         options_layout = QVBoxLayout()
 
@@ -586,14 +582,8 @@ class FFmpegGui(QWidget):
         self.create_option_widget(options_layout, "pix_fmt", ["yuv420p", "yuv422p", "yuv444p", "none"])
         self.option_widgets["pix_fmt"].setToolTip("픽셀 포맷을 설정합니다. 대부분의 경우 yuv420p로 충분합니다.")
 
-        # Color Options Button
-        self.color_options_button = QPushButton("색상 옵션 설정...")
-        self.color_options_button.clicked.connect(self.open_color_options_dialog)
-        options_layout.addWidget(self.color_options_button)
-
-
         self.options_group.setLayout(options_layout)
-        left_layout.addWidget(self.options_group)
+        parent_layout.addWidget(self.options_group, 3)
 
         # 초기 코덱 설정에 맞게 UI 업데이트
         self.update_codec_options(self.encoding_options.get("c:v"))
@@ -658,13 +648,17 @@ class FFmpegGui(QWidget):
 
     def create_estimation_layout(self, left_layout):
         estimation_layout = QHBoxLayout()
-        self.estimate_button = QPushButton('📏 예상 크기 계산')
-        self.estimate_button.clicked.connect(self.start_estimation)
+        self.estimate_fast_button = QPushButton('📏 빠른 예상')
+        self.estimate_fast_button.clicked.connect(lambda: self.start_estimation(fast_mode=True))
+        self.estimate_accurate_button = QPushButton('🔎 정밀 예상')
+        self.estimate_accurate_button.clicked.connect(lambda: self.start_estimation(fast_mode=False))
+        
         self.estimate_label = QLabel("예상 파일 크기: - MB")
         self.estimate_label.setAlignment(Qt.AlignCenter)
         
-        estimation_layout.addWidget(self.estimate_button)
-        estimation_layout.addWidget(self.estimate_label, 1) # 라벨이 남은 공간을 차지하도록
+        estimation_layout.addWidget(self.estimate_fast_button)
+        estimation_layout.addWidget(self.estimate_accurate_button)
+        estimation_layout.addWidget(self.estimate_label, 1)
         left_layout.addLayout(estimation_layout)
 
     def create_encode_button(self, left_layout):
@@ -672,17 +666,22 @@ class FFmpegGui(QWidget):
         self.encode_button.clicked.connect(self.start_encoding)
         left_layout.addWidget(self.encode_button)
 
-    def create_update_button(self, left_layout):
-        update_layout = QHBoxLayout()
+    def create_misc_group(self, parent_layout):
+        misc_group = QGroupBox("기타")
+        misc_layout = QVBoxLayout()
+
+        # Color Options Button
+        self.color_options_button = QPushButton("색상 옵션 설정...")
+        self.color_options_button.clicked.connect(self.open_color_options_dialog)
+        misc_layout.addWidget(self.color_options_button)
+
+        # Update button
         self.update_button = QPushButton('🔄 업데이트 확인')
         self.update_button.clicked.connect(self.update_checker.check_for_updates)
-        update_layout.addWidget(self.update_button)
-        left_layout.addLayout(update_layout)
+        misc_layout.addWidget(self.update_button)
 
-    def create_undo_redo_buttons(self, left_layout):
+        # Undo/Redo buttons
         undo_redo_layout = QHBoxLayout()
-        undo_redo_layout.setAlignment(Qt.AlignLeft)
-
         self.undo_button = QPushButton('↩️ 실행취소')
         self.undo_button.clicked.connect(self.undo)
         self.undo_button.setEnabled(False)
@@ -694,20 +693,46 @@ class FFmpegGui(QWidget):
         self.redo_button.setEnabled(False)
         self.redo_button.setFixedWidth(100)
         undo_redo_layout.addWidget(self.redo_button)
+        misc_layout.addLayout(undo_redo_layout)
 
-        undo_redo_layout.addStretch()
+        # OTIO controls
+        otio_layout = QVBoxLayout()
+        self.rv_path_edit = QLineEdit()
+        self.rv_path_edit.setPlaceholderText("OpenRV 경로")
+        self.rv_path_edit.setText(self.settings.value("rv_path", ""))
+
+        self.rv_browse_button = QPushButton("RV 찾기")
+        self.rv_browse_button.clicked.connect(self.browse_rv_path)
+
+        self.create_otio_button = QPushButton("🎬 OTIO 생성 및 열기")
+        self.create_otio_button.clicked.connect(self.create_and_open_otio)
+
+        rv_path_layout = QHBoxLayout()
+        rv_path_layout.addWidget(self.rv_path_edit)
+        rv_path_layout.addWidget(self.rv_browse_button)
+
+        otio_layout.addLayout(rv_path_layout)
+        otio_layout.addWidget(self.create_otio_button)
+        misc_layout.addLayout(otio_layout)
+
+        misc_group.setLayout(misc_layout)
+        parent_layout.addWidget(misc_group, 1)
+
+    def create_bottom_controls(self, left_layout):
+        bottom_layout = QHBoxLayout()
+        bottom_layout.addStretch(1)
 
         self.debug_checkbox = QCheckBox("디버그 모드")
         self.debug_checkbox.setChecked(False)
         self.debug_checkbox.stateChanged.connect(self.toggle_debug_mode)
-        undo_redo_layout.addStretch(1)
-        undo_redo_layout.addWidget(self.debug_checkbox)
+        bottom_layout.addWidget(self.debug_checkbox)
 
         self.clear_settings_button = QPushButton("설정 초기화")
         self.clear_settings_button.clicked.connect(self.clear_settings)
         self.clear_settings_button.hide()
-        undo_redo_layout.addWidget(self.clear_settings_button)
-        left_layout.addLayout(undo_redo_layout)
+        bottom_layout.addWidget(self.clear_settings_button)
+
+        left_layout.addLayout(bottom_layout)
 
     def show_update_error(self, error_message):
         QMessageBox.critical(self, '업데이트 오류', f'업데이트 확인 중 오류가 발생했습니다:\n{error_message}')
@@ -952,12 +977,13 @@ class FFmpegGui(QWidget):
             self.output_edit.setText(output_file)
             self.settings.setValue("last_output_path", output_file)
 
-    def start_estimation(self):
+    def start_estimation(self, fast_mode=True):
         if self.list_widget.count() == 0:
             QMessageBox.warning(self, "경고", "파일 목록이 비어있습니다.")
             return
 
-        self.estimate_button.setEnabled(False)
+        self.estimate_fast_button.setEnabled(False)
+        self.estimate_accurate_button.setEnabled(False)
         self.estimate_label.setText("계산 중...")
 
         # 현재 GUI 설정값 가져오기
@@ -985,9 +1011,22 @@ class FFmpegGui(QWidget):
         
         debug_mode = self.debug_checkbox.isChecked()
 
+        # 사용할 함수 결정
+        estimation_func = estimate_filesize_fast if fast_mode else estimate_filesize_accurate
+        
+        # 정밀 모드일 경우 최대 작업자 수 전달
+        func_kwargs = {
+            'media_files': media_files,
+            'encoding_options': encoding_options,
+            'target_properties': target_properties,
+            'debug_mode': debug_mode
+        }
+        if not fast_mode:
+            func_kwargs['max_workers_override'] = self.max_workers_spinbox.value()
+
         # 스레드 생성 및 시작
         self.estimation_thread = EstimateFilesizeThread(
-            media_files, encoding_options, target_properties, debug_mode
+            estimation_func, **func_kwargs
         )
         self.estimation_thread.estimation_finished.connect(self.on_estimation_finished)
         self.estimation_thread.start()
@@ -998,7 +1037,8 @@ class FFmpegGui(QWidget):
         else:
             self.estimate_label.setText("예상 크기: 계산 실패")
         
-        self.estimate_button.setEnabled(True)
+        self.estimate_fast_button.setEnabled(True)
+        self.estimate_accurate_button.setEnabled(True)
 
     def browse_ffmpeg(self):
         ffmpeg_path, _ = QFileDialog.getOpenFileName(
@@ -1392,25 +1432,6 @@ class FFmpegGui(QWidget):
                     QMessageBox.warning(self, "오류", f"폴더를 열 수 없습니다: {str(e)}")
             else:
                 QMessageBox.warning(self, "경고", "폴더가 존재하지 않습니다.")
-
-    def setup_otio_controls(self, left_layout):
-        otio_layout = QHBoxLayout()
-        
-        self.rv_path_edit = QLineEdit()
-        self.rv_path_edit.setPlaceholderText("OpenRV 경로")
-        self.rv_path_edit.setText(self.settings.value("rv_path", ""))
-        
-        self.rv_browse_button = QPushButton("RV 찾기")
-        self.rv_browse_button.clicked.connect(self.browse_rv_path)
-        
-        self.create_otio_button = QPushButton("🎬 OTIO 생성 및 열기")
-        self.create_otio_button.clicked.connect(self.create_and_open_otio)
-        
-        otio_layout.addWidget(self.rv_path_edit)
-        otio_layout.addWidget(self.rv_browse_button)
-        otio_layout.addWidget(self.create_otio_button)
-        
-        left_layout.addLayout(otio_layout)
 
     def browse_rv_path(self):
         rv_path, _ = QFileDialog.getOpenFileName(
