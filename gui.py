@@ -889,8 +889,49 @@ class FFmpegGui(QWidget):
             self.execute_command(command)
 
     def update_option(self, option: str, value: str):
+        if option == "preset" and value == "Visually Lossless":
+            self.encoding_options.update({
+                "preset": "p7",
+                "tune": "hq",
+                "multipass": "fullres",
+                "rc": "vbr",
+                "cq": "18",
+                "rc-lookahead": "32",
+            })
+            self.option_widgets["quality_spinbox"].setEnabled(False)
+
+            preset_combo = self.option_widgets.get("preset")
+            if preset_combo:
+                preset_combo.blockSignals(True)
+                preset_combo.setCurrentText("Visually Lossless")
+                preset_combo.blockSignals(False)
+            return
+        elif option == "preset" and value == "Lossless (QP 0)":
+            # 무손실 모드에서는 다른 품질 관련 옵션들이 필요 없거나 충돌할 수 있으므로 제거
+            self.encoding_options.pop("cq", None)
+            self.encoding_options.pop("tune", None)
+            self.encoding_options.pop("multipass", None)
+            self.encoding_options.pop("rc-lookahead", None)
+            self.encoding_options.pop("rc", None)
+            
+            self.encoding_options.update({
+                "preset": "p7",
+                "qp": "0",
+            })
+            self.option_widgets["quality_spinbox"].setEnabled(False)
+
+            preset_combo = self.option_widgets.get("preset")
+            if preset_combo:
+                preset_combo.blockSignals(True)
+                preset_combo.setCurrentText("Lossless (QP 0)")
+                preset_combo.blockSignals(False)
+            return
+
         if option == "c:v":
             self.update_codec_options(value)
+
+        if option == "preset":
+            self.option_widgets["quality_spinbox"].setEnabled(True)
 
         if value != "none":
             self.encoding_options[option] = value
@@ -908,7 +949,7 @@ class FFmpegGui(QWidget):
         max_workers_spinbox = self.option_widgets.get("max_workers_spinbox")
 
         if codec in ["h264_nvenc", "hevc_nvenc"]:
-            presets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fast"]
+            presets = ["Lossless (QP 0)", "Visually Lossless", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fast"]
             quality_label = "CQ"
             quality_value = self.encoding_options.get("cq", "21")
             self.encoding_options["cq"] = str(quality_value)
