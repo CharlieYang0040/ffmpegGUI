@@ -909,14 +909,19 @@ class FFmpegGui(QWidget):
         elif option == "preset" and value == "Lossless (QP 0)":
             # 무손실 모드에서는 다른 품질 관련 옵션들이 필요 없거나 충돌할 수 있으므로 제거
             self.encoding_options.pop("cq", None)
-            self.encoding_options.pop("tune", None)
             self.encoding_options.pop("multipass", None)
-            self.encoding_options.pop("rc-lookahead", None)
-            self.encoding_options.pop("rc", None)
-            
+            # 색상/픽셀포맷 관련 키는 건드리지 않음 (pix_fmt, colorspace 등)
+
+            # NVENC 무손실에 가까운 설정 적용
             self.encoding_options.update({
                 "preset": "p7",
+                "rc": "constqp",
                 "qp": "0",
+                "tune": "lossless",
+                "bf": "0",
+                "spatial_aq": "0",
+                "temporal_aq": "0",
+                "rc-lookahead": "0",
             })
             self.option_widgets["quality_spinbox"].setEnabled(False)
 

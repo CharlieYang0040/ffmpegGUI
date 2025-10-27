@@ -533,6 +533,12 @@ def process_all_media(
             encoding_options['v'] = 'quiet'
 
         logger.info(f"미디어 처리 시작: {len(media_files)}개 파일")
+        # 최종적으로 ffmpeg에 전달될 인코딩 옵션을 로그로 확인
+        try:
+            safe_opts = {k: v for k, v in encoding_options.items()}
+            logger.info(f"최종 인코딩 옵션: {safe_opts}")
+        except Exception:
+            pass
         
         # 먼저 target_properties 얻기
         input_files = [file[0] for file in media_files]  # 파일 경로만 추출
