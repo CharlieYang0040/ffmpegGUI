@@ -21,7 +21,7 @@ from update import UpdateChecker
 from commands import RemoveItemsCommand, ReorderItemsCommand, ClearListCommand, AddItemsCommand, Command
 from drag_drop_list_widget import DragDropListWidget
 from droppable_line_edit import DroppableLineEdit
-from video_thread import VideoThread
+from video_thread import VideoThread, load_image_preview_pixmap
 from video_thread import set_ffmpeg_path as set_video_thread_path
 from utils import (
     process_file,
@@ -1508,18 +1508,23 @@ class FFmpegGui(QWidget):
 
     def show_image_preview(self, file_path: str):
         if '%' in file_path:
+            original_pattern = file_path
             file_path = get_first_sequence_file(file_path)
             if not file_path:
-                logger.warning(f"시퀀스 파일을 찾을 수 없습니다: {file_path}")
+                logger.warning(f"시퀀스 파일을 찾을 수 없습니다: {original_pattern}")
                 return
 
         if os.path.exists(file_path):
-            pixmap = QPixmap(file_path)
-            if not pixmap.isNull():
-                scaled_pixmap = self.resize_keeping_aspect_ratio(pixmap, self.preview_label.width(), self.preview_label.height())
-                self.preview_label.setPixmap(scaled_pixmap)
+            pixmap = load_image_preview_pixmap(
+                file_path,
+                self.preview_label.width(),
+                self.preview_label.height()
+            )
+            if pixmap and not pixmap.isNull():
+                self.preview_label.setPixmap(pixmap)
             else:
                 logger.warning(f"이미지를 로드할 수 없습니다: {file_path}")
+                self.preview_label.clear()
         else:
             logger.warning(f"파일이 존재하지 않습니다: {file_path}")
 

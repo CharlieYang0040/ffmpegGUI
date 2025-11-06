@@ -2,7 +2,7 @@
 
 import ffmpeg
 import numpy as np
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QPixmap, QImage
 from concurrent.futures import ThreadPoolExecutor
 import cv2
@@ -13,9 +13,9 @@ import glob
 import re
 from PIL import Image
 import json
-from typing import Dict
+from typing import Dict, Optional, Tuple
 import time
-from utils import get_debug_mode
+from utils import get_debug_mode, normalize_path_separator
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -33,6 +33,64 @@ def set_ffmpeg_path(path: str):
         logger.debug(f"FFprobe 경로 설정: {FFPROBE_PATH}")
     else:
         logger.error(f"FFmpeg 경로를 찾을 수 없음: {path}")
+
+
+def probe_image_resolution(path: str) -> Tuple[int, int]:
+    normalized = normalize_path_separator(path)
+    try:
+        probe = ffmpeg.probe(normalized, cmd=FFPROBE_PATH)
+        video_stream = next(
+            (s for s in probe['streams'] if s.get('codec_type') == 'video'),
+            None
+        )
+        if video_stream:
+            return int(video_stream['width']), int(video_stream['height'])
+    except Exception as exc:
+        logger.warning(f"이미지 해상도 프로브 실패({normalized}): {exc}")
+    return 0, 0
+
+
+def load_image_preview_pixmap(path: str, target_width: int, target_height: int) -> Optional[QPixmap]:
+    normalized = normalize_path_separator(path)
+    extension = os.path.splitext(normalized)[1].lower()
+    pixmap: Optional[QPixmap] = None
+
+    if extension == '.exr':
+        width, height = probe_image_resolution(normalized)
+        try:
+            out, _ = (
+                ffmpeg
+                .input(normalized)
+                .output('pipe:', format='rawvideo', pix_fmt='rgb24', vframes=1)
+                .run(capture_stdout=True, capture_stderr=True, cmd=FFMPEG_PATH)
+            )
+            frame = np.frombuffer(out, np.uint8)
+            if width <= 0 or height <= 0 or frame.size != width * height * 3:
+                width, height = probe_image_resolution(normalized)
+            if width > 0 and height > 0 and frame.size == width * height * 3:
+                frame = frame.reshape((height, width, 3))
+                q_image = QImage(frame.data, width, height, width * 3, QImage.Format_RGB888)
+                pixmap = QPixmap.fromImage(q_image.copy())
+        except Exception as exc:
+            logger.warning(f"FFmpeg 프리뷰 로드 실패({normalized}): {exc}")
+
+    if pixmap is None or pixmap.isNull():
+        try:
+            img = Image.open(normalized).convert("RGBA")
+            img.thumbnail((target_width, target_height), Image.LANCZOS)
+            np_img = np.array(img)
+            height, width, channel = np_img.shape
+            bytes_per_line = 4 * width
+            q_image = QImage(np_img.data, width, height, bytes_per_line, QImage.Format_RGBA8888)
+            pixmap = QPixmap.fromImage(q_image.copy())
+        except Exception as exc:
+            logger.warning(f"이미지 프리뷰 로드 실패({normalized}): {exc}")
+            pixmap = None
+
+    if pixmap is None or pixmap.isNull():
+        return None
+
+    return pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
 class VideoThread(QThread):
@@ -134,10 +192,11 @@ class VideoThread(QThread):
         }
 
     def process_image_sequence(self):
-        base_path = self.file_path.split('%')[0]
-        # 다양한 자리수의 %0Nd 패턴을 일반화하여 처리
-        pattern = re.sub(r'%\d*d', '*', os.path.basename(self.file_path))
-        self.image_files = sorted(glob.glob(os.path.join(os.path.dirname(base_path), pattern)))
+        normalized_path = normalize_path_separator(self.file_path)
+        base_path = normalized_path.split('%')[0]
+        pattern = re.sub(r'%\d*d', '*', os.path.basename(normalized_path))
+        search_dir = os.path.dirname(base_path)
+        self.image_files = sorted(glob.glob(os.path.join(search_dir, pattern)))
         
         if not self.image_files:
             raise ValueError("No image files found in the sequence")
@@ -148,9 +207,7 @@ class VideoThread(QThread):
             with Image.open(self.image_files[0]) as img:
                 width, height = img.size
         except Exception:
-            # PIL이 열지 못하는 형식(EXR 등) 폴백: ffprobe로 크기 조회
-            props = self.get_video_properties(self.image_files[0])
-            width, height = int(props['width']), int(props['height'])
+            width, height = self._probe_image_resolution(self.image_files[0])
         
         self.video_info = {
             'width': str(width),
@@ -220,61 +277,80 @@ class VideoThread(QThread):
                 image_file = self.image_files[frame_index]
                 ext = os.path.splitext(image_file)[1].lower()
 
+                pixmap = None
                 try:
                     if ext == '.exr':
-                        # EXR은 OpenCV로 로드 (float -> 8bit 변환)
-                        img_cv = cv2.imread(image_file, cv2.IMREAD_UNCHANGED)
-                        if img_cv is None:
-                            raise RuntimeError('EXR 로드 실패')
-                        # 채널 보정 및 8bit 스케일
-                        if img_cv.dtype != np.uint8:
-                            img_norm = np.clip(img_cv, 0, 1)
-                            img_cv = (img_norm * 255.0).astype(np.uint8)
-                        if len(img_cv.shape) == 2:
-                            img_cv = cv2.cvtColor(img_cv, cv2.COLOR_GRAY2RGB)
-                        elif img_cv.shape[2] == 4:
-                            img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGRA2RGBA)
-                        else:
-                            img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
-                        # 리사이즈(썸네일)
-                        img_cv = cv2.resize(img_cv, (self.preview_width, self.preview_height), interpolation=cv2.INTER_LANCZOS4)
-                        height, width = img_cv.shape[:2]
-                        if img_cv.shape[2] == 4:
-                            bytes_per_line = 4 * width
-                            q_image = QImage(img_cv.data, width, height, bytes_per_line, QImage.Format_RGBA8888)
-                        else:
-                            bytes_per_line = 3 * width
-                            q_image = QImage(img_cv.data, width, height, bytes_per_line, QImage.Format_RGB888)
-                        pixmap = QPixmap.fromImage(q_image)
-                    else:
-                        # 일반 이미지: PIL 경로
-                        img = Image.open(image_file).convert("RGBA")
-                        img.thumbnail((self.preview_width, self.preview_height), Image.LANCZOS)
-                        np_img = np.array(img)
-                        height, width, channel = np_img.shape
-                        bytes_per_line = 4 * width
-                        q_image = QImage(np_img.data, width, height, bytes_per_line, QImage.Format_RGBA8888)
-                        pixmap = QPixmap.fromImage(q_image)
+                        pixmap = load_image_preview_pixmap(image_file, self.preview_width, self.preview_height)
+                    if pixmap is None:
+                        pixmap = self._load_image_with_pil(image_file)
                 except Exception:
-                    # 최후 폴백: QPixmap 직접 로드 시도
                     pixmap = QPixmap(image_file)
                     if not pixmap.isNull():
                         pixmap = pixmap.scaled(self.preview_width, self.preview_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                
-                self.frame_ready.emit(pixmap)
-                
-                # 다음 프레임 계산
+
+                if pixmap is not None and not pixmap.isNull():
+                    self.frame_ready.emit(pixmap)
+                else:
+                    logger.warning(f"이미지를 로드할 수 없습니다: {image_file}")
+
                 frames_to_skip = int(elapsed_time / adjusted_frame_time)
                 frame_index += max(1, frames_to_skip)
                 self.current_frame = frame_index
-                
+
                 last_frame_time = current_time
 
             else:
-                # 다음 프레임 시간까지 대기
                 time.sleep(max(0, adjusted_frame_time - elapsed_time))
 
         self.finished.emit()
+
+    def _probe_image_resolution(self, image_file: str) -> Tuple[int, int]:
+        try:
+            props = self.get_video_properties(image_file)
+            return int(props['width']), int(props['height'])
+        except Exception as exc:
+            logger.warning(f"이미지 해상도 프로브 실패({image_file}): {exc}")
+            return 1920, 1080
+
+    def _load_image_with_ffmpeg(self, image_file: str) -> Optional[QPixmap]:
+        try:
+            width = int(self.video_info.get('width', 0)) or 0
+            height = int(self.video_info.get('height', 0)) or 0
+            if width <= 0 or height <= 0:
+                width, height = self._probe_image_resolution(image_file)
+            norm_path = normalize_path_separator(image_file)
+            out, _ = (
+                ffmpeg
+                .input(norm_path)
+                .output('pipe:', format='rawvideo', pix_fmt='rgb24', vframes=1)
+                .run(capture_stdout=True, capture_stderr=True, cmd=FFMPEG_PATH)
+            )
+            frame = np.frombuffer(out, np.uint8)
+            if width <= 0 or height <= 0 or frame.size != width * height * 3:
+                width, height = self._probe_image_resolution(image_file)
+                if width <= 0 or height <= 0:
+                    return None
+            frame = frame.reshape((height, width, 3))
+            frame = cv2.resize(frame, (self.preview_width, self.preview_height), interpolation=cv2.INTER_LANCZOS4)
+            height_res, width_res, _ = frame.shape
+            q_image = QImage(frame.data, width_res, height_res, width_res * 3, QImage.Format_RGB888)
+            return QPixmap.fromImage(q_image.copy())
+        except Exception as exc:
+            logger.warning(f"FFmpeg를 사용한 이미지 로드 실패({image_file}): {exc}")
+            return None
+
+    def _load_image_with_pil(self, image_file: str) -> Optional[QPixmap]:
+        try:
+            img = Image.open(image_file).convert("RGBA")
+            img.thumbnail((self.preview_width, self.preview_height), Image.LANCZOS)
+            np_img = np.array(img)
+            height, width, channel = np_img.shape
+            bytes_per_line = 4 * width
+            q_image = QImage(np_img.data, width, height, bytes_per_line, QImage.Format_RGBA8888)
+            return QPixmap.fromImage(q_image.copy())
+        except Exception as exc:
+            logger.warning(f"PIL을 사용한 이미지 로드 실패({image_file}): {exc}")
+            return None
 
     def process_video_frames(self):
         try:
