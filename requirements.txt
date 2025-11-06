@@ -78,6 +78,10 @@ urllib3==2.2.3
     # via
     #   -r requirements.in
     #   requests
+openexr==3.3.2
+    # via -r requirements.in
+opencolorio==2.3.0
+    # via -r requirements.in
 
 # The following packages are considered to be unsafe in a requirements file:
 # setuptools
