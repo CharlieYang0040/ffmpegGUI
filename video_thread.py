@@ -10,6 +10,7 @@ import subprocess
 import os
 import logging
 import glob
+import re
 from PIL import Image
 import json
 from typing import Dict
@@ -134,7 +135,8 @@ class VideoThread(QThread):
 
     def process_image_sequence(self):
         base_path = self.file_path.split('%')[0]
-        pattern = os.path.basename(self.file_path).replace('%04d', '*')
+        # 다양한 자리수의 %0Nd 패턴을 일반화하여 처리
+        pattern = re.sub(r'%\d*d', '*', os.path.basename(self.file_path))
         self.image_files = sorted(glob.glob(os.path.join(os.path.dirname(base_path), pattern)))
         
         if not self.image_files:
@@ -142,8 +144,13 @@ class VideoThread(QThread):
         
         logger.info(f"이미지 시퀀스 로드 완료: {len(self.image_files)}개 파일")
         
-        with Image.open(self.image_files[0]) as img:
-            width, height = img.size
+        try:
+            with Image.open(self.image_files[0]) as img:
+                width, height = img.size
+        except Exception:
+            # PIL이 열지 못하는 형식(EXR 등) 폴백: ffprobe로 크기 조회
+            props = self.get_video_properties(self.image_files[0])
+            width, height = int(props['width']), int(props['height'])
         
         self.video_info = {
             'width': str(width),
@@ -211,20 +218,48 @@ class VideoThread(QThread):
 
             if elapsed_time >= adjusted_frame_time:
                 image_file = self.image_files[frame_index]
-                
-                # PNG 이미지를 RGBA 모드로 열기
-                img = Image.open(image_file).convert("RGBA")
-                img.thumbnail((self.preview_width, self.preview_height), Image.LANCZOS)
-                
-                # RGBA 이미지를 numpy 배열로 변환
-                np_img = np.array(img)
-                
-                height, width, channel = np_img.shape
-                bytes_per_line = 4 * width
-                
-                # RGBA 형식으로 QImage 생성
-                q_image = QImage(np_img.data, width, height, bytes_per_line, QImage.Format_RGBA8888)
-                pixmap = QPixmap.fromImage(q_image)
+                ext = os.path.splitext(image_file)[1].lower()
+
+                try:
+                    if ext == '.exr':
+                        # EXR은 OpenCV로 로드 (float -> 8bit 변환)
+                        img_cv = cv2.imread(image_file, cv2.IMREAD_UNCHANGED)
+                        if img_cv is None:
+                            raise RuntimeError('EXR 로드 실패')
+                        # 채널 보정 및 8bit 스케일
+                        if img_cv.dtype != np.uint8:
+                            img_norm = np.clip(img_cv, 0, 1)
+                            img_cv = (img_norm * 255.0).astype(np.uint8)
+                        if len(img_cv.shape) == 2:
+                            img_cv = cv2.cvtColor(img_cv, cv2.COLOR_GRAY2RGB)
+                        elif img_cv.shape[2] == 4:
+                            img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGRA2RGBA)
+                        else:
+                            img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+                        # 리사이즈(썸네일)
+                        img_cv = cv2.resize(img_cv, (self.preview_width, self.preview_height), interpolation=cv2.INTER_LANCZOS4)
+                        height, width = img_cv.shape[:2]
+                        if img_cv.shape[2] == 4:
+                            bytes_per_line = 4 * width
+                            q_image = QImage(img_cv.data, width, height, bytes_per_line, QImage.Format_RGBA8888)
+                        else:
+                            bytes_per_line = 3 * width
+                            q_image = QImage(img_cv.data, width, height, bytes_per_line, QImage.Format_RGB888)
+                        pixmap = QPixmap.fromImage(q_image)
+                    else:
+                        # 일반 이미지: PIL 경로
+                        img = Image.open(image_file).convert("RGBA")
+                        img.thumbnail((self.preview_width, self.preview_height), Image.LANCZOS)
+                        np_img = np.array(img)
+                        height, width, channel = np_img.shape
+                        bytes_per_line = 4 * width
+                        q_image = QImage(np_img.data, width, height, bytes_per_line, QImage.Format_RGBA8888)
+                        pixmap = QPixmap.fromImage(q_image)
+                except Exception:
+                    # 최후 폴백: QPixmap 직접 로드 시도
+                    pixmap = QPixmap(image_file)
+                    if not pixmap.isNull():
+                        pixmap = pixmap.scaled(self.preview_width, self.preview_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 
                 self.frame_ready.emit(pixmap)
                 

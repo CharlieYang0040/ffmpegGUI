@@ -13,7 +13,8 @@ import gc
 from typing import List, Dict, Tuple, Optional
 import ffmpeg
 import logging
-from utils import is_image_sequence
+from utils import is_image_sequence, get_first_sequence_file, extract_exr_metadata
+from color_management import build_filters_for_options
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -36,6 +37,94 @@ def set_ffmpeg_path(path: str):
         logger.debug(f"FFprobe 경로 설정: {FFPROBE_PATH}")
     else:
         logger.error(f"FFmpeg 경로를 찾을 수 없음: {path}")
+
+
+def is_exr_path(file_path: str) -> bool:
+    return file_path.lower().endswith('.exr') if file_path else False
+
+
+def build_metadata_kwargs(metadata: Dict[str, str]) -> Dict[str, str]:
+    if not metadata:
+        return {}
+
+    kwargs: Dict[str, str] = {}
+    for key, value in metadata.items():
+        if value is None:
+            continue
+        kwargs[f"metadata:g:{key}"] = str(value)
+    return kwargs
+
+
+def collect_unreal_metadata(media_files: List[Tuple[str, int, int]], debug_mode: bool = False) -> Dict[str, str]:
+    metadata: Dict[str, str] = {}
+
+    for file_path, _start, _end in media_files:
+        if not file_path or not is_exr_path(file_path):
+            continue
+
+        actual_file = get_first_sequence_file(file_path) if is_image_sequence(file_path) else file_path
+        if not actual_file or not os.path.exists(actual_file):
+            logger.debug(f"EXR 메타데이터 추출 대상 파일을 찾을 수 없습니다: {file_path}")
+            continue
+
+        exr_metadata = extract_exr_metadata(actual_file)
+        if exr_metadata:
+            metadata.update(exr_metadata)
+            if debug_mode:
+                logger.debug(f"EXR 메타데이터 ({actual_file}): {exr_metadata}")
+
+    return metadata
+
+
+def remux_with_metadata(input_path: str, output_path: str, metadata_kwargs: Dict[str, str], debug_mode: bool = False):
+    stream = ffmpeg.input(input_path)
+    stream = ffmpeg.output(stream, output_path, c='copy', **metadata_kwargs)
+    stream = stream.overwrite_output()
+
+    if debug_mode:
+        logger.debug(f"메타데이터 적용 명령어: {' '.join(ffmpeg.compile(stream, cmd=FFMPEG_PATH))}")
+
+    ffmpeg.run(stream, cmd=FFMPEG_PATH, capture_stdout=True, capture_stderr=True)
+
+    if os.path.exists(input_path):
+        os.remove(input_path)
+
+
+def apply_color_pipeline_filter(stream, color_options: Optional[Dict[str, str]], encoding_options: Dict[str, str], debug_mode: bool):
+    if not color_options or not color_options.get("enabled"):
+        return stream
+
+    try:
+        filters, metadata = build_filters_for_options(color_options)
+    except Exception as exc:
+        logger.warning("컬러 매니지먼트 필터 생성 실패: %s", exc)
+        return stream
+
+    for name, kwargs in filters:
+        kwargs_prepared = {k: str(v) for k, v in kwargs.items()}
+        if debug_mode:
+            logger.debug("컬러 필터 적용: %s %s", name, kwargs_prepared)
+        stream = stream.filter(name, **kwargs_prepared)
+
+    if metadata:
+        encoding_options.update(metadata)
+
+    return stream
+
+
+def resolve_color_options_for_file(color_options: Optional[Dict[str, str]], file_path: str) -> Optional[Dict[str, str]]:
+    if not color_options or not color_options.get("enabled"):
+        return color_options
+
+    resolved = dict(color_options)
+    requested_input = resolved.get("input_space", "").strip()
+    if not requested_input or requested_input.lower() == "auto":
+        if file_path.lower().endswith(".exr"):
+            resolved["input_space"] = "Scene Linear (Rec709)"
+        else:
+            resolved["input_space"] = "sRGB Texture"
+
+    return resolved
 
 
 def create_temp_file_list(temp_files: List[str]) -> str:
@@ -105,7 +194,8 @@ def process_video_file(
     encoding_options: Dict[str, str],
     target_properties: Dict[str, str],
     debug_mode: bool,
-    idx: int
+    idx: int,
+    color_pipeline_options: Optional[Dict[str, str]] = None
 ) -> str:
     """비디오 파일을 트림하고 필터를 적용하여 처리된 파일을 반환합니다."""
     input_file = input_file.replace('\\', '/')
@@ -149,6 +239,8 @@ def process_video_file(
 
     # 스트림 생성
     stream = ffmpeg.input(input_file, **input_options)
+    resolved_color_options = resolve_color_options_for_file(color_pipeline_options, input_file)
+    stream = apply_color_pipeline_filter(stream, resolved_color_options, encoding_options, debug_mode)
 
     # 프레임 기반 트림 필터 적용
     if start_frame > 0 or end_frame > 0:
@@ -197,7 +289,8 @@ def process_image_sequence(
     encoding_options: Dict[str, str],
     target_properties: Dict[str, str],
     debug_mode: bool,
-    idx: int
+    idx: int,
+    color_pipeline_options: Optional[Dict[str, str]] = None
 ) -> str:
     try:
         input_file = input_file.replace('\\', '/')
@@ -256,6 +349,26 @@ def process_image_sequence(
 
         # 스트림 생성
         stream = ffmpeg.input(input_file, **input_args)
+
+        resolved_color_options = resolve_color_options_for_file(color_pipeline_options, input_file)
+        stream_before_color = stream
+        stream = apply_color_pipeline_filter(stream, resolved_color_options, encoding_options, debug_mode)
+
+        is_exr_input = input_file.lower().endswith('.exr')
+        if is_exr_input and stream is stream_before_color:
+            stream = stream.filter(
+                'zscale',
+                primaries='bt709',
+                transfer='bt709',
+                matrix='bt709',
+                primariesin='bt709',
+                transferin='linear',
+                matrixin='gbr',
+                rangein='full',
+                range='limited'
+            )
+            if debug_mode:
+                logger.debug("EXR 색공간 변환 적용 (zscale: linear RGB -> BT.709)")
 
         # 필터 적용
         if target_properties:
@@ -397,20 +510,40 @@ def concat_media_files(
     encoding_options: Dict[str, str],
     target_properties: Dict[str, str],
     debug_mode: bool,
-    progress_callback=None
+    progress_callback=None,
+    global_metadata: Dict[str, str] = None
 ):
     """최적화된 파일 병합 처리"""
     logger.info(f"파일 병합 시작: {len(processed_files)}개 파일")
     
-    # 단일 파일인 경우 직접 이동
+    metadata_kwargs = build_metadata_kwargs(global_metadata)
+
+    # 단일 파일인 경우 메타데이터 적용 후 이동
     if len(processed_files) == 1:
-        shutil.move(processed_files[0], output_file)
+        single_input = processed_files[0]
+
+        if metadata_kwargs:
+            try:
+                remux_with_metadata(single_input, output_file, metadata_kwargs, debug_mode)
+                if progress_callback:
+                    progress_callback(100)
+                return
+            except Exception as exc:
+                logger.error(f"메타데이터 적용 중 오류 발생, 원본 파일로 대체합니다 ({single_input}): {exc}")
+                if os.path.exists(output_file):
+                    try:
+                        os.remove(output_file)
+                    except Exception:
+                        logger.warning(f"기존 출력 파일 제거 실패: {output_file}")
+
+        shutil.move(single_input, output_file)
         if progress_callback:
             progress_callback(100)
         return
 
     # 병합을 위한 최적화된 인코딩 옵션
     concat_options = get_optimal_encoding_options(encoding_options)
+    output_kwargs = {**concat_options, **metadata_kwargs}
     
     # 입력 버퍼 최적화
     input_options = {
@@ -431,7 +564,7 @@ def concat_media_files(
             stream = apply_filters(stream, target_properties)
 
         # 출력 스트림 설정
-        stream = ffmpeg.output(stream, output_file, **concat_options)
+        stream = ffmpeg.output(stream, output_file, **output_kwargs)
         stream = stream.overwrite_output()
 
         if debug_mode:
@@ -496,6 +629,7 @@ def process_all_media(
     media_files: List[Tuple[str, int, int]],
     output_file: str,
     encoding_options: Dict[str, str],
+    color_pipeline_options: Optional[Dict[str, str]] = None,
     debug_mode: bool = False,
     frame_ranges: List[Tuple[int, int]] = None,
     global_trim_start: int = 0,
@@ -511,6 +645,16 @@ def process_all_media(
         if frame_ranges is None:
             # media_files의 개별 프레임 범위를 사용
             frame_ranges = [(media_file[1], media_file[2]) for media_file in media_files]
+
+        color_pipeline_options = color_pipeline_options or {}
+
+        if color_pipeline_options and color_pipeline_options.get("enabled"):
+            try:
+                _, metadata_preview = build_filters_for_options(color_pipeline_options)
+                if metadata_preview:
+                    encoding_options.update(metadata_preview)
+            except Exception as exc:
+                logger.warning("컬러 매니지먼트 메타데이터 준비 실패: %s", exc)
 
         if debug_mode:
             logger.debug(f"전역 트림 값 - 시작: {global_trim_start}, 끝: {global_trim_end}")
@@ -533,6 +677,11 @@ def process_all_media(
             encoding_options['v'] = 'quiet'
 
         logger.info(f"미디어 처리 시작: {len(media_files)}개 파일")
+
+        global_metadata = collect_unreal_metadata(media_files, debug_mode)
+        if global_metadata:
+            logger.info(f"Unreal 메타데이터 {len(global_metadata)}개 항목 추출 완료")
+
         # 최종적으로 ffmpeg에 전달될 인코딩 옵션을 로그로 확인
         try:
             safe_opts = {k: v for k, v in encoding_options.items()}
@@ -584,7 +733,8 @@ def process_all_media(
                     debug_mode,
                     idx,
                     memory_threshold,
-                    target_properties
+                    target_properties,
+                    color_pipeline_options
                 )
                 futures.append((idx, future))
 
@@ -616,7 +766,8 @@ def process_all_media(
                     encoding_options,
                     target_properties,
                     debug_mode,
-                    progress_callback
+                    progress_callback,
+                    global_metadata
                 )
             finally:
                 # 임시 파일 정리
@@ -642,7 +793,8 @@ def process_single_media(
     debug_mode: bool,
     idx: int,
     memory_threshold: int,
-    target_properties: Dict[str, str] = {}
+    target_properties: Dict[str, str] = {},
+    color_pipeline_options: Optional[Dict[str, str]] = None
 ) -> str:
     """단일 미디어 파일 처리 (메모리 모니터링 포함)"""
     try:
@@ -658,12 +810,14 @@ def process_single_media(
         if is_image_sequence(input_file):
             return process_image_sequence(
                 input_file, start_frame, end_frame,
-                encoding_options, target_properties, debug_mode, idx
+                encoding_options, target_properties, debug_mode, idx,
+                color_pipeline_options
             )
         else:
             return process_video_file(
                 input_file, start_frame, end_frame,
-                encoding_options, target_properties, debug_mode, idx
+                encoding_options, target_properties, debug_mode, idx,
+                color_pipeline_options
             )
 
     except Exception as e:
@@ -876,7 +1030,8 @@ def estimate_filesize_accurate(
     encoding_options: Dict[str, str],
     target_properties: Dict[str, str],
     debug_mode: bool = False,
-    max_workers_override: Optional[int] = None
+    max_workers_override: Optional[int] = None,
+    color_pipeline_options: Optional[Dict[str, str]] = None
 ) -> float:
     """
     가장 빠른 프리셋으로 전체 영상을 분석하여 예상 파일 크기를 MB 단위로 반환합니다. (정확하지만 느림)
@@ -912,7 +1067,8 @@ def estimate_filesize_accurate(
                     input_file, start_frame, end_frame,
                     encoding_options.copy(), debug_mode, idx,
                     psutil.virtual_memory().total * 0.9, # 메모리 임계값
-                    target_properties
+                    target_properties,
+                    color_pipeline_options
                 )
                 futures.append(future)
             

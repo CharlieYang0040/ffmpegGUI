@@ -60,6 +60,8 @@ pyside6-essentials==6.8.0.2
     #   -r requirements.in
     #   pyside6
     #   pyside6-addons
+pyopencolorio==2.3.0
+    # via -r requirements.in
 pywin32-ctypes==0.2.3
     # via
     #   -r requirements.in

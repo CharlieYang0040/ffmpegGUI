@@ -5,6 +5,7 @@ import os
 import re
 import glob
 from collections import defaultdict
+from typing import Dict
 from PySide6.QtCore import QSettings
 import appdirs
 import shutil
@@ -81,11 +82,11 @@ def set_logger_level(is_debug: bool):
 
 def is_media_file(file_path):
     _, ext = os.path.splitext(file_path)
-    return ext.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.jpg', '.jpeg', '.png', '.bmp']
+    return ext.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.jpg', '.jpeg', '.png', '.bmp', '.exr']
 
 def is_image_file(file_path):
     _, ext = os.path.splitext(file_path)
-    return ext.lower() in ['.jpg', '.jpeg', '.png', '.bmp']
+    return ext.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.exr']
 
 def is_video_file(file_path):
     _, ext = os.path.splitext(file_path)
@@ -128,7 +129,10 @@ def process_image_sequences(files):
 
 def process_file(file_path):
     _, ext = os.path.splitext(file_path)
-    return process_image_file(file_path) if ext.lower() in ['.jpg', '.jpeg', '.png'] else file_path
+    return process_image_file(file_path) if ext.lower() in ['.jpg', '.jpeg', '.png', '.exr'] else file_path
+
+_OPENEXR_IMPORT_FAILED = False
+
 
 def process_image_file(file_path):
     dir_path, file_name = os.path.split(file_path)
@@ -137,29 +141,32 @@ def process_image_file(file_path):
     logger.debug(f"처리 중인 이미지 파일: {file_path}")
     logger.debug(f"파일 이름에서 숫자 부분 검색 중: {base_name}")
     
-    # 파일명에서 숫자 네 자리를 찾기 (중간 또는 끝)
-    match = re.search(r'(\d{4})', base_name)  # 숫자 네 자리를 찾도록 설정
-    if match:
-        number_part = match.group(1)
+    # 파일명에서 연속된 숫자 구간 중 '마지막' 구간(프레임 번호)을 사용
+    matches = list(re.finditer(r'(\d+)', base_name))
+    if matches:
+        last_match = matches[-1]
+        number_part = last_match.group(1)
         logger.debug(f"찾은 숫자 부분: {number_part}")
-        prefix = base_name[:match.start()]  # 숫자 앞부분
+        prefix = base_name[:last_match.start()]  # 숫자 앞부분
+        suffix = base_name[last_match.end():]    # 숫자 뒷부분(있을 수도 있음)
         logger.debug(f"프리픽스: {prefix}")
+        if suffix:
+            logger.debug(f"서픽스: {suffix}")
         
         # 특수문자를 포함한 파일명에 대응하기 위해 re.escape 사용
-        pattern = f"^{re.escape(prefix)}[0-9]+{re.escape(ext)}$"
+        pattern = f"^{re.escape(prefix)}[0-9]+{re.escape(suffix)}{re.escape(ext)}$"
         logger.debug(f"검색 패턴: {pattern}")
         
         try:
             # glob을 사용하여 네트워크 경로에서도 파일 검색
-            import glob
-            search_path = os.path.join(dir_path, f"{prefix}*{ext}")
+            search_path = os.path.join(dir_path, f"{prefix}*{suffix}{ext}")
             matching_files = [os.path.basename(f) for f in glob.glob(search_path)]
             matching_files = [f for f in matching_files if re.match(pattern, f)]
             logger.debug(f"일치하는 파일 목록: {matching_files}")
             
             if len(matching_files) > 1:
-                logger.info(f"이미지 시퀀스 발견: {prefix}%0{len(number_part)}d{ext}")
-                return os.path.join(dir_path, f"{prefix}%0{len(number_part)}d{ext}")
+                logger.info(f"이미지 시퀀스 발견: {prefix}%0{len(number_part)}d{suffix}{ext}")
+                return os.path.join(dir_path, f"{prefix}%0{len(number_part)}d{suffix}{ext}")
                 
         except Exception as e:
             logger.error(f"파일 검색 중 오류 발생: {str(e)}")
@@ -169,10 +176,85 @@ def process_image_file(file_path):
     logger.warning(f"이미지 파일 처리 실패: {file_path}")
     return file_path
 
+
+def _sanitize_metadata_key(key: str) -> str:
+    sanitized = re.sub(r'[^A-Za-z0-9_.-]', '_', key)
+    return sanitized or 'metadata'
+
+
+def _stringify_exr_attribute(value) -> str:
+    try:
+        if isinstance(value, bytes):
+            try:
+                return value.decode('utf-8')
+            except UnicodeDecodeError:
+                return value.hex()
+        return str(value)
+    except Exception as exc:  # pragma: no cover - 보호적 캐치
+        logger.warning(f"EXR 메타데이터 값을 문자열로 변환하는 중 오류: {exc}")
+        return ''
+
+
+def extract_exr_metadata(file_path: str) -> Dict[str, str]:
+    """EXR 파일의 Unreal 관련 메타데이터를 추출하여 딕셔너리로 반환."""
+    global _OPENEXR_IMPORT_FAILED
+
+    metadata: Dict[str, str] = {}
+
+    try:
+        if _OPENEXR_IMPORT_FAILED:
+            return metadata
+
+        import OpenEXR  # type: ignore
+        import Imath  # type: ignore
+        _ = Imath  # noqa: F841 - 사용 여부 확인용
+    except ImportError:
+        if not _OPENEXR_IMPORT_FAILED:
+            logger.warning("OpenEXR 라이브러리를 찾을 수 없어 EXR 메타데이터를 추출하지 못했습니다. 'pip install OpenEXR Imath'로 설치할 수 있습니다.")
+            _OPENEXR_IMPORT_FAILED = True
+        return metadata
+
+    exr_file = None
+    try:
+        exr_file = OpenEXR.InputFile(file_path)
+        header = exr_file.header()
+    except Exception as exc:
+        logger.error(f"EXR 메타데이터를 읽는 중 오류 발생 ({file_path}): {exc}")
+        return metadata
+    finally:
+        if exr_file:
+            try:
+                exr_file.close()
+            except Exception:
+                pass
+
+    seen_keys = set()
+    for key, value in header.items():
+        if not key.lower().startswith('unreal'):
+            continue
+
+        sanitized_key = _sanitize_metadata_key(key)
+        base_key = sanitized_key
+        suffix = 1
+        while sanitized_key.lower() in seen_keys:
+            sanitized_key = f"{base_key}_{suffix}"
+            suffix += 1
+
+        seen_keys.add(sanitized_key.lower())
+        metadata[sanitized_key] = _stringify_exr_attribute(value)
+
+    if metadata:
+        logger.info(f"EXR 메타데이터 추출 완료 ({file_path}): {list(metadata.keys())}")
+    else:
+        logger.debug(f"EXR 메타데이터가 발견되지 않았습니다 ({file_path}).")
+
+    return metadata
+
 def get_sequence_start_number(sequence_path):
     dir_path, filename = os.path.split(sequence_path)
     base, ext = os.path.splitext(filename)
-    pattern = base.replace('%04d', r'(\d+)')
+    # %0Nd 전폭 패턴을 일반화하여 처리
+    pattern = re.sub(r'%\d*d', r'(\\d+)', base)
 
     files = os.listdir(dir_path)
     frame_numbers = []
@@ -187,7 +269,8 @@ def get_sequence_start_number(sequence_path):
     return None
 
 def get_first_sequence_file(sequence_pattern):
-    pattern = sequence_pattern.replace('%04d', '*')
+    # %0Nd 전폭 패턴을 일반화하여 처리
+    pattern = re.sub(r'%\d*d', '*', sequence_pattern)
     files = sorted(glob.glob(pattern))
     return files[0] if files else ""
 

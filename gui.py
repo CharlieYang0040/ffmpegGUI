@@ -4,6 +4,7 @@ import os
 import sys
 import subprocess
 import logging
+from typing import Dict, List, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFileDialog, QGroupBox,
     QHBoxLayout, QLabel, QComboBox, QAbstractItemView, QCheckBox, QLineEdit,
@@ -15,6 +16,7 @@ from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator, QShortcut, QKe
 
 from ffmpeg_utils import process_all_media, estimate_filesize_fast, estimate_filesize_accurate
 from ffmpeg_utils import set_ffmpeg_path as set_ffmpeg_utils_path
+from color_management import ColorPipelineManager, get_cached_manager
 from update import UpdateChecker
 from commands import RemoveItemsCommand, ReorderItemsCommand, ClearListCommand, AddItemsCommand, Command
 from drag_drop_list_widget import DragDropListWidget
@@ -40,44 +42,22 @@ logging.basicConfig(level=logging.INFO)
 from PySide6.QtCore import QTimer, QTime
 
 class ColorOptionsDialog(QDialog):
-    """
-    색상 옵션을 설정하는 다이얼로그
-    """
-    def __init__(self, current_options, parent=None):
+    """색상 및 컬러 매니지먼트 옵션 다이얼로그."""
+
+    def __init__(self, current_options: Dict[str, str], color_options: Dict[str, str], parent=None):
         super().__init__(parent)
         self.setWindowTitle("색상 옵션")
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(420)
         self.options = current_options.copy()
+        self.color_options = (color_options or {}).copy()
+
+        self.color_manager = None
+        self._ensure_color_defaults()
 
         layout = QVBoxLayout(self)
-        self.option_widgets = {}
+        layout.addWidget(self._build_ffmpeg_color_group())
+        layout.addWidget(self._build_color_management_group())
 
-        color_options = [
-            ("colorspace", ["bt709", "bt2020nc", "none"]),
-            ("color_primaries", ["bt709", "bt2020", "none"]),
-            ("color_trc", ["bt709", "bt2020-10", "none"]),
-            ("color_range", ["limited", "full", "none"])
-        ]
-
-        for option, values in color_options:
-            hbox = QHBoxLayout()
-            label = QLabel(option)
-            combo = QComboBox()
-            combo.addItems(values)
-            
-            # 현재 설정된 값으로 콤보박스 초기화
-            current_value = self.options.get(option)
-            if current_value in values:
-                combo.setCurrentText(current_value)
-            
-            combo.currentTextChanged.connect(lambda value, opt=option: self.update_option(opt, value))
-            
-            hbox.addWidget(label)
-            hbox.addWidget(combo)
-            layout.addLayout(hbox)
-            self.option_widgets[option] = combo
-
-        # OK and Cancel buttons
         button_box = QHBoxLayout()
         ok_button = QPushButton("확인")
         ok_button.clicked.connect(self.accept)
@@ -88,14 +68,212 @@ class ColorOptionsDialog(QDialog):
         button_box.addWidget(cancel_button)
         layout.addLayout(button_box)
 
-    def update_option(self, option, value):
+    # ------------------------------------------------------------------
+    # FFmpeg 색상 파라미터
+    # ------------------------------------------------------------------
+    def _build_ffmpeg_color_group(self) -> QGroupBox:
+        group = QGroupBox("FFmpeg 색상 파라미터")
+        group_layout = QVBoxLayout(group)
+        self.option_widgets = {}
+        color_options = [
+            ("colorspace", ["bt709", "bt2020nc", "none"]),
+            ("color_primaries", ["bt709", "bt2020", "none"]),
+            ("color_trc", ["bt709", "bt2020-10", "none"]),
+            ("color_range", ["limited", "full", "none"]),
+        ]
+
+        for option, values in color_options:
+            hbox = QHBoxLayout()
+            label = QLabel(option)
+            combo = QComboBox()
+            combo.addItems(values)
+            current_value = self.options.get(option)
+            if current_value in values:
+                combo.setCurrentText(current_value)
+            combo.currentTextChanged.connect(lambda value, opt=option: self.update_option(opt, value))
+            hbox.addWidget(label)
+            hbox.addWidget(combo)
+            group_layout.addLayout(hbox)
+            self.option_widgets[option] = combo
+
+        return group
+
+    # ------------------------------------------------------------------
+    # 컬러 매니지먼트 UI
+    # ------------------------------------------------------------------
+    def _build_color_management_group(self) -> QGroupBox:
+        group = QGroupBox("컬러 매니지먼트 (OCIO)")
+        layout = QVBoxLayout(group)
+
+        self.color_checkbox = QCheckBox("OCIO 컬러 매니지먼트 활성화")
+        self.color_checkbox.setChecked(bool(self.color_options.get("enabled")))
+        self.color_checkbox.toggled.connect(self._update_color_ui_state)
+        layout.addWidget(self.color_checkbox)
+
+        config_layout = QHBoxLayout()
+        config_layout.addWidget(QLabel("Config:"))
+        self.color_config_edit = QLineEdit(self.color_options.get("config_path", ""))
+        self.color_config_edit.setPlaceholderText("환경변수 OCIO 사용")
+        self.color_config_edit.editingFinished.connect(self._on_color_config_changed)
+        config_layout.addWidget(self.color_config_edit)
+        config_button = QPushButton("찾기")
+        config_button.clicked.connect(self._browse_color_config)
+        config_layout.addWidget(config_button)
+        layout.addLayout(config_layout)
+
+        input_layout = QHBoxLayout()
+        input_layout.addWidget(QLabel("Input Space:"))
+        self.color_input_combo = QComboBox()
+        self.color_input_combo.currentTextChanged.connect(self._on_color_input_changed)
+        input_layout.addWidget(self.color_input_combo)
+        layout.addLayout(input_layout)
+
+        display_layout = QHBoxLayout()
+        display_layout.addWidget(QLabel("Display:"))
+        self.color_display_combo = QComboBox()
+        self.color_display_combo.currentTextChanged.connect(self._on_color_display_changed)
+        display_layout.addWidget(self.color_display_combo)
+        layout.addLayout(display_layout)
+
+        view_layout = QHBoxLayout()
+        view_layout.addWidget(QLabel("View:"))
+        self.color_view_combo = QComboBox()
+        self.color_view_combo.currentTextChanged.connect(self._on_color_view_changed)
+        view_layout.addWidget(self.color_view_combo)
+        layout.addLayout(view_layout)
+
+        lut_layout = QHBoxLayout()
+        lut_layout.addWidget(QLabel("LUT Size:"))
+        self.color_lut_spin = QSpinBox()
+        self.color_lut_spin.setRange(16, 129)
+        self.color_lut_spin.setValue(int(self.color_options.get("lut_size", 33)))
+        self.color_lut_spin.valueChanged.connect(self._on_color_lut_changed)
+        lut_layout.addWidget(self.color_lut_spin)
+        layout.addLayout(lut_layout)
+
+        self.color_warning_label = QLabel()
+        self.color_warning_label.setWordWrap(True)
+        layout.addWidget(self.color_warning_label)
+
+        self._refresh_color_manager()
+        self._update_color_ui_state()
+        return group
+
+    def _ensure_color_defaults(self):
+        manager = get_cached_manager(self.color_options.get("config_path", ""))
+        self.color_manager = manager
+        default_input, default_display, default_view = manager.get_default_io()
+        if not self.color_options.get("input_space"):
+            self.color_options["input_space"] = "Auto"
+        if not self.color_options.get("output_display"):
+            self.color_options["output_display"] = default_display
+        if not self.color_options.get("output_view"):
+            self.color_options["output_view"] = default_view
+        if "lut_size" not in self.color_options:
+            self.color_options["lut_size"] = 33
+
+    def _refresh_color_manager(self):
+        self._ensure_color_defaults()
+        manager = get_cached_manager(self.color_options.get("config_path", ""))
+        self.color_manager = manager
+        inputs = manager.list_input_spaces()
+        if "Auto" not in inputs:
+            inputs = ["Auto"] + inputs
+        self._set_combo_items(
+            self.color_input_combo,
+            inputs,
+            self.color_options.get("input_space", "Auto")
+        )
+        self.color_options["input_space"] = self.color_input_combo.currentText()
+
+        displays = manager.list_displays()
+        display_selection = self.color_options.get("output_display") or (displays[0] if displays else "Rec.709")
+        self._set_combo_items(self.color_display_combo, displays or [display_selection], display_selection)
+        self.color_options["output_display"] = self.color_display_combo.currentText()
+
+        self._populate_view_combo()
+        self._update_color_warning()
+
+    def _populate_view_combo(self):
+        display = self.color_display_combo.currentText()
+        views = self.color_manager.list_views(display) if self.color_manager else []
+        view_selection = self.color_options.get("output_view") or (views[0] if views else "Standard")
+        self._set_combo_items(self.color_view_combo, views or [view_selection], view_selection)
+        self.color_options["output_view"] = self.color_view_combo.currentText()
+
+    def _set_combo_items(self, combo: QComboBox, items: List[str], selected: str):
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(items)
+        if selected in items:
+            combo.setCurrentText(selected)
+        elif items:
+            combo.setCurrentIndex(0)
+        combo.blockSignals(False)
+
+    def _update_color_warning(self):
+        if not self.color_manager or self.color_manager.is_available:
+            self.color_warning_label.setText("")
+        else:
+            self.color_warning_label.setText("PyOpenColorIO가 없어 기본 변환만 사용됩니다.")
+
+    def _update_color_ui_state(self):
+        enabled = self.color_checkbox.isChecked()
+        widgets = [
+            self.color_config_edit,
+            self.color_display_combo,
+            self.color_view_combo,
+            self.color_input_combo,
+            self.color_lut_spin,
+        ]
+        for widget in widgets:
+            widget.setEnabled(enabled)
+        if enabled and not self.color_manager:
+            self._refresh_color_manager()
+
+    def _browse_color_config(self):
+        path, _ = QFileDialog.getOpenFileName(self, "OCIO Config 선택", self.color_config_edit.text(), "OCIO Config (*.ocio)")
+        if path:
+            self.color_config_edit.setText(path)
+            self._on_color_config_changed()
+
+    def _on_color_config_changed(self):
+        self.color_options["config_path"] = self.color_config_edit.text().strip()
+        self._refresh_color_manager()
+
+    def _on_color_display_changed(self, value: str):
+        self.color_options["output_display"] = value
+        self._populate_view_combo()
+
+    def _on_color_input_changed(self, value: str):
+        self.color_options["input_space"] = value
+
+    def _on_color_view_changed(self, value: str):
+        self.color_options["output_view"] = value
+
+    def _on_color_lut_changed(self, value: int):
+        self.color_options["lut_size"] = value
+
+    def update_option(self, option: str, value: str):
         if value != "none":
             self.options[option] = value
         else:
             self.options.pop(option, None)
 
-    def get_options(self):
+    def get_options(self) -> Dict[str, str]:
         return self.options
+
+    def get_color_options(self) -> Dict[str, str]:
+        return self.color_options
+
+    def accept(self):
+        self.color_options["enabled"] = self.color_checkbox.isChecked()
+        self.color_options["config_path"] = self.color_config_edit.text().strip()
+        self.color_options["input_space"] = self.color_input_combo.currentText()
+        self.color_options["output_display"] = self.color_display_combo.currentText()
+        self.color_options["output_view"] = self.color_view_combo.currentText()
+        self.color_options["lut_size"] = self.color_lut_spin.value()
+        super().accept()
 
 class EncodingProgressDialog(QDialog):
     """
@@ -235,6 +413,16 @@ class FFmpegGui(QWidget):
         self.undo_stack = []
         self.redo_stack = []
         self.update_checker = UpdateChecker()
+        self.color_manager: Optional[ColorPipelineManager] = None
+        self.color_mgmt_options = {
+            "enabled": self.settings.value("color_mgmt/enabled", False, type=bool),
+            "config_path": self.settings.value("color_mgmt/config_path", ""),
+            "input_space": self.settings.value("color_mgmt/input_space", ""),
+            "output_display": self.settings.value("color_mgmt/output_display", ""),
+            "output_view": self.settings.value("color_mgmt/output_view", ""),
+            "lut_size": int(self.settings.value("color_mgmt/lut_size", 33)),
+        }
+        self.ensure_color_defaults()
 
     def setup_update_checker(self):
         self.update_checker.update_error.connect(self.show_update_error)
@@ -600,10 +788,46 @@ class FFmpegGui(QWidget):
         options_layout.addLayout(hbox)
         self.option_widgets[option] = combo
 
+    def ensure_color_defaults(self):
+        manager = get_cached_manager(self.color_mgmt_options.get("config_path", ""))
+        self.color_manager = manager
+        default_input, default_display, default_view = manager.get_default_io()
+        if not self.color_mgmt_options.get("input_space"):
+            self.color_mgmt_options["input_space"] = "Auto"
+        if not self.color_mgmt_options.get("output_display"):
+            self.color_mgmt_options["output_display"] = default_display
+        if not self.color_mgmt_options.get("output_view"):
+            self.color_mgmt_options["output_view"] = default_view
+        if "lut_size" not in self.color_mgmt_options:
+            self.color_mgmt_options["lut_size"] = 33
+        self.persist_color_options()
+
+    def get_color_pipeline_options(self, media_files: Optional[List[str]] = None) -> Dict[str, str]:
+        self.ensure_color_defaults()
+        options = dict(self.color_mgmt_options)
+        if media_files:
+            has_exr = any(str(file_path).lower().endswith(".exr") for file_path in media_files)
+            if has_exr:
+                options["enabled"] = True
+                self.color_mgmt_options["enabled"] = True
+            else:
+                options["enabled"] = False
+                self.color_mgmt_options["enabled"] = False
+        self.color_mgmt_options.update(options)
+        self.persist_color_options()
+        return options
+
+    def persist_color_options(self):
+        for key, value in self.color_mgmt_options.items():
+            self.settings.setValue(f"color_mgmt/{key}", value)
+
     def open_color_options_dialog(self):
-        dialog = ColorOptionsDialog(self.encoding_options, self)
+        dialog = ColorOptionsDialog(self.encoding_options, self.color_mgmt_options, self)
         if dialog.exec():
             self.encoding_options.update(dialog.get_options())
+            self.color_mgmt_options.update(dialog.get_color_options())
+            self.ensure_color_defaults()
+            self.persist_color_options()
             logger.info(f"색상 옵션 업데이트됨: {self.encoding_options}")
 
 
@@ -890,6 +1114,13 @@ class FFmpegGui(QWidget):
 
     def update_option(self, option: str, value: str):
         if option == "preset" and value == "Visually Lossless":
+            # 이전 Lossless 잔존 키들 정리
+            for k in [
+                "qp", "tune", "bf", "spatial_aq", "temporal_aq", "rc-lookahead"
+            ]:
+                self.encoding_options.pop(k, None)
+
+            # Visually Lossless용 권장 설정 적용 (VBR + HQ)
             self.encoding_options.update({
                 "preset": "p7",
                 "tune": "hq",
@@ -936,7 +1167,18 @@ class FFmpegGui(QWidget):
             self.update_codec_options(value)
 
         if option == "preset":
-            self.option_widgets["quality_spinbox"].setEnabled(True)
+            # 일반 프리셋(p1~p7/slow/medium/fast 등) 전환 시, lossless 관련 키 제거 및 VBR+CQ 복원
+            if value not in ["Lossless (QP 0)", "Visually Lossless"]:
+                for k in [
+                    "qp", "tune", "bf", "spatial_aq", "temporal_aq", "rc-lookahead"
+                ]:
+                    self.encoding_options.pop(k, None)
+                # NVENC 기본은 VBR + CQ 사용
+                self.encoding_options["rc"] = "vbr"
+                quality_spinbox = self.option_widgets.get("quality_spinbox")
+                if quality_spinbox:
+                    self.encoding_options["cq"] = str(quality_spinbox.value())
+                self.option_widgets["quality_spinbox"].setEnabled(True)
 
         if value != "none":
             self.encoding_options[option] = value
@@ -1014,7 +1256,16 @@ class FFmpegGui(QWidget):
             input_files.append(file_path)
             frame_ranges.append((start_frame, end_frame))
 
-        return (output_file, self.encoding_options, get_debug_mode(), input_files, frame_ranges)
+        color_options = self.get_color_pipeline_options(input_files)
+
+        return (
+            output_file,
+            self.encoding_options.copy(),
+            get_debug_mode(),
+            input_files,
+            frame_ranges,
+            color_options,
+        )
 
     def browse_output(self):
         last_path = self.settings.value("last_output_path", "")
@@ -1069,6 +1320,8 @@ class FFmpegGui(QWidget):
         }
         if not fast_mode:
             func_kwargs['max_workers_override'] = self.max_workers_spinbox.value()
+            input_paths = [file_path for file_path, _, _ in media_files]
+            func_kwargs['color_pipeline_options'] = self.get_color_pipeline_options(input_paths)
 
         # 스레드 생성 및 시작
         self.estimation_thread = EstimateFilesizeThread(
@@ -1108,7 +1361,8 @@ class FFmpegGui(QWidget):
 
         params = self.get_encoding_parameters()
         if params:
-            output_file, encoding_options, debug_mode, input_files, frame_ranges = params
+            output_file, encoding_options, _, input_files, frame_ranges, color_options = params
+            color_options = dict(color_options)
             logger.info(f"인코딩 옵션: {encoding_options}")
             logger.info(f"출력 파일: {output_file}")
 
@@ -1127,10 +1381,7 @@ class FFmpegGui(QWidget):
                 self.progress_dialog.show()
                 self.progress_dialog.start_timer()  # 타이머 시작
 
-                debug_mode = self.debug_checkbox.isChecked()
-
-                # 인코딩 옵션 복사
-                encoding_options = self.encoding_options.copy()
+                debug_mode_flag = self.debug_checkbox.isChecked()
                 
                 # 최대 작업자 수 가져오기
                 max_workers = self.max_workers_spinbox.value()
@@ -1139,8 +1390,9 @@ class FFmpegGui(QWidget):
                     process_all_media,
                     ordered_input,
                     output_file,
-                    encoding_options,
-                    debug_mode=debug_mode,
+                    encoding_options.copy(),
+                    color_pipeline_options=color_options,
+                    debug_mode=debug_mode_flag,
                     global_trim_start=self.global_trim_start,
                     global_trim_end=self.global_trim_end,
                     max_workers_override=max_workers
