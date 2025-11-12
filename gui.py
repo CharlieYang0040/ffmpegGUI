@@ -423,6 +423,7 @@ class FFmpegGui(QWidget):
             "lut_size": int(self.settings.value("color_mgmt/lut_size", 33)),
         }
         self.shot_overlay_enabled = self.settings.value("overlay/shot_enabled", True, type=bool)
+        self.shot_overlay_font_size = self.settings.value("overlay/font_size", 48, type=int)
         self.ensure_color_defaults()
 
     def setup_update_checker(self):
@@ -904,6 +905,17 @@ class FFmpegGui(QWidget):
         self.shot_overlay_checkbox.setChecked(self.shot_overlay_enabled)
         self.shot_overlay_checkbox.stateChanged.connect(self.on_shot_overlay_toggled)
         misc_layout.addWidget(self.shot_overlay_checkbox)
+
+        overlay_font_layout = QHBoxLayout()
+        self.shot_overlay_font_label = QLabel("오버레이 폰트 크기:")
+        self.shot_overlay_font_spin = QSpinBox()
+        self.shot_overlay_font_spin.setRange(12, 200)
+        self.shot_overlay_font_spin.setValue(int(self.shot_overlay_font_size))
+        self.shot_overlay_font_spin.valueChanged.connect(self.on_shot_overlay_font_size_changed)
+        overlay_font_layout.addWidget(self.shot_overlay_font_label)
+        overlay_font_layout.addWidget(self.shot_overlay_font_spin)
+        misc_layout.addLayout(overlay_font_layout)
+        self.shot_overlay_font_spin.setEnabled(self.shot_overlay_enabled)
 
         # Update button
         self.update_button = QPushButton('🔄 업데이트 확인')
@@ -1432,7 +1444,8 @@ class FFmpegGui(QWidget):
                     global_trim_end=self.global_trim_end,
                     max_workers_override=max_workers,
                     enable_shot_overlay=overlay_enabled,
-                    overlay_output_name=os.path.basename(output_file)
+                    overlay_output_name=os.path.basename(output_file),
+                    overlay_font_size=self.shot_overlay_font_size
                 )
                 self.encoding_thread.progress_updated.connect(self.progress_dialog.update_progress)
                 self.encoding_thread.encoding_finished.connect(self.on_encoding_finished)
@@ -1476,6 +1489,12 @@ class FFmpegGui(QWidget):
         enabled = state == Qt.CheckState.Checked.value
         self.shot_overlay_enabled = enabled
         self.settings.setValue("overlay/shot_enabled", enabled)
+        if hasattr(self, "shot_overlay_font_spin"):
+            self.shot_overlay_font_spin.setEnabled(enabled)
+
+    def on_shot_overlay_font_size_changed(self, value: int):
+        self.shot_overlay_font_size = int(value)
+        self.settings.setValue("overlay/font_size", self.shot_overlay_font_size)
 
     def position_window(self):
         """창을 화면 상단 1/3 지점에 위치시켜 하단이 잘리지 않도록 합니다."""

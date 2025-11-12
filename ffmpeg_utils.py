@@ -65,15 +65,28 @@ def escape_drawtext_text(text: str) -> str:
     return escaped
 
 
-def calculate_overlay_bar_height(content_height: int) -> int:
-    if content_height <= 0:
-        return 0
-    proposed_bar = max(int(round(content_height * 0.0025)), 40)
-    max_bar = max(int(content_height * 0.3), 2)
-    bar_height = max(2, min(proposed_bar, max_bar))
-    if bar_height % 2 != 0:
-        bar_height += 1
-    return bar_height
+def compute_overlay_layout(content_height: int, font_size: int) -> Dict[str, int]:
+    font_size = max(int(font_size) if font_size else 0, 12)
+    info_font_size = max(int(font_size * 0.6), 10)
+    padding = max(int(font_size * 0.4), 12)
+
+    min_bar = font_size + info_font_size + padding
+    max_bar = max(int(content_height * 0.3), font_size + 2)
+
+    if max_bar <= 0:
+        bar_height = 0
+    else:
+        bar_height = max(min_bar, 2)
+        bar_height = min(bar_height, max_bar)
+        if bar_height % 2 != 0:
+            bar_height += 1
+
+    return {
+        "bar_height": bar_height,
+        "title_font_size": font_size,
+        "info_font_size": info_font_size,
+        "padding": padding
+    }
 
 
 def set_ffmpeg_path(path: str):
@@ -246,7 +259,8 @@ def apply_filters(
     target_properties,
     shot_label: Optional[str] = None,
     debug_mode: bool = False,
-    output_label: Optional[str] = None
+    output_label: Optional[str] = None,
+    overlay_font_size: Optional[int] = None
 ):
     width = int(target_properties['width'])
 
@@ -258,13 +272,21 @@ def apply_filters(
     if final_height < content_height:
         final_height = content_height
 
-    configured_bar = int(target_properties.get('overlay_bar_height') or max(final_height - content_height, 0))
-    bar_height = configured_bar
+    overlay_layout = target_properties.get("overlay_layout")
+    if overlay_font_size is None:
+        overlay_font_size = target_properties.get("overlay_font_size")
 
-    if bar_height <= 0 and shot_label:
-        bar_height = calculate_overlay_bar_height(content_height)
-        final_height = content_height + bar_height
-    elif bar_height > 0:
+    bar_height = int(target_properties.get('overlay_bar_height') or max(final_height - content_height, 0))
+    if overlay_layout and bar_height > 0:
+        layout = dict(overlay_layout)
+        bar_height = layout.get("bar_height", bar_height)
+    elif bar_height > 0 and overlay_font_size:
+        layout = compute_overlay_layout(content_height, int(overlay_font_size))
+        bar_height = layout.get("bar_height", bar_height)
+    else:
+        layout = None
+
+    if bar_height > 0:
         final_height = content_height + bar_height
 
     # 스케일 필터 적용
@@ -282,12 +304,18 @@ def apply_filters(
         # drawbox로 상단 바 채우기
         stream = stream.filter('drawbox', x=0, y=0, width=width, height=bar_height_str, color='black@1', t='fill')
 
-        fontsize = max(int(bar_height * 0.55), 18)
+        if layout:
+            title_font_size = max(layout.get("title_font_size", 0), 12)
+            info_fontsize = max(layout.get("info_font_size", 0), 10)
+        else:
+            title_font_size = max(int(bar_height * 0.55), 18)
+            info_fontsize = max(int(title_font_size * 0.6), 10)
+
         font_path = get_default_font_path()
         drawtext_kwargs: Dict[str, str] = {
             'text': escape_drawtext_text(shot_label or ""),
             'fontcolor': 'white',
-            'fontsize': str(fontsize),
+            'fontsize': str(title_font_size),
             'x': '(w-text_w)/2',
             'y': f'({bar_height}-text_h)/2',
             'shadowcolor': 'black@0.7',
@@ -298,35 +326,33 @@ def apply_filters(
             drawtext_kwargs['fontfile'] = font_path
 
         if shot_label and debug_mode:
-            logger.debug("샷 라벨 오버레이 적용: label=%s, bar=%d, fontsize=%d", shot_label, bar_height, fontsize)
+            logger.debug("샷 라벨 오버레이 적용: label=%s, bar=%d, fontsize=%d", shot_label, bar_height, title_font_size)
 
         if shot_label:
-            if shot_label:
-                stream = stream.filter('drawtext', **drawtext_kwargs)
+            stream = stream.filter('drawtext', **drawtext_kwargs)
 
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-            metadata_parts = []
-            if output_label:
-                metadata_parts.append(output_label)
-            metadata_parts.append(timestamp)
-            metadata_text = " ".join(escape_drawtext_text(part) for part in metadata_parts)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        metadata_parts = []
+        if output_label:
+            metadata_parts.append(output_label)
+        metadata_parts.append(timestamp)
+        metadata_text = " ".join(escape_drawtext_text(part) for part in metadata_parts)
 
-            info_fontsize = max(int(bar_height * 0.32), 14)
-            info_kwargs: Dict[str, str] = {
-                'text': metadata_text,
-                'fontcolor': 'white',
-                'fontsize': str(info_fontsize),
-                'x': '20',
-                'y': f'({bar_height}-text_h)/2',
-                'line_spacing': str(max(int(info_fontsize * 0.4), 6)),
-                'shadowcolor': 'black@0.7',
-                'shadowx': '2',
-                'shadowy': '2',
-            }
-            if font_path:
-                info_kwargs['fontfile'] = font_path
+        info_kwargs: Dict[str, str] = {
+            'text': metadata_text,
+            'fontcolor': 'white',
+            'fontsize': str(info_fontsize),
+            'x': '20',
+            'y': f'({bar_height}-text_h)/2',
+            'line_spacing': str(max(int(info_fontsize * 0.4), 6)),
+            'shadowcolor': 'black@0.7',
+            'shadowx': '2',
+            'shadowy': '2',
+        }
+        if font_path:
+            info_kwargs['fontfile'] = font_path
 
-            stream = stream.filter('drawtext', **info_kwargs)
+        stream = stream.filter('drawtext', **info_kwargs)
     else:
         if final_height > content_height:
             stream = stream.filter('pad', width, final_height, x='(ow-iw)/2', y='(oh-ih)/2', color='black')
@@ -344,7 +370,8 @@ def process_video_file(
     idx: int,
     color_pipeline_options: Optional[Dict[str, str]] = None,
     shot_label: Optional[str] = None,
-    output_label: Optional[str] = None
+    output_label: Optional[str] = None,
+    overlay_font_size: Optional[int] = None
 ) -> str:
     """비디오 파일을 트림하고 필터를 적용하여 처리된 파일을 반환합니다."""
     input_file = input_file.replace('\\', '/')
@@ -412,7 +439,8 @@ def process_video_file(
             target_properties,
             shot_label=shot_label,
             debug_mode=debug_mode,
-            output_label=output_label
+            output_label=output_label,
+            overlay_font_size=overlay_font_size
         )
     stream = ffmpeg.output(stream, temp_output, **encoding_options)
     stream = stream.overwrite_output()
@@ -447,7 +475,8 @@ def process_image_sequence(
     idx: int,
     color_pipeline_options: Optional[Dict[str, str]] = None,
     shot_label: Optional[str] = None,
-    output_label: Optional[str] = None
+    output_label: Optional[str] = None,
+    overlay_font_size: Optional[int] = None
 ) -> str:
     try:
         input_file = input_file.replace('\\', '/')
@@ -534,7 +563,8 @@ def process_image_sequence(
                 target_properties,
                 shot_label=shot_label,
                 debug_mode=debug_mode,
-                output_label=output_label
+                output_label=output_label,
+                overlay_font_size=overlay_font_size
             )
 
         # 출력 스트림 설정
@@ -797,7 +827,8 @@ def process_all_media(
     target_properties: Dict[str, str] = {},
     max_workers_override: Optional[int] = None,
     enable_shot_overlay: bool = True,
-    overlay_output_name: Optional[str] = None
+    overlay_output_name: Optional[str] = None,
+    overlay_font_size: Optional[int] = None
 ):
     """
     모든 미디어 파일을 처리하고 하나의 파일로 합칩니다.
@@ -859,17 +890,31 @@ def process_all_media(
         if base_height <= 0:
             raise ValueError("타겟 높이를 계산할 수 없습니다.")
 
-        overlay_bar_height = calculate_overlay_bar_height(base_height) if enable_shot_overlay else 0
-        final_height = base_height + overlay_bar_height
+        if overlay_font_size is None:
+            overlay_font_size = 48
 
-        if enable_shot_overlay and final_height % 2 != 0:
-            final_height += 1
-            overlay_bar_height += 1
+        overlay_layout = None
+        overlay_bar_height = 0
+        if enable_shot_overlay:
+            overlay_layout = compute_overlay_layout(base_height, overlay_font_size)
+            overlay_bar_height = overlay_layout.get("bar_height", 0)
+            if overlay_bar_height % 2 != 0:
+                overlay_bar_height += 1
+            final_height = base_height + overlay_bar_height
+            if final_height % 2 != 0:
+                final_height += 1
+                overlay_bar_height = max(overlay_bar_height + 1, 0)
+            overlay_layout = dict(overlay_layout or {})
+            overlay_layout["bar_height"] = overlay_bar_height
+        else:
+            final_height = base_height
 
         target_properties['width'] = width
         target_properties['content_height'] = base_height
         target_properties['overlay_bar_height'] = overlay_bar_height
         target_properties['height'] = final_height
+        target_properties['overlay_font_size'] = overlay_font_size
+        target_properties['overlay_layout'] = overlay_layout
 
         encoding_options['s'] = f"{width}x{final_height}"
 
@@ -926,7 +971,8 @@ def process_all_media(
                     target_properties,
                     color_pipeline_options,
                     enable_shot_overlay,
-                    overlay_output_name
+                    overlay_output_name,
+                    overlay_font_size
                 )
                 futures.append((idx, future))
 
@@ -988,7 +1034,8 @@ def process_single_media(
     target_properties: Dict[str, str] = {},
     color_pipeline_options: Optional[Dict[str, str]] = None,
     enable_shot_overlay: bool = True,
-    overlay_output_name: Optional[str] = None
+    overlay_output_name: Optional[str] = None,
+    overlay_font_size: Optional[int] = None
 ) -> str:
     """단일 미디어 파일 처리 (메모리 모니터링 포함)"""
     try:
@@ -1010,7 +1057,8 @@ def process_single_media(
                 encoding_options, target_properties, debug_mode, idx,
                 color_pipeline_options,
                 shot_label=shot_label,
-                output_label=overlay_output_name
+                output_label=overlay_output_name,
+                overlay_font_size=overlay_font_size
             )
         else:
             return process_video_file(
@@ -1018,7 +1066,8 @@ def process_single_media(
                 encoding_options, target_properties, debug_mode, idx,
                 color_pipeline_options,
                 shot_label=shot_label,
-                output_label=overlay_output_name
+                output_label=overlay_output_name,
+                overlay_font_size=overlay_font_size
             )
 
     except Exception as e:
@@ -1119,7 +1168,8 @@ def run_sample_analysis(
             stream,
             target_properties,
             shot_label=shot_label,
-            debug_mode=debug_mode
+            debug_mode=debug_mode,
+            overlay_font_size=target_properties.get("overlay_font_size")
         )
         
         # 분석용 인코딩 옵션 설정
