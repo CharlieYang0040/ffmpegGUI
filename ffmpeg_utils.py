@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 import gc
 from typing import List, Dict, Tuple, Optional
+from datetime import datetime
 import ffmpeg
 import logging
 from utils import is_image_sequence, get_first_sequence_file, extract_exr_metadata
@@ -28,6 +29,53 @@ else:
 FFMPEG_PATH = None
 FFPROBE_PATH = None
 
+SHOT_PATTERN_SEQUENCE = re.compile(r'^(?P<name>.+?)\.%0?\d*d', re.IGNORECASE)
+SHOT_PATTERN_NUMBERED_FILE = re.compile(r'^(?P<name>.+?)\.(?P<frame>\d+)(?:\.[^.]+)?$', re.IGNORECASE)
+
+
+def get_default_font_path() -> Optional[str]:
+    candidates: List[str] = []
+    if sys.platform.startswith("win"):
+        windir = os.environ.get("WINDIR", r"C:\Windows")
+        candidates.extend([
+            os.path.join(windir, "Fonts", "arial.ttf"),
+            os.path.join(windir, "Fonts", "segoeui.ttf"),
+        ])
+    elif sys.platform == "darwin":
+        candidates.extend([
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/Library/Fonts/Arial.ttf",
+        ])
+    else:
+        candidates.extend([
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        ])
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path.replace("\\", "/")
+    return None
+
+
+def escape_drawtext_text(text: str) -> str:
+    escaped = text.replace("\\", r"\\")
+    escaped = escaped.replace(":", r"\:")
+    escaped = escaped.replace("'", r"\'")
+    return escaped
+
+
+def calculate_overlay_bar_height(content_height: int) -> int:
+    if content_height <= 0:
+        return 0
+    proposed_bar = max(int(round(content_height * 0.0025)), 40)
+    max_bar = max(int(content_height * 0.3), 2)
+    bar_height = max(2, min(proposed_bar, max_bar))
+    if bar_height % 2 != 0:
+        bar_height += 1
+    return bar_height
+
+
 def set_ffmpeg_path(path: str):
     global FFMPEG_PATH, FFPROBE_PATH
     if os.path.exists(path):
@@ -37,6 +85,24 @@ def set_ffmpeg_path(path: str):
         logger.debug(f"FFprobe 경로 설정: {FFPROBE_PATH}")
     else:
         logger.error(f"FFmpeg 경로를 찾을 수 없음: {path}")
+
+
+def extract_shot_label(file_path: str) -> Optional[str]:
+    if not file_path:
+        return None
+
+    base_name = os.path.basename(file_path)
+
+    sequence_match = SHOT_PATTERN_SEQUENCE.match(base_name)
+    if sequence_match:
+        return sequence_match.group('name')
+
+    numbered_match = SHOT_PATTERN_NUMBERED_FILE.match(base_name)
+    if numbered_match:
+        return numbered_match.group('name')
+
+    stem, _ext = os.path.splitext(base_name)
+    return stem or None
 
 
 def is_exr_path(file_path: str) -> bool:
@@ -175,14 +241,95 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> Dict[str,
         return {}
 
 
-def apply_filters(stream, target_properties):
-    width, height = target_properties['width'], target_properties['height']
+def apply_filters(
+    stream,
+    target_properties,
+    shot_label: Optional[str] = None,
+    debug_mode: bool = False,
+    output_label: Optional[str] = None
+):
+    width = int(target_properties['width'])
+
+    content_height = int(target_properties.get('content_height') or target_properties.get('height') or 0)
+    if content_height <= 0:
+        raise ValueError("콘텐츠 높이를 계산할 수 없습니다.")
+
+    final_height = int(target_properties.get('height') or content_height)
+    if final_height < content_height:
+        final_height = content_height
+
+    configured_bar = int(target_properties.get('overlay_bar_height') or max(final_height - content_height, 0))
+    bar_height = configured_bar
+
+    if bar_height <= 0 and shot_label:
+        bar_height = calculate_overlay_bar_height(content_height)
+        final_height = content_height + bar_height
+    elif bar_height > 0:
+        final_height = content_height + bar_height
 
     # 스케일 필터 적용
-    stream = stream.filter('scale', width, height, force_original_aspect_ratio='decrease')
+    stream = stream.filter('scale', width, content_height, force_original_aspect_ratio='decrease')
 
-    # 패드 필터 적용
-    stream = stream.filter('pad', width, height, x='(ow-iw)/2', y='(oh-ih)/2', color='black')
+    # 콘텐츠 센터 정렬 패드
+    stream = stream.filter('pad', width, content_height, x='(ow-iw)/2', y='(oh-ih)/2', color='black')
+
+    if bar_height > 0:
+        bar_height_str = str(bar_height)
+        final_height = max(final_height, content_height + bar_height)
+        # 전체 프레임 높이로 확장하면서 상단 바 공간 확보
+        stream = stream.filter('pad', width, final_height, x='(ow-iw)/2', y=bar_height_str, color='black')
+
+        # drawbox로 상단 바 채우기
+        stream = stream.filter('drawbox', x=0, y=0, width=width, height=bar_height_str, color='black@1', t='fill')
+
+        fontsize = max(int(bar_height * 0.55), 18)
+        font_path = get_default_font_path()
+        drawtext_kwargs: Dict[str, str] = {
+            'text': escape_drawtext_text(shot_label or ""),
+            'fontcolor': 'white',
+            'fontsize': str(fontsize),
+            'x': '(w-text_w)/2',
+            'y': f'({bar_height}-text_h)/2',
+            'shadowcolor': 'black@0.7',
+            'shadowx': '2',
+            'shadowy': '2',
+        }
+        if font_path:
+            drawtext_kwargs['fontfile'] = font_path
+
+        if shot_label and debug_mode:
+            logger.debug("샷 라벨 오버레이 적용: label=%s, bar=%d, fontsize=%d", shot_label, bar_height, fontsize)
+
+        if shot_label:
+            if shot_label:
+                stream = stream.filter('drawtext', **drawtext_kwargs)
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            metadata_parts = []
+            if output_label:
+                metadata_parts.append(output_label)
+            metadata_parts.append(timestamp)
+            metadata_text = " ".join(escape_drawtext_text(part) for part in metadata_parts)
+
+            info_fontsize = max(int(bar_height * 0.32), 14)
+            info_kwargs: Dict[str, str] = {
+                'text': metadata_text,
+                'fontcolor': 'white',
+                'fontsize': str(info_fontsize),
+                'x': '20',
+                'y': f'({bar_height}-text_h)/2',
+                'line_spacing': str(max(int(info_fontsize * 0.4), 6)),
+                'shadowcolor': 'black@0.7',
+                'shadowx': '2',
+                'shadowy': '2',
+            }
+            if font_path:
+                info_kwargs['fontfile'] = font_path
+
+            stream = stream.filter('drawtext', **info_kwargs)
+    else:
+        if final_height > content_height:
+            stream = stream.filter('pad', width, final_height, x='(ow-iw)/2', y='(oh-ih)/2', color='black')
 
     return stream
 
@@ -195,7 +342,9 @@ def process_video_file(
     target_properties: Dict[str, str],
     debug_mode: bool,
     idx: int,
-    color_pipeline_options: Optional[Dict[str, str]] = None
+    color_pipeline_options: Optional[Dict[str, str]] = None,
+    shot_label: Optional[str] = None,
+    output_label: Optional[str] = None
 ) -> str:
     """비디오 파일을 트림하고 필터를 적용하여 처리된 파일을 반환합니다."""
     input_file = input_file.replace('\\', '/')
@@ -258,7 +407,13 @@ def process_video_file(
 
         stream = stream.filter('setpts', 'PTS-STARTPTS')  # 타임스탬프 리셋
     
-    stream = apply_filters(stream, target_properties)
+        stream = apply_filters(
+            stream,
+            target_properties,
+            shot_label=shot_label,
+            debug_mode=debug_mode,
+            output_label=output_label
+        )
     stream = ffmpeg.output(stream, temp_output, **encoding_options)
     stream = stream.overwrite_output()
 
@@ -290,7 +445,9 @@ def process_image_sequence(
     target_properties: Dict[str, str],
     debug_mode: bool,
     idx: int,
-    color_pipeline_options: Optional[Dict[str, str]] = None
+    color_pipeline_options: Optional[Dict[str, str]] = None,
+    shot_label: Optional[str] = None,
+    output_label: Optional[str] = None
 ) -> str:
     try:
         input_file = input_file.replace('\\', '/')
@@ -372,7 +529,13 @@ def process_image_sequence(
 
         # 필터 적용
         if target_properties:
-            stream = apply_filters(stream, target_properties)
+            stream = apply_filters(
+                stream,
+                target_properties,
+                shot_label=shot_label,
+                debug_mode=debug_mode,
+                output_label=output_label
+            )
 
         # 출력 스트림 설정
         stream = ffmpeg.output(stream, temp_output, **encoding_options)
@@ -559,10 +722,6 @@ def concat_media_files(
         # concat demuxer를 사용한 스트림 생성
         stream = ffmpeg.input(file_list_path, **input_options, f='concat')
 
-        # 필터 적용 (필요한 경우)
-        if target_properties:
-            stream = apply_filters(stream, target_properties)
-
         # 출력 스트림 설정
         stream = ffmpeg.output(stream, output_file, **output_kwargs)
         stream = stream.overwrite_output()
@@ -636,7 +795,9 @@ def process_all_media(
     global_trim_end: int = 0,
     progress_callback: Optional[callable] = None,
     target_properties: Dict[str, str] = {},
-    max_workers_override: Optional[int] = None
+    max_workers_override: Optional[int] = None,
+    enable_shot_overlay: bool = True,
+    overlay_output_name: Optional[str] = None
 ):
     """
     모든 미디어 파일을 처리하고 하나의 파일로 합칩니다.
@@ -682,19 +843,48 @@ def process_all_media(
         if global_metadata:
             logger.info(f"Unreal 메타데이터 {len(global_metadata)}개 항목 추출 완료")
 
-        # 최종적으로 ffmpeg에 전달될 인코딩 옵션을 로그로 확인
-        try:
-            safe_opts = {k: v for k, v in encoding_options.items()}
-            logger.info(f"최종 인코딩 옵션: {safe_opts}")
-        except Exception:
-            pass
-        
         # 먼저 target_properties 얻기
         input_files = [file[0] for file in media_files]  # 파일 경로만 추출
         target_properties = get_target_properties(input_files, encoding_options, debug_mode)
         
         if not target_properties:
             raise ValueError("대상 속성을 가져올 수 없습니다.")
+
+        target_properties = dict(target_properties)
+        width = int(target_properties.get('width', 0) or 0)
+        base_height = int(target_properties.get('height', 0) or 0)
+
+        if width <= 0:
+            raise ValueError("타겟 너비를 계산할 수 없습니다.")
+        if base_height <= 0:
+            raise ValueError("타겟 높이를 계산할 수 없습니다.")
+
+        overlay_bar_height = calculate_overlay_bar_height(base_height) if enable_shot_overlay else 0
+        final_height = base_height + overlay_bar_height
+
+        if enable_shot_overlay and final_height % 2 != 0:
+            final_height += 1
+            overlay_bar_height += 1
+
+        target_properties['width'] = width
+        target_properties['content_height'] = base_height
+        target_properties['overlay_bar_height'] = overlay_bar_height
+        target_properties['height'] = final_height
+
+        encoding_options['s'] = f"{width}x{final_height}"
+
+        if debug_mode:
+            logger.debug(
+                "타겟 해상도 확장: content=%dx%d, overlay=%d, final=%dx%d",
+                width, base_height, overlay_bar_height, width, final_height
+            )
+
+        # 최종적으로 ffmpeg에 전달될 인코딩 옵션을 로그로 확인
+        try:
+            safe_opts = {k: v for k, v in encoding_options.items()}
+            logger.info(f"최종 인코딩 옵션: {safe_opts}")
+        except Exception:
+            pass
         
         temp_files_to_remove = []
         processed_files = [None] * len(media_files)  # 순서 유지를 위한 초기화
@@ -734,7 +924,9 @@ def process_all_media(
                     idx,
                     memory_threshold,
                     target_properties,
-                    color_pipeline_options
+                    color_pipeline_options,
+                    enable_shot_overlay,
+                    overlay_output_name
                 )
                 futures.append((idx, future))
 
@@ -794,7 +986,9 @@ def process_single_media(
     idx: int,
     memory_threshold: int,
     target_properties: Dict[str, str] = {},
-    color_pipeline_options: Optional[Dict[str, str]] = None
+    color_pipeline_options: Optional[Dict[str, str]] = None,
+    enable_shot_overlay: bool = True,
+    overlay_output_name: Optional[str] = None
 ) -> str:
     """단일 미디어 파일 처리 (메모리 모니터링 포함)"""
     try:
@@ -806,18 +1000,25 @@ def process_single_media(
             time.sleep(5)  # 5초 대기
             gc.collect()  # 가비지 컬렉션 강제 실행
 
+        # 샷 라벨 계산
+        shot_label = extract_shot_label(input_file) if enable_shot_overlay else None
+
         # 이미지 시퀀스인지 확인
         if is_image_sequence(input_file):
             return process_image_sequence(
                 input_file, start_frame, end_frame,
                 encoding_options, target_properties, debug_mode, idx,
-                color_pipeline_options
+                color_pipeline_options,
+                shot_label=shot_label,
+                output_label=overlay_output_name
             )
         else:
             return process_video_file(
                 input_file, start_frame, end_frame,
                 encoding_options, target_properties, debug_mode, idx,
-                color_pipeline_options
+                color_pipeline_options,
+                shot_label=shot_label,
+                output_label=overlay_output_name
             )
 
     except Exception as e:
@@ -913,7 +1114,13 @@ def run_sample_analysis(
             stream = ffmpeg.input(file_path, ss=start_time)
 
         # 공통 필터 적용
-        stream = apply_filters(stream, target_properties)
+        shot_label = extract_shot_label(file_path)
+        stream = apply_filters(
+            stream,
+            target_properties,
+            shot_label=shot_label,
+            debug_mode=debug_mode
+        )
         
         # 분석용 인코딩 옵션 설정
         analysis_options = get_optimal_encoding_options(encoding_options)

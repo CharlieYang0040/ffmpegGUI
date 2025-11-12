@@ -422,6 +422,7 @@ class FFmpegGui(QWidget):
             "output_view": self.settings.value("color_mgmt/output_view", ""),
             "lut_size": int(self.settings.value("color_mgmt/lut_size", 33)),
         }
+        self.shot_overlay_enabled = self.settings.value("overlay/shot_enabled", True, type=bool)
         self.ensure_color_defaults()
 
     def setup_update_checker(self):
@@ -899,6 +900,11 @@ class FFmpegGui(QWidget):
         self.color_options_button.clicked.connect(self.open_color_options_dialog)
         misc_layout.addWidget(self.color_options_button)
 
+        self.shot_overlay_checkbox = QCheckBox("샷 라벨 오버레이")
+        self.shot_overlay_checkbox.setChecked(self.shot_overlay_enabled)
+        self.shot_overlay_checkbox.stateChanged.connect(self.on_shot_overlay_toggled)
+        misc_layout.addWidget(self.shot_overlay_checkbox)
+
         # Update button
         self.update_button = QPushButton('🔄 업데이트 확인')
         self.update_button.clicked.connect(self.update_checker.check_for_updates)
@@ -1116,7 +1122,7 @@ class FFmpegGui(QWidget):
         if option == "preset" and value == "Visually Lossless":
             # 이전 Lossless 잔존 키들 정리
             for k in [
-                "qp", "tune", "bf", "spatial_aq", "temporal_aq", "rc-lookahead"
+                "qp", "tune", "bf", "spatial_aq", "temporal_aq", "rc-lookahead", "aq", "aq-strength", "multipass"
             ]:
                 self.encoding_options.pop(k, None)
 
@@ -1135,6 +1141,33 @@ class FFmpegGui(QWidget):
             if preset_combo:
                 preset_combo.blockSignals(True)
                 preset_combo.setCurrentText("Visually Lossless")
+                preset_combo.blockSignals(False)
+            return
+        elif option == "preset" and value == "Near Lossless":
+            for k in [
+                "qp", "tune", "bf", "spatial_aq", "temporal_aq", "rc-lookahead", "aq", "aq-strength", "multipass"
+            ]:
+                self.encoding_options.pop(k, None)
+
+            self.encoding_options.update({
+                "preset": "p6",
+                "tune": "hq",
+                "multipass": "fullres",
+                "rc": "vbr",
+                "cq": "10",
+                "rc-lookahead": "32",
+                "temporal_aq": "1",
+                "spatial_aq": "1",
+                "aq": "1",
+                "aq-strength": "10",
+                "bf": "2",
+            })
+            self.option_widgets["quality_spinbox"].setEnabled(False)
+
+            preset_combo = self.option_widgets.get("preset")
+            if preset_combo:
+                preset_combo.blockSignals(True)
+                preset_combo.setCurrentText("Near Lossless")
                 preset_combo.blockSignals(False)
             return
         elif option == "preset" and value == "Lossless (QP 0)":
@@ -1168,9 +1201,9 @@ class FFmpegGui(QWidget):
 
         if option == "preset":
             # 일반 프리셋(p1~p7/slow/medium/fast 등) 전환 시, lossless 관련 키 제거 및 VBR+CQ 복원
-            if value not in ["Lossless (QP 0)", "Visually Lossless"]:
+            if value not in ["Lossless (QP 0)", "Visually Lossless", "Near Lossless"]:
                 for k in [
-                    "qp", "tune", "bf", "spatial_aq", "temporal_aq", "rc-lookahead"
+                    "qp", "tune", "bf", "spatial_aq", "temporal_aq", "rc-lookahead", "aq", "aq-strength", "multipass"
                 ]:
                     self.encoding_options.pop(k, None)
                 # NVENC 기본은 VBR + CQ 사용
@@ -1196,7 +1229,7 @@ class FFmpegGui(QWidget):
         max_workers_spinbox = self.option_widgets.get("max_workers_spinbox")
 
         if codec in ["h264_nvenc", "hevc_nvenc"]:
-            presets = ["Lossless (QP 0)", "Visually Lossless", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fast"]
+            presets = ["Lossless (QP 0)", "Near Lossless", "Visually Lossless", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fast"]
             quality_label = "CQ"
             quality_value = self.encoding_options.get("cq", "21")
             self.encoding_options["cq"] = str(quality_value)
@@ -1386,6 +1419,8 @@ class FFmpegGui(QWidget):
                 # 최대 작업자 수 가져오기
                 max_workers = self.max_workers_spinbox.value()
 
+                overlay_enabled = self.shot_overlay_checkbox.isChecked() if hasattr(self, "shot_overlay_checkbox") else True
+
                 self.encoding_thread = EncodingThread(
                     process_all_media,
                     ordered_input,
@@ -1395,7 +1430,9 @@ class FFmpegGui(QWidget):
                     debug_mode=debug_mode_flag,
                     global_trim_start=self.global_trim_start,
                     global_trim_end=self.global_trim_end,
-                    max_workers_override=max_workers
+                    max_workers_override=max_workers,
+                    enable_shot_overlay=overlay_enabled,
+                    overlay_output_name=os.path.basename(output_file)
                 )
                 self.encoding_thread.progress_updated.connect(self.progress_dialog.update_progress)
                 self.encoding_thread.encoding_finished.connect(self.on_encoding_finished)
@@ -1434,6 +1471,11 @@ class FFmpegGui(QWidget):
         self.clear_settings_button.setVisible(is_checked)
         logger.info(f"디버그 모드 {'활성화' if is_checked else '비활성화'}")
         set_logger_level(is_checked)
+
+    def on_shot_overlay_toggled(self, state):
+        enabled = state == Qt.CheckState.Checked.value
+        self.shot_overlay_enabled = enabled
+        self.settings.setValue("overlay/shot_enabled", enabled)
 
     def position_window(self):
         """창을 화면 상단 1/3 지점에 위치시켜 하단이 잘리지 않도록 합니다."""
