@@ -33,6 +33,14 @@ SHOT_PATTERN_SEQUENCE = re.compile(r'^(?P<name>.+?)\.%0?\d*d', re.IGNORECASE)
 SHOT_PATTERN_NUMBERED_FILE = re.compile(r'^(?P<name>.+?)\.(?P<frame>\d+)(?:\.[^.]+)?$', re.IGNORECASE)
 
 
+def get_container_extension_for_codec(codec: str) -> str:
+    """
+    주어진 코덱에 적합한 출력 컨테이너 확장자를 반환합니다.
+    ProRes/DNxHR은 MOV 컨테이너를 사용하고, 그 외는 MP4를 기본값으로 합니다.
+    """
+    return ".mov" if codec in ("prores_ks", "dnxhd") else ".mp4"
+
+
 def get_default_font_path() -> Optional[str]:
     candidates: List[str] = []
     if sys.platform.startswith("win"):
@@ -106,6 +114,12 @@ def extract_shot_label(file_path: str) -> Optional[str]:
 
     base_name = os.path.basename(file_path)
 
+    # DPX, TIFF 등 이미지 시퀀스 확장자 처리
+    if base_name.lower().endswith(('.dpx', '.tif', '.tiff')):
+        sequence_match = SHOT_PATTERN_SEQUENCE.match(base_name)
+        if sequence_match:
+            return sequence_match.group('name')
+
     sequence_match = SHOT_PATTERN_SEQUENCE.match(base_name)
     if sequence_match:
         return sequence_match.group('name')
@@ -119,7 +133,7 @@ def extract_shot_label(file_path: str) -> Optional[str]:
 
 
 def is_exr_path(file_path: str) -> bool:
-    return file_path.lower().endswith('.exr') if file_path else False
+    return file_path.lower().endswith(('.exr', '.dpx', '.tif', '.tiff')) if file_path else False
 
 
 def build_metadata_kwargs(metadata: Dict[str, str]) -> Dict[str, str]:
@@ -375,7 +389,8 @@ def process_video_file(
 ) -> str:
     """비디오 파일을 트림하고 필터를 적용하여 처리된 파일을 반환합니다."""
     input_file = input_file.replace('\\', '/')
-    temp_output = f'temp_output_{idx}.mp4'
+    codec = encoding_options.get("c:v", "")
+    temp_output = f'temp_output_{idx}{get_container_extension_for_codec(codec)}'
     logger.info(f"비디오 처리 시작: {input_file}")
 
     # 비디오 정보 가져오기
@@ -404,8 +419,44 @@ def process_video_file(
     # 스레드와 메모리 최적화 옵션 적용
     encoding_options = get_optimal_encoding_options(encoding_options)
     
-    # 입력 프레임레이트를 인코딩 옵션에 추가
-    encoding_options['r'] = str(fps)
+    # 코덱별 파라미터 매핑 및 오디오/픽셀 포맷 자동 설정
+    codec = encoding_options.get("c:v")
+    if codec == "prores_ks":
+        # ProRes 프로파일 매핑
+        profile = encoding_options.pop("profile", "hq")
+        profile_map = {
+            "proxy": "0", "lt": "1", "standard": "2", "hq": "3", "4444": "4", "4444xq": "5"
+        }
+        encoding_options["profile:v"] = profile_map.get(profile, "3")
+        
+        # 10bit/12bit 픽셀 포맷 자동 설정
+        if profile in ["4444", "4444xq"]:
+            encoding_options["pix_fmt"] = "yuva444p10le" # 알파 채널 포함
+        else:
+            encoding_options["pix_fmt"] = "yuv422p10le"
+            
+        # 오디오 코덱 설정 (PCM)
+        encoding_options["c:a"] = "pcm_s16le"
+        
+    elif codec == "dnxhd":
+        # DNxHR 프로파일 매핑
+        profile = encoding_options.pop("profile", "hqx")
+        encoding_options["profile:v"] = f"dnxhr_{profile}"
+        
+        # 픽셀 포맷 자동 설정
+        if profile == "444":
+            encoding_options["pix_fmt"] = "yuv444p10le"
+        elif profile == "hqx":
+            encoding_options["pix_fmt"] = "yuv422p10le"
+        else:
+            encoding_options["pix_fmt"] = "yuv422p"
+            
+        # 오디오 코덱 설정 (PCM)
+        encoding_options["c:a"] = "pcm_s16le"
+
+    # 입력 프레임레이트를 인코딩 옵션에 추가 (설정된 값이 없을 경우에만 원본 fps 사용)
+    if 'r' not in encoding_options:
+        encoding_options['r'] = str(fps)
 
     # 입력 버퍼 크기 설정
     input_options = {
@@ -480,7 +531,8 @@ def process_image_sequence(
 ) -> str:
     try:
         input_file = input_file.replace('\\', '/')
-        temp_output = f'temp_output_{idx}.mp4'
+        codec = encoding_options.get("c:v", "")
+        temp_output = f'temp_output_{idx}{get_container_extension_for_codec(codec)}'
         logger.info(f"이미지 시퀀스 처리 시작: {input_file}")
 
         # 이미지 파일 패턴과 총 프레임 수 계산
@@ -516,6 +568,35 @@ def process_image_sequence(
         # 인코딩 옵션 설정
         encoding_options = get_optimal_encoding_options(encoding_options)
         framerate = float(encoding_options.get('r', 30))
+
+        # 코덱별 파라미터 매핑 및 오디오/픽셀 포맷 자동 설정
+        codec = encoding_options.get("c:v")
+        if codec == "prores_ks":
+            # ProRes 프로파일 매핑
+            profile = encoding_options.pop("profile", "hq")
+            profile_map = {
+                "proxy": "0", "lt": "1", "standard": "2", "hq": "3", "4444": "4", "4444xq": "5"
+            }
+            encoding_options["profile:v"] = profile_map.get(profile, "3")
+            
+            # 10bit/12bit 픽셀 포맷 자동 설정
+            if profile in ["4444", "4444xq"]:
+                encoding_options["pix_fmt"] = "yuva444p10le" # 알파 채널 포함
+            else:
+                encoding_options["pix_fmt"] = "yuv422p10le"
+            
+        elif codec == "dnxhd":
+            # DNxHR 프로파일 매핑
+            profile = encoding_options.pop("profile", "hqx")
+            encoding_options["profile:v"] = f"dnxhr_{profile}"
+            
+            # 픽셀 포맷 자동 설정
+            if profile == "444":
+                encoding_options["pix_fmt"] = "yuv444p10le"
+            elif profile == "hqx":
+                encoding_options["pix_fmt"] = "yuv422p10le"
+            else:
+                encoding_options["pix_fmt"] = "yuv422p"
 
         # 입력 옵션 설정
         input_args = {
@@ -734,8 +815,8 @@ def concat_media_files(
             progress_callback(100)
         return
 
-    # 병합을 위한 최적화된 인코딩 옵션
-    concat_options = get_optimal_encoding_options(encoding_options)
+    # 병합을 위한 최적화된 인코딩 옵션 (스트림 복사 사용)
+    concat_options = {'c': 'copy'}
     output_kwargs = {**concat_options, **metadata_kwargs}
     
     # 입력 버퍼 최적화
@@ -839,6 +920,24 @@ def process_all_media(
             frame_ranges = [(media_file[1], media_file[2]) for media_file in media_files]
 
         color_pipeline_options = color_pipeline_options or {}
+
+        # 통합 프레임레이트 정책 수립
+        if 'r' not in encoding_options and media_files:
+            try:
+                first_file = media_files[0][0]
+                target_fps = 30.0  # 기본값
+                
+                if not is_image_sequence(first_file):
+                    probe = ffmpeg.probe(first_file, cmd=FFPROBE_PATH)
+                    video_info = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+                    if video_info:
+                        target_fps = eval(video_info.get('r_frame_rate', '30/1'))
+                
+                encoding_options['r'] = str(target_fps)
+                logger.info(f"통합 타겟 프레임레이트 자동 설정: {target_fps}")
+            except Exception as e:
+                logger.warning(f"프레임레이트 감지 실패, 기본값 30으로 설정: {e}")
+                encoding_options['r'] = "30"
 
         if color_pipeline_options and color_pipeline_options.get("enabled"):
             try:

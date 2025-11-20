@@ -82,11 +82,12 @@ def set_logger_level(is_debug: bool):
 
 def is_media_file(file_path):
     _, ext = os.path.splitext(file_path)
-    return ext.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.jpg', '.jpeg', '.png', '.bmp', '.exr']
+    return ext.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.jpg', '.jpeg', '.png', '.bmp', '.exr', '.dpx', '.tif', '.tiff']
 
 def is_image_file(file_path):
-    _, ext = os.path.splitext(file_path)
-    return ext.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.exr']
+    """이미지 파일인지 확인합니다."""
+    image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.exr', '.dpx', '.tif', '.tiff']
+    return os.path.splitext(file_path)[1].lower() in image_extensions
 
 def is_video_file(file_path):
     _, ext = os.path.splitext(file_path)
@@ -129,7 +130,7 @@ def process_image_sequences(files):
 
 def process_file(file_path):
     _, ext = os.path.splitext(file_path)
-    return process_image_file(file_path) if ext.lower() in ['.jpg', '.jpeg', '.png', '.exr'] else file_path
+    return process_image_file(file_path) if ext.lower() in ['.jpg', '.jpeg', '.png', '.exr', '.dpx', '.tif', '.tiff'] else file_path
 
 _OPENEXR_IMPORT_FAILED = False
 

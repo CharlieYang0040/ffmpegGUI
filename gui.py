@@ -722,11 +722,13 @@ class FFmpegGui(QWidget):
         self.option_widgets = {}
 
         # Codec
-        self.create_option_widget(options_layout, "c:v", ["h264_nvenc", "hevc_nvenc", "libx264", "libx265", "none"])
+        self.create_option_widget(options_layout, "c:v", ["h264_nvenc", "hevc_nvenc", "libx264", "libx265", "prores_ks", "dnxhd", "none"])
         self.option_widgets["c:v"].setToolTip(
             "비디오 인코딩 코덱을 선택합니다.\n"
             "- h264_nvenc / hevc_nvenc: NVIDIA GPU를 사용해 빠르게 인코딩합니다.\n"
-            "- libx264 / libx265: CPU를 사용해 인코딩하며, 호환성이 높습니다."
+            "- libx264 / libx265: CPU를 사용해 인코딩하며, 호환성이 높습니다.\n"
+            "- prores_ks: Apple ProRes 코덱 (VFX 표준, 고화질)\n"
+            "- dnxhd: Avid DNxHR 코덱 (편집 표준, 고화질)"
         )
 
         # Preset
@@ -1089,7 +1091,7 @@ class FFmpegGui(QWidget):
         self.setWindowIcon(QIcon(icon_path))
 
     def add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, '파일 선택', '', '모든 파일 (*.*)')
+        files, _ = QFileDialog.getOpenFileNames(self, '파일 선택', '', '모든 파일 (*.mp4 *.mov *.avi *.mkv *.png *.jpg *.jpeg *.exr *.dpx *.tif *.tiff);;Video files (*.mp4 *.mov *.avi *.mkv);;Image files (*.png *.jpg *.jpeg *.exr *.dpx *.tif *.tiff)')
         if files:
             processed_files = list(map(process_file, files))
             self.list_widget.handle_new_files(processed_files)
@@ -1131,6 +1133,13 @@ class FFmpegGui(QWidget):
             self.execute_command(command)
 
     def update_option(self, option: str, value: str):
+        if option == "preset":
+            codec = self.encoding_options.get("c:v")
+            if codec in ["prores_ks", "dnxhd"]:
+                # ProRes/DNxHR의 경우 Preset 콤보박스를 Profile 설정용으로 사용
+                self.encoding_options["profile"] = value
+                return
+
         if option == "preset" and value == "Visually Lossless":
             # 이전 Lossless 잔존 키들 정리
             for k in [
@@ -1234,11 +1243,19 @@ class FFmpegGui(QWidget):
         self.encoding_options.pop("crf", None)
         self.encoding_options.pop("cq", None)
         self.encoding_options.pop("max_workers", None) # 기존 최대 작업자 수 제거
+        self.encoding_options.pop("profile", None) # 프로파일 제거
 
         preset_combo = self.option_widgets.get("preset")
         quality_spinbox = self.option_widgets.get("quality_spinbox")
         max_workers_label = self.option_widgets.get("max_workers_label")
         max_workers_spinbox = self.option_widgets.get("max_workers_spinbox")
+        
+        # 기본 UI 상태 초기화
+        preset_combo.setVisible(True)
+        quality_spinbox.setVisible(True)
+        self.quality_label.setVisible(True)
+        max_workers_label.setVisible(False)
+        max_workers_spinbox.setVisible(False)
 
         if codec in ["h264_nvenc", "hevc_nvenc"]:
             presets = ["Lossless (QP 0)", "Near Lossless", "Visually Lossless", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fast"]
@@ -1252,25 +1269,50 @@ class FFmpegGui(QWidget):
             quality_label = "CRF"
             quality_value = self.encoding_options.get("crf", "23")
             self.encoding_options["crf"] = str(quality_value)
-            max_workers_label.setVisible(False)
-            max_workers_spinbox.setVisible(False)
+        elif codec == "prores_ks":
+            # ProRes Profile을 Preset 콤보박스에 매핑
+            presets = ["proxy", "lt", "standard", "hq", "4444", "4444xq"]
+            quality_label = "" # ProRes는 고정 비트레이트/프로파일 기반이므로 CRF/CQ 미사용
+            quality_spinbox.setVisible(False)
+            self.quality_label.setVisible(False)
+            # 기본값 설정
+            if "profile" not in self.encoding_options:
+                self.encoding_options["profile"] = "hq"
+        elif codec == "dnxhd": # DNxHR
+            # DNxHR Profile을 Preset 콤보박스에 매핑
+            presets = ["lb", "sq", "hq", "hqx", "444"]
+            quality_label = ""
+            quality_spinbox.setVisible(False)
+            self.quality_label.setVisible(False)
+            if "profile" not in self.encoding_options:
+                self.encoding_options["profile"] = "hqx"
         else:
             presets = []
             quality_label = "Quality"
             quality_value = 0
             preset_combo.setEnabled(False)
             quality_spinbox.setEnabled(False)
-            max_workers_label.setVisible(False)
-            max_workers_spinbox.setVisible(False)
 
         if presets:
             preset_combo.setEnabled(True)
-            quality_spinbox.setEnabled(True)
             preset_combo.clear()
             preset_combo.addItems(presets)
-            preset_combo.setCurrentText(self.encoding_options.get("preset", "medium"))
-            self.quality_label.setText(f"{quality_label}:")
-            quality_spinbox.setValue(int(quality_value))
+            
+            if codec == "prores_ks":
+                current_profile = self.encoding_options.get("profile", "hq")
+                # standard는 profile:v 2에 해당하지만 편의상 콤보박스에서는 standard로 표시
+                preset_combo.setCurrentText(current_profile)
+                self.option_widgets["preset"].setToolTip("ProRes 프로파일을 선택합니다.")
+            elif codec == "dnxhd":
+                current_profile = self.encoding_options.get("profile", "hqx")
+                preset_combo.setCurrentText(current_profile)
+                self.option_widgets["preset"].setToolTip("DNxHR 프로파일을 선택합니다.")
+            else:
+                preset_combo.setCurrentText(self.encoding_options.get("preset", "medium"))
+                if quality_label:
+                    quality_spinbox.setEnabled(True)
+                    self.quality_label.setText(f"{quality_label}:")
+                    quality_spinbox.setValue(int(quality_value))
             
     def update_quality_option(self, value: int):
         codec = self.encoding_options.get("c:v")
@@ -1280,6 +1322,25 @@ class FFmpegGui(QWidget):
         elif codec in ["libx264", "libx265"]:
             self.encoding_options["crf"] = str(value)
             self.encoding_options.pop("cq", None)
+
+    def ensure_output_extension_for_codec(self, output_file: str, codec: Optional[str]) -> str:
+        """
+        선택한 코덱과 호환되는 컨테이너 확장자를 강제 적용합니다.
+        ProRes/DNxHR은 MOV 컨테이너만 지원하므로, 다른 확장자가 선택되었을 경우 MOV로 변경합니다.
+        """
+        if codec in ("prores_ks", "dnxhd"):
+            base, ext = os.path.splitext(output_file)
+            if ext.lower() != ".mov":
+                new_output = base + ".mov"
+                QMessageBox.information(
+                    self,
+                    "출력 확장자 변경",
+                    "선택한 코덱(ProRes/DNxHR)은 MOV 컨테이너를 필요로 하므로\n"
+                    f"출력 파일을 '{os.path.basename(new_output)}'(으)로 변경했습니다."
+                )
+                self.output_edit.setText(new_output)
+                return new_output
+        return output_file
 
     def get_encoding_parameters(self):
         output_file = self.output_edit.text()
@@ -1314,7 +1375,7 @@ class FFmpegGui(QWidget):
 
     def browse_output(self):
         last_path = self.settings.value("last_output_path", "")
-        output_file, _ = QFileDialog.getSaveFileName(self, '출력 파일 저장', last_path, 'MP4 파일 (*.mp4)')
+        output_file, _ = QFileDialog.getSaveFileName(self, '출력 파일 저장', last_path, '비디오 파일 (*.mp4 *.mov);;MP4 파일 (*.mp4);;MOV 파일 (*.mov)')
         if output_file:
             self.output_edit.setText(output_file)
             self.settings.setValue("last_output_path", output_file)
@@ -1407,6 +1468,7 @@ class FFmpegGui(QWidget):
         params = self.get_encoding_parameters()
         if params:
             output_file, encoding_options, _, input_files, frame_ranges, color_options = params
+            output_file = self.ensure_output_extension_for_codec(output_file, encoding_options.get("c:v"))
             color_options = dict(color_options)
             logger.info(f"인코딩 옵션: {encoding_options}")
             logger.info(f"출력 파일: {output_file}")
