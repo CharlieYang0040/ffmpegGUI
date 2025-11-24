@@ -1,7 +1,7 @@
 # drag_drop_list_widget.py
 
 from PySide6.QtWidgets import QListWidget, QAbstractItemView, QListWidgetItem, QApplication
-from PySide6.QtCore import Qt, QMimeData
+from PySide6.QtCore import Qt, QMimeData, QThreadPool, QRunnable, QObject, Signal, Slot
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPainter, QColor, QDrag
 import os
 import logging
@@ -12,13 +12,33 @@ from utils import (
     process_image_sequences,
     process_file,
     format_drag_to_output,
-    get_total_frames,
-    is_image_sequence,
-    get_frame_range_from_sequence
+    get_media_metadata,
 )
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
+
+
+class MetadataWorkerSignals(QObject):
+    finished = Signal(str, object)
+    error = Signal(str, str)
+
+
+class MetadataWorker(QRunnable):
+    def __init__(self, file_path: str):
+        super().__init__()
+        self.file_path = file_path
+        self.signals = MetadataWorkerSignals()
+
+    @Slot()
+    def run(self):
+        try:
+            metadata = get_media_metadata(self.file_path)
+            self.signals.finished.emit(self.file_path, metadata)
+        except Exception as exc:  # pragma: no cover - 방어적
+            logger.warning("[MetadataWorker] %s 메타데이터 계산 실패: %s", self.file_path, exc)
+            self.signals.error.emit(self.file_path, str(exc))
+
 
 class DragDropListWidget(QListWidget):
     def __init__(self, parent=None, process_file_func=None):
@@ -29,6 +49,8 @@ class DragDropListWidget(QListWidget):
         self.process_file_func = process_file_func or process_file
         self.old_order = []  # 드래그 시작 전 순서 저장
         self.drag_start_position = None  # 드래그 시작 위치 저장 변수 추가
+        self.thread_pool = QThreadPool.globalInstance()
+        self._pending_metadata = set()
         
         self.setViewportMargins(0, 0, 0, 0)
         self.placeholder_text = "파일 또는 폴더를 드래그 하여 추가하세요."
@@ -143,18 +165,13 @@ class DragDropListWidget(QListWidget):
 
     def add_items(self, file_paths):
         for file_path in file_paths:
-            start_frame, end_frame = 0, 0
-            if is_image_sequence(file_path):
-                start_frame, end_frame = get_frame_range_from_sequence(file_path)
-            else: # 비디오 파일
-                end_frame = get_total_frames(file_path)
-
-            item_widget = ListWidgetItem(file_path, start_frame=start_frame, end_frame=end_frame)
+            item_widget = ListWidgetItem(file_path, start_frame=0, end_frame=0)
             list_item = QListWidgetItem(self)
             list_item.setSizeHint(item_widget.sizeHint())
             list_item.setData(Qt.UserRole, file_path)
             self.addItem(list_item)
             self.setItemWidget(list_item, item_widget)
+            self._queue_metadata_job(file_path)
         self.placeholder_visible = self.count() == 0
 
     def update_items(self, new_file_paths):
@@ -162,18 +179,13 @@ class DragDropListWidget(QListWidget):
         self.clear()
         for file_path in new_file_paths:
             logger.debug(f"[update_items] 아이템 추가: {file_path}")
-            start_frame, end_frame = 0, 0
-            if is_image_sequence(file_path):
-                start_frame, end_frame = get_frame_range_from_sequence(file_path)
-            else: # 비디오 파일
-                end_frame = get_total_frames(file_path)
-
-            item_widget = ListWidgetItem(file_path, start_frame=start_frame, end_frame=end_frame)
+            item_widget = ListWidgetItem(file_path, start_frame=0, end_frame=0)
             list_item = QListWidgetItem(self)
             list_item.setSizeHint(item_widget.sizeHint())
             list_item.setData(Qt.UserRole, file_path)
             self.addItem(list_item)
             self.setItemWidget(list_item, item_widget)
+            self._queue_metadata_job(file_path)
         self.placeholder_visible = self.count() == 0
         logger.info(f"[update_items] {len(new_file_paths)}개 아이템 업데이트 완료")
 
@@ -283,3 +295,33 @@ class DragDropListWidget(QListWidget):
         file_path = item.data(Qt.UserRole)
         if file_path and hasattr(self.parent(), 'open_folder'):
             self.parent().open_folder(file_path)
+
+    # ------------------------------------------------------------------ #
+    # 메타데이터 비동기 처리
+    # ------------------------------------------------------------------ #
+    def _queue_metadata_job(self, file_path: str):
+        normalized = os.path.abspath(file_path)
+        if normalized in self._pending_metadata:
+            return
+        self._pending_metadata.add(normalized)
+        worker = MetadataWorker(file_path)
+        worker.signals.finished.connect(self.on_metadata_ready)
+        worker.signals.error.connect(self.on_metadata_error)
+        self.thread_pool.start(worker)
+
+    def on_metadata_ready(self, file_path: str, metadata):
+        normalized = os.path.abspath(file_path)
+        self._pending_metadata.discard(normalized)
+        for index in range(self.count()):
+            item = self.item(index)
+            item_path = item.data(Qt.UserRole)
+            if item_path and os.path.abspath(item_path) == normalized:
+                widget = self.itemWidget(item)
+                if widget:
+                    widget.apply_metadata(metadata)
+
+    def on_metadata_error(self, file_path: str, message: str):
+        normalized = os.path.abspath(file_path)
+        self._pending_metadata.discard(normalized)
+        logger.warning("[metadata] %s 처리 실패: %s", normalized, message)
+

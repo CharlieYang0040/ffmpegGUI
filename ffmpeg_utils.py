@@ -7,14 +7,19 @@ import glob
 import re
 import shutil
 import psutil
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import gc
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime
 import ffmpeg
 import logging
-from utils import is_image_sequence, get_first_sequence_file, extract_exr_metadata
+from utils import (
+    is_image_sequence,
+    get_first_sequence_file,
+    extract_exr_metadata,
+    get_media_metadata,
+)
 from color_management import build_filters_for_options
 
 # 로깅 설정
@@ -46,6 +51,7 @@ def get_default_font_path() -> Optional[str]:
     if sys.platform.startswith("win"):
         windir = os.environ.get("WINDIR", r"C:\Windows")
         candidates.extend([
+            os.path.join(windir, "Fonts", "malgun.ttf"),
             os.path.join(windir, "Fonts", "arial.ttf"),
             os.path.join(windir, "Fonts", "segoeui.ttf"),
         ])
@@ -95,6 +101,60 @@ def compute_overlay_layout(content_height: int, font_size: int) -> Dict[str, int
         "info_font_size": info_font_size,
         "padding": padding
     }
+
+
+def build_overlay_frame_info(total_frames: Optional[int], start_frame: Optional[int] = None) -> Optional[Dict[str, int]]:
+    """
+    상단 바에 표시할 프레임 정보를 생성합니다.
+    """
+    if total_frames is None:
+        return None
+
+    try:
+        total = int(total_frames)
+    except (TypeError, ValueError):
+        return None
+
+    if total <= 0:
+        return None
+
+    frame_info: Dict[str, int] = {"total_frames": total}
+
+    if start_frame is not None:
+        try:
+            frame_info["start_frame"] = int(start_frame)
+        except (TypeError, ValueError):
+            pass
+
+    return frame_info
+
+
+def calculate_trimmed_total_frames(metadata, start_frame: int, end_frame: int) -> int:
+    """
+    트림 값이 적용된 실제 출력 프레임 수를 추정합니다.
+    """
+    start = max(int(start_frame or 0), 0)
+    end = int(end_frame or 0)
+
+    if end > 0 and end >= start:
+        return (end - start) + 1
+
+    total_frames = int(getattr(metadata, "total_frames", 0) or 0)
+    if total_frames > 0:
+        remaining = total_frames - start
+        if remaining > 0:
+            return remaining
+        return max(total_frames, 0)
+
+    duration = float(getattr(metadata, "duration", 0.0) or 0.0)
+    fps = float(getattr(metadata, "fps", 0.0) or 0.0)
+    if duration > 0 and fps > 0:
+        approx_total = int(duration * fps)
+        if approx_total > 0:
+            remaining = approx_total - start
+            return remaining if remaining > 0 else approx_total
+
+    return 0
 
 
 def set_ffmpeg_path(path: str):
@@ -235,37 +295,14 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> Dict[str,
     """
     미디어 파일(비디오 또는 이미지 시퀀스)의 해상도를 반환합니다.
     """
-    try:
-        if is_image_sequence(input_file):
-            # 이미지 시퀀스인 경우 첫 번째 이미지 파일을 사용하여 속성 추출
-            pattern = input_file.replace('\\', '/')
-            pattern = re.sub(r'%\d*d', '*', pattern)
-            image_files = sorted(glob.glob(pattern))
-            if not image_files:
-                logger.warning(f"이미지 시퀀스 '{input_file}'를 찾을 수 없습니다.")
-                return {}
-            probe_input = image_files[0]
-        else:
-            probe_input = input_file
-
-        probe = ffmpeg.probe(probe_input, cmd=FFPROBE_PATH)
-        video_stream = next(
-            (s for s in probe['streams'] if s['codec_type'] == 'video'),
-            None
-        )
-        if video_stream is None:
-            logger.warning(f"'{input_file}'에서 비디오 스트림을 찾을 수 없습니다.")
-            return {}
+    metadata = get_media_metadata(input_file)
+    if metadata.width and metadata.height:
         return {
-            'width': video_stream['width'],
-            'height': video_stream['height'],
+            'width': metadata.width,
+            'height': metadata.height,
         }
-    except ffmpeg.Error as e:
-        logger.error(f"'{input_file}'를 프로브하는 중 오류 발생: {e}")
-        return {}
-    except Exception as e:
-        logger.exception(f"'{input_file}'의 속성을 가져오는 중 예외 발생: {e}")
-        return {}
+    logger.warning("'%s'의 메타데이터를 가져오지 못했습니다.", input_file)
+    return {}
 
 
 def apply_filters(
@@ -274,7 +311,8 @@ def apply_filters(
     shot_label: Optional[str] = None,
     debug_mode: bool = False,
     output_label: Optional[str] = None,
-    overlay_font_size: Optional[int] = None
+    overlay_font_size: Optional[int] = None,
+    overlay_frame_info: Optional[Dict[str, int]] = None
 ):
     width = int(target_properties['width'])
 
@@ -367,6 +405,40 @@ def apply_filters(
             info_kwargs['fontfile'] = font_path
 
         stream = stream.filter('drawtext', **info_kwargs)
+
+        frame_info = overlay_frame_info or target_properties.get("overlay_frame_info")
+        total_frames_value = int(frame_info.get("total_frames")) if frame_info and frame_info.get("total_frames") else 0
+
+        if total_frames_value > 0:
+            frame_prefix_value = frame_info.get("label_prefix", "Frame") if frame_info else "Frame"
+            frame_prefix_str = str(frame_prefix_value).strip()
+            frame_prefix = escape_drawtext_text(frame_prefix_str) + " " if frame_prefix_str else ""
+            # Debug: Simplify expression to rule out escaping issues
+            frame_text = f"{frame_prefix}%{{n}}/{total_frames_value}f"
+
+            if debug_mode:
+                logger.debug(f"프레임 카운터 텍스트 (Debug): {frame_text}")
+
+            frame_kwargs: Dict[str, str] = {
+                'text': frame_text,
+                'fontcolor': 'white',
+                'fontsize': str(info_fontsize),
+                'x': 'w-text_w-20',
+                'y': f'({bar_height}-text_h)/2',
+                'shadowcolor': 'black@0.7',
+                'shadowx': '2',
+                'shadowy': '2',
+            }
+            
+            # 폰트 파일 존재 확인
+            if font_path and not os.path.exists(font_path):
+                logger.warning(f"폰트 파일을 찾을 수 없음: {font_path}")
+                font_path = None # 기본 폰트 사용
+                
+            if font_path:
+                frame_kwargs['fontfile'] = font_path
+
+            stream = stream.filter('drawtext', **frame_kwargs)
     else:
         if final_height > content_height:
             stream = stream.filter('pad', width, final_height, x='(ow-iw)/2', y='(oh-ih)/2', color='black')
@@ -393,28 +465,17 @@ def process_video_file(
     temp_output = f'temp_output_{idx}{get_container_extension_for_codec(codec)}'
     logger.info(f"비디오 처리 시작: {input_file}")
 
-    # 비디오 정보 가져오기
-    try:
-        probe = ffmpeg.probe(input_file, cmd=FFPROBE_PATH)
-        video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
-        
-        # 프레임레이트 가져오기 (예: '30/1', '60/1', '24/1')
-        fps = eval(video_info.get('r_frame_rate', '30/1'))
-        
-        # 총 프레임 수 계산
-        total_frames = int(video_info.get('nb_frames', 0))
-        if total_frames == 0:  # nb_frames가 없는 경우
-            duration = float(video_info.get('duration', 0))
-            total_frames = int(duration * fps)
+    metadata = get_media_metadata(input_file)
+    fps = metadata.fps or 30.0
+    total_frames = metadata.total_frames
+    trimmed_total_frames = calculate_trimmed_total_frames(metadata, start_frame, end_frame)
+    overlay_frame_info = build_overlay_frame_info(
+        trimmed_total_frames,
+        start_frame if start_frame > 0 else None
+    )
 
-        if debug_mode:
-            logger.debug(f"비디오 정보:")
-            logger.debug(f"  - 프레임레이트: {fps} fps")
-            logger.debug(f"  - 총 프레임 수: {total_frames}")
-            logger.debug(f"  - 영상 길이: {total_frames/fps:.2f} 초")
-    except Exception as e:
-        logger.error(f"비디오 정보 가져오기 실패: {e}")
-        raise
+    if debug_mode:
+        logger.debug("비디오 메타데이터 (%s): fps=%s, total_frames=%s", input_file, fps, total_frames)
 
     # 스레드와 메모리 최적화 옵션 적용
     encoding_options = get_optimal_encoding_options(encoding_options)
@@ -485,13 +546,15 @@ def process_video_file(
 
         stream = stream.filter('setpts', 'PTS-STARTPTS')  # 타임스탬프 리셋
     
+    if target_properties:
         stream = apply_filters(
             stream,
             target_properties,
             shot_label=shot_label,
             debug_mode=debug_mode,
             output_label=output_label,
-            overlay_font_size=overlay_font_size
+            overlay_font_size=overlay_font_size,
+            overlay_frame_info=overlay_frame_info
         )
     stream = ffmpeg.output(stream, temp_output, **encoding_options)
     stream = stream.overwrite_output()
@@ -535,35 +598,27 @@ def process_image_sequence(
         temp_output = f'temp_output_{idx}{get_container_extension_for_codec(codec)}'
         logger.info(f"이미지 시퀀스 처리 시작: {input_file}")
 
-        # 이미지 파일 패턴과 총 프레임 수 계산
-        pattern = input_file.replace('\\', '/')
-        glob_pattern = re.sub(r'%\d*d', '*', pattern)
-        image_files = sorted(glob.glob(glob_pattern))
+        metadata = get_media_metadata(input_file)
+        total_frames = metadata.total_frames
+        original_start_frame = metadata.sequence_start or 0
+        sequence_end = metadata.sequence_end or (original_start_frame + total_frames - 1)
 
-        if not image_files:
+        if total_frames <= 0:
             logger.warning(f"이미지 시퀀스 '{input_file}'를 찾을 수 없습니다.")
             raise FileNotFoundError(f"No images found for pattern '{input_file}'")
 
-        total_frames = len(image_files)
+        absolute_start = start_frame if start_frame > 0 else original_start_frame
+        absolute_end = end_frame if end_frame > 0 else sequence_end
 
-        # 시작 프레임 번호 추출
-        frame_number_pattern = re.compile(r'(\d+)\.(\w+)$')
-        first_image = os.path.basename(image_files[0])
-        match = frame_number_pattern.search(first_image)
-        if not match:
-            logger.warning(f"'{first_image}'에서 시작 프레임 번호를 추출할 수 없습니다.")
-            raise ValueError(f"Cannot extract frame number from '{first_image}'")
+        if absolute_end < absolute_start:
+            absolute_end = absolute_start
 
-        original_start_frame = int(match.group(1))
-
-        # end_frame이 0이거나 지정되지 않았으면 시퀀스의 마지막 프레임을 사용
-        if end_frame <= 0:
-            end_frame = total_frames + original_start_frame -1
-
-        new_total_frames = end_frame - start_frame + 1
+        new_total_frames = absolute_end - absolute_start + 1
 
         if new_total_frames <= 0:
             raise ValueError("트림 후 남은 프레임이 없습니다.")
+
+        overlay_frame_info = build_overlay_frame_info(new_total_frames, absolute_start)
 
         # 인코딩 옵션 설정
         encoding_options = get_optimal_encoding_options(encoding_options)
@@ -603,7 +658,7 @@ def process_image_sequence(
             'framerate': str(framerate),
             'probesize': '100M',
             'analyzeduration': '100M',
-            'start_number': str(start_frame)  # 트림된 시작 프레임
+            'start_number': str(absolute_start)
         }
 
         # frames 옵션 추가 (트림된 총 프레임 수)
@@ -645,7 +700,8 @@ def process_image_sequence(
                 shot_label=shot_label,
                 debug_mode=debug_mode,
                 output_label=output_label,
-                overlay_font_size=overlay_font_size
+                overlay_font_size=overlay_font_size,
+                overlay_frame_info=overlay_frame_info
             )
 
         # 출력 스트림 설정
@@ -1050,9 +1106,11 @@ def process_all_media(
         total_memory = psutil.virtual_memory().total
         memory_threshold = total_memory * 0.8
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        future_to_index = {}
+        error_occurred = False
+
+        try:
             for idx, ((input_file, _, _), (start_frame, end_frame)) in enumerate(zip(media_files, combined_frame_ranges)):
                 if debug_mode:
                     logger.debug(f"파일 처리: {input_file}")
@@ -1073,23 +1131,32 @@ def process_all_media(
                     overlay_output_name,
                     overlay_font_size
                 )
-                futures.append((idx, future))
+                future_to_index[future] = idx
 
-            # 순서대로 결과 수집 및 진행률 업데이트
             total_files = len(media_files)
-            for idx, future in futures:
+            completed = 0
+
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
                 try:
                     temp_output = future.result()
-                    processed_files[idx] = temp_output  # 원래 순서대로 저장
+                    processed_files[idx] = temp_output
                     temp_files_to_remove.append(temp_output)
-                    
-                    if progress_callback:
-                        progress = int(((idx + 1) / total_files) * 75)
+                    completed += 1
+
+                    if progress_callback and total_files:
+                        progress = int((completed / total_files) * 75)
                         progress_callback(progress)
-                        
                 except Exception as e:
-                    logger.error(f"'{media_files[idx][0]}' 처리 중 오류 발생: {e}")
+                    error_occurred = True
+                    logger.error("'%s' 처리 중 오류 발생: %s", media_files[idx][0], e)
+                    for pending_future in future_to_index.keys():
+                        if pending_future is future:
+                            continue
+                        pending_future.cancel()
                     raise
+        finally:
+            executor.shutdown(wait=not error_occurred, cancel_futures=error_occurred)
 
         # 빈 항목 제거
         processed_files = [f for f in processed_files if f is not None]
@@ -1203,39 +1270,27 @@ def get_total_duration(media_files: List[Tuple[str, int, int]], encoding_options
     framerate = float(encoding_options.get('r', 30))
 
     for input_file, start_frame, end_frame in media_files:
+        metadata = get_media_metadata(input_file)
         if is_image_sequence(input_file):
-            pattern = input_file.replace('\\', '/')
-            glob_pattern = re.sub(r'%\d*d', '*', pattern)
-            image_files = sorted(glob.glob(glob_pattern))
-            
-            if not image_files:
-                continue
-
-            total_frames = len(image_files)
-            
-            # 프레임 번호 추출하여 원본 시작 프레임 확인
-            frame_number_pattern = re.compile(r'(\d+)\.(\w+)$')
-            first_image_match = frame_number_pattern.search(os.path.basename(image_files[0]))
-            original_start_frame = int(first_image_match.group(1)) if first_image_match else 0
-
-            # 실제 사용될 프레임 범위 계산
-            actual_start = start_frame
-            actual_end = end_frame if end_frame > 0 else total_frames + original_start_frame - 1
-            
+            fps = metadata.fps or framerate or 30.0
+            original_start = metadata.sequence_start or 0
+            actual_start = start_frame or original_start
+            if end_frame > 0:
+                actual_end = end_frame
+            elif metadata.sequence_end:
+                actual_end = metadata.sequence_end
+            else:
+                actual_end = original_start + metadata.total_frames - 1
             num_frames = actual_end - actual_start + 1
-            if num_frames > 0:
-                total_duration += num_frames / framerate
+            if num_frames > 0 and fps > 0:
+                total_duration += num_frames / fps
         else:
-            try:
-                probe = ffmpeg.probe(input_file, cmd=FFPROBE_PATH)
-                duration = float(probe['format']['duration'])
-                
-                # 비디오는 프레임 기반 트림이 아닌 시간 기반으로 길이를 다시 계산해야 할 수 있으나,
-                # 여기서는 단순화를 위해 전체 길이를 사용합니다.
-                # 정확도를 높이려면 process_video_file의 트림 로직을 반영해야 합니다.
+            duration = metadata.duration
+            if duration:
                 total_duration += duration
-            except (ffmpeg.Error, KeyError) as e:
-                logger.warning(f"'{input_file}'의 길이를 가져오는 중 오류: {e}")
+            elif metadata.total_frames and (metadata.fps or framerate):
+                fps = metadata.fps or framerate
+                total_duration += metadata.total_frames / fps
 
     return total_duration
 
@@ -1434,49 +1489,22 @@ def estimate_filesize_accurate(
         if not temp_files:
             raise RuntimeError("임시 파일 생성에 실패했습니다.")
 
-        # 2. 생성된 임시 파일들을 concat demuxer로 연결
-        file_list_path = create_temp_file_list(temp_files)
-        
-        analysis_options = get_optimal_encoding_options(encoding_options)
-        analysis_options.pop('pass', None)
-        
-        # 가장 빠른 프리셋으로 강제 변경
-        codec = analysis_options.get("c:v")
-        if codec in ["h264_nvenc", "hevc_nvenc"]:
-            analysis_options['preset'] = 'p1'
-        elif codec in ["libx264", "libx265"]:
-            analysis_options['preset'] = 'ultrafast'
+        total_size_bytes = 0
+        for temp_file in temp_files:
+            try:
+                total_size_bytes += os.path.getsize(temp_file)
+            except OSError as exc:
+                logger.warning("임시 파일 크기 확인 실패(%s): %s", temp_file, exc)
 
-        input_options = {'safe': '0', 'f': 'concat', 'protocol_whitelist': 'file,pipe'}
-        stream = ffmpeg.input(file_list_path, **input_options)
-        stream = ffmpeg.output(
-            stream, 'NUL' if os.name == 'nt' else '/dev/null', **analysis_options, f='null'
-        ).overwrite_output()
-
-        if debug_mode:
-            logger.debug(f"정밀 분석 명령어: {' '.join(ffmpeg.compile(stream, cmd=FFMPEG_PATH))}")
-
-        # 3. 전체 분석 실행
-        _, stderr_bytes = ffmpeg.run(stream, cmd=FFMPEG_PATH, capture_stdout=True, capture_stderr=True)
-        stderr_str = stderr_bytes.decode(errors='ignore')
-
-        match_size = re.search(r"video:(\d+)KiB", stderr_str)
-        if match_size:
-            total_size_kib = int(match_size.group(1))
-            estimated_size_mb = total_size_kib / 1024
-            logger.info(f"정밀 분석 성공: 총 비디오 크기 {total_size_kib} KiB -> {estimated_size_mb:.2f} MB")
-            return estimated_size_mb
-        else:
-            logger.error(f"정밀 분석 결과에서 비디오 크기를 찾지 못했습니다. stderr: {stderr_str}")
-            return 0.0
+        estimated_size_mb = total_size_bytes / (1024 * 1024) if total_size_bytes else 0.0
+        logger.info("정밀 분석: 총 %d개 파일, 예상 크기 %.2f MB", len(temp_files), estimated_size_mb)
+        return estimated_size_mb
 
     except Exception as e:
         logger.exception(f"정밀 분석 중 예외 발생: {e}")
         return 0.0
     finally:
         # 모든 임시 파일 정리
-        if 'file_list_path' in locals() and os.path.exists(file_list_path):
-            os.remove(file_list_path)
         for f in temp_files:
             if os.path.exists(f):
                 os.remove(f)

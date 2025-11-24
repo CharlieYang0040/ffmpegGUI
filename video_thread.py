@@ -15,7 +15,36 @@ from PIL import Image
 import json
 from typing import Dict, Optional, Tuple
 import time
-from utils import get_debug_mode, normalize_path_separator
+from utils import get_debug_mode, normalize_path_separator, get_media_metadata
+
+
+def fit_frame_to_box(frame: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
+    if target_width <= 0 or target_height <= 0:
+        return frame
+
+    img_height, img_width = frame.shape[:2]
+    if img_height <= 0 or img_width <= 0:
+        return frame
+
+    aspect_ratio = img_width / img_height
+    target_ratio = target_width / target_height
+
+    if aspect_ratio > target_ratio:
+        new_width = target_width
+        new_height = int(target_width / aspect_ratio)
+    else:
+        new_height = target_height
+        new_width = int(target_height * aspect_ratio)
+
+    new_width = max(1, new_width)
+    new_height = max(1, new_height)
+
+    resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+    background = np.zeros((target_height, target_width, frame.shape[2]), dtype=frame.dtype)
+    y_offset = max(0, (target_height - new_height) // 2)
+    x_offset = max(0, (target_width - new_width) // 2)
+    background[y_offset:y_offset + new_height, x_offset:x_offset + new_width] = resized
+    return background
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -93,6 +122,48 @@ def load_image_preview_pixmap(path: str, target_width: int, target_height: int) 
     return pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
+def load_video_preview_pixmap(path: str, target_width: int, target_height: int) -> Optional[QPixmap]:
+    normalized = normalize_path_separator(path)
+    metadata = get_media_metadata(normalized)
+    width = metadata.width
+    height = metadata.height
+
+    if width <= 0 or height <= 0:
+        logger.debug("프리뷰 해상도 정보를 찾을 수 없어 비디오 프리뷰를 생략합니다: %s", normalized)
+        return None
+
+    ffmpeg_options = {}
+    if not get_debug_mode():
+        ffmpeg_options['v'] = 'quiet'
+
+    try:
+        stream = (
+            ffmpeg
+            .input(normalized, **ffmpeg_options)
+            .output('pipe:', format='rawvideo', pix_fmt='rgb24', vframes=1)
+        )
+        out, _ = stream.run(capture_stdout=True, capture_stderr=True, cmd=FFMPEG_PATH)
+        frame = np.frombuffer(out, np.uint8)
+        expected_size = width * height * 3
+        if expected_size <= 0 or frame.size != expected_size:
+            logger.debug(
+                "비디오 프리뷰 프레임 크기 불일치 expected=%s, actual=%s (%s)",
+                expected_size,
+                frame.size,
+                normalized
+            )
+            return None
+        frame = frame.reshape((height, width, 3))
+        fitted = fit_frame_to_box(frame, target_width, target_height)
+        height_res, width_res, _ = fitted.shape
+        bytes_per_line = 3 * width_res
+        q_image = QImage(fitted.data, width_res, height_res, bytes_per_line, QImage.Format_RGB888)
+        return QPixmap.fromImage(q_image.copy())
+    except Exception as exc:
+        logger.warning("비디오 프리뷰 로드 실패(%s): %s", normalized, exc)
+        return None
+
+
 class VideoThread(QThread):
     frame_ready = Signal(QPixmap)
     finished = Signal()
@@ -110,13 +181,15 @@ class VideoThread(QThread):
         self.process = None
         self.thread_pool = ThreadPoolExecutor(max_workers=4)
         
+        self.metadata = get_media_metadata(self.file_path)
+
         try:
             if '%' in self.file_path:  # 이미지 시퀀스 처리
                 logger.info(f"이미지 시퀀스 처리 시작: {self.file_path}")
                 self.process_image_sequence()
             else:
                 logger.info(f"비디오 파일 처리 시작: {self.file_path}")
-                self.video_info = self.get_video_properties(self.file_path)
+                self.video_info = self._build_video_info_from_metadata()
         except Exception as e:
             logger.error(f"Error processing file: {e}")
             self.process_fallback()
@@ -138,6 +211,30 @@ class VideoThread(QThread):
         self.total_frames = int(duration * self.frame_rate) if duration > 0 else len(self.image_files)
         self.current_frame = 0
         self.thread_pool = ThreadPoolExecutor(max_workers=4)
+
+    def _build_video_info_from_metadata(self) -> Dict[str, str]:
+        metadata = getattr(self, "metadata", None)
+        if not metadata or not metadata.width or not metadata.height:
+            return self.get_video_properties(self.file_path)
+
+        fps = metadata.fps or 30.0
+        duration = metadata.duration
+        if (not duration) and metadata.total_frames and fps:
+            duration = metadata.total_frames / fps
+
+        return {
+            'width': str(metadata.width),
+            'height': str(metadata.height),
+            'r_frame_rate': self._format_fps_string(fps),
+            'duration': str(duration or 0)
+        }
+
+    def _format_fps_string(self, fps: float) -> str:
+        if fps <= 0:
+            return "30/1"
+        if abs(fps - round(fps)) < 1e-3:
+            return f"{int(round(fps))}/1"
+        return f"{fps:.3f}"
 
     def get_video_properties(self, input_file: str) -> Dict[str, str]:
         ffprobe_path = FFPROBE_PATH
@@ -203,17 +300,24 @@ class VideoThread(QThread):
         
         logger.info(f"이미지 시퀀스 로드 완료: {len(self.image_files)}개 파일")
         
-        try:
-            with Image.open(self.image_files[0]) as img:
-                width, height = img.size
-        except Exception:
-            width, height = self._probe_image_resolution(self.image_files[0])
-        
+        width = int(self.metadata.width) if self.metadata and self.metadata.width else 0
+        height = int(self.metadata.height) if self.metadata and self.metadata.height else 0
+
+        if width <= 0 or height <= 0:
+            try:
+                with Image.open(self.image_files[0]) as img:
+                    width, height = img.size
+            except Exception:
+                width, height = self._probe_image_resolution(self.image_files[0])
+
+        fps = self.metadata.fps if self.metadata and self.metadata.fps else 30.0
+        duration = len(self.image_files) / fps if fps > 0 else len(self.image_files) / 30
+
         self.video_info = {
-            'width': str(width),
-            'height': str(height),
-            'r_frame_rate': '30/1',  # 기본 프레임 레이트
-            'duration': str(len(self.image_files) / 30)  # 대략적인 지속 시간
+            'width': str(width or 640),
+            'height': str(height or 480),
+            'r_frame_rate': self._format_fps_string(fps),
+            'duration': str(duration)
         }
 
     def process_fallback(self):
@@ -516,30 +620,6 @@ class VideoThread(QThread):
         return background
 
     def resize_frame(self, frame, target_width, target_height):
-        # 프레임의 종횡비 유지하면서 리사이즈
-        img_height, img_width = frame.shape[:2]
-        aspect_ratio = img_width / img_height
-        target_ratio = target_width / target_height
-
-        if aspect_ratio > target_ratio:
-            # 이미지가 더 넓은 경우
-            new_width = target_width
-            new_height = int(target_width / aspect_ratio)
-        else:
-            # 이미지가 더 높은 경우
-            new_height = target_height
-            new_width = int(target_height * aspect_ratio)
-
-        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-        
-        # 빈 프레임 생성 (검은색 배경)
-        background = np.zeros((target_height, target_width, 3), dtype=np.uint8)
-        
-        # 리사이즈된 프레임을 중앙에 붙이기
-        y_offset = (target_height - new_height) // 2
-        x_offset = (target_width - new_width) // 2
-        background[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = resized_frame
-        
-        return background
+        return fit_frame_to_box(frame, target_width, target_height)
 
 

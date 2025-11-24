@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QSlider, QDoubleSpinBox, QSpinBox,
     QProgressBar, QDialog, QPushButton, QApplication
 )
-from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread, QTimer, QTime
+from PySide6.QtCore import Qt, QSettings, QItemSelectionModel, Signal, QThread, QTimer, QTime, QThreadPool
 from PySide6.QtGui import QCursor, QPixmap, QIcon, QIntValidator, QShortcut, QKeySequence
 
 from ffmpeg_utils import process_all_media, estimate_filesize_fast, estimate_filesize_accurate
@@ -21,8 +21,9 @@ from update import UpdateChecker
 from commands import RemoveItemsCommand, ReorderItemsCommand, ClearListCommand, AddItemsCommand, Command
 from drag_drop_list_widget import DragDropListWidget
 from droppable_line_edit import DroppableLineEdit
-from video_thread import VideoThread, load_image_preview_pixmap
+from video_thread import VideoThread
 from video_thread import set_ffmpeg_path as set_video_thread_path
+from preview_loader import PreviewWorker
 from utils import (
     process_file,
     is_video_file,
@@ -413,6 +414,8 @@ class FFmpegGui(QWidget):
         self.undo_stack = []
         self.redo_stack = []
         self.update_checker = UpdateChecker()
+        self.preview_pool = QThreadPool.globalInstance()
+        self.preview_request_id = 0
         self.color_manager: Optional[ColorPipelineManager] = None
         self.color_mgmt_options = {
             "enabled": self.settings.value("color_mgmt/enabled", False, type=bool),
@@ -520,6 +523,7 @@ class FFmpegGui(QWidget):
     def create_play_button(self, control_layout):
         self.play_button = QPushButton('▶️ 재생')
         self.play_button.clicked.connect(self.toggle_play)
+        self.play_button.setEnabled(False)
         control_layout.addWidget(self.play_button)
 
     def create_speed_control(self, control_layout):
@@ -1599,15 +1603,13 @@ class FFmpegGui(QWidget):
             if file_path:
                 self.stop_current_preview()
                 logger.info(f"미리보기 업데이트: {file_path}")
-
-                if is_video_file(file_path):
-                    self.show_video_preview(file_path)
-                elif is_image_file(file_path):
-                    self.show_image_preview(file_path)
-                else:
-                    logger.warning(f"지원하지 않는 파일 형식입니다: {file_path}")
+                is_video = is_video_file(file_path)
+                self.play_button.setEnabled(is_video)
+                self.preview_label.setText("미리보기 로드 중...")
+                self._request_preview_pixmap(file_path)
             else:
                 self.preview_label.clear()
+                self.play_button.setEnabled(False)
         except Exception as e:
             logger.error(f"미리보기 업데이트 중 오류: {str(e)}")
 
@@ -1616,40 +1618,6 @@ class FFmpegGui(QWidget):
             self.video_thread.stop()
             self.video_thread.wait()
             self.video_thread = None
-
-    def show_video_preview(self, file_path: str):
-        self.create_video_thread()
-        self.play_button.setEnabled(True)
-
-        self.video_thread.get_video_info()
-        self.video_thread.wait()
-        first_frame = self.video_thread.get_video_frame(0)
-        if first_frame and not first_frame.isNull():
-            self.update_video_frame(first_frame)
-        else:
-            self.preview_label.clear()
-
-    def show_image_preview(self, file_path: str):
-        if '%' in file_path:
-            original_pattern = file_path
-            file_path = get_first_sequence_file(file_path)
-            if not file_path:
-                logger.warning(f"시퀀스 파일을 찾을 수 없습니다: {original_pattern}")
-                return
-
-        if os.path.exists(file_path):
-            pixmap = load_image_preview_pixmap(
-                file_path,
-                self.preview_label.width(),
-                self.preview_label.height()
-            )
-            if pixmap and not pixmap.isNull():
-                self.preview_label.setPixmap(pixmap)
-            else:
-                logger.warning(f"이미지를 로드할 수 없습니다: {file_path}")
-                self.preview_label.clear()
-        else:
-            logger.warning(f"파일이 존재하지 않습니다: {file_path}")
 
     def set_video_info(self, width: int, height: int):
         self.current_video_width = width
@@ -1750,6 +1718,27 @@ class FFmpegGui(QWidget):
                 self.current_video_height
             )
             self.preview_label.setPixmap(scaled_pixmap)
+
+    def _request_preview_pixmap(self, file_path: str):
+        self.preview_request_id += 1
+        request_id = self.preview_request_id
+        worker = PreviewWorker(
+            request_id,
+            file_path,
+            self.preview_label.width(),
+            self.preview_label.height()
+        )
+        worker.signals.finished.connect(self.on_preview_ready)
+        self.preview_pool.start(worker)
+
+    def on_preview_ready(self, request_id: int, file_path: str, pixmap: Optional[QPixmap]):
+        if request_id != self.preview_request_id:
+            return
+        if pixmap and not pixmap.isNull():
+            self.preview_label.setPixmap(pixmap)
+        else:
+            logger.warning("미리보기를 로드하지 못했습니다: %s", file_path)
+            self.preview_label.clear()
 
     def update_video_frame(self, pixmap: QPixmap):
         if not pixmap.isNull():

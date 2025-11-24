@@ -12,6 +12,12 @@ import shutil
 import sys
 import ffmpeg
 
+from metadata_cache import (
+    metadata_cache,
+    MediaMetadata,
+    set_ffprobe_path as set_metadata_cache_ffprobe_path,
+)
+
 # FFprobe 경로를 위한 전역 변수
 FFPROBE_PATH = None
 
@@ -20,6 +26,7 @@ def set_ffprobe_path(path: str):
     global FFPROBE_PATH
     FFPROBE_PATH = path
     logger.info(f"utils.py에 FFprobe 경로 설정: {FFPROBE_PATH}")
+    set_metadata_cache_ffprobe_path(path)
 
 def is_image_sequence(input_file: str) -> bool:
     """
@@ -88,6 +95,14 @@ def is_image_file(file_path):
     """이미지 파일인지 확인합니다."""
     image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.exr', '.dpx', '.tif', '.tiff']
     return os.path.splitext(file_path)[1].lower() in image_extensions
+
+def get_media_metadata(file_path: str) -> MediaMetadata:
+    """metadata_cache를 통한 메타데이터 조회"""
+    try:
+        return metadata_cache.get(file_path)
+    except Exception as exc:  # pragma: no cover - 방어적
+        logger.warning("메타데이터 조회 실패(%s): %s", file_path, exc)
+        return MediaMetadata()
 
 def is_video_file(file_path):
     _, ext = os.path.splitext(file_path)
@@ -294,71 +309,16 @@ def get_frame_range_from_sequence(sequence_path: str) -> (int, int):
     if not is_image_sequence(sequence_path):
         return 0, 0
 
-    try:
-        pattern = sequence_path.replace('\\', '/')
-        glob_pattern = re.sub(r'%\d*d', '*', pattern)
-        files = glob.glob(glob_pattern)
-
-        if not files:
-            return 0, 0
-
-        frame_numbers = []
-        # 파일 이름에서 숫자 부분을 추출하기 위한 정규식 재구성
-        # 예: "shot.%04d.exr" -> "shot.(\\d+).exr"
-        regex_pattern_str = re.sub(r'%\d*d', r'(\\d+)', os.path.basename(pattern))
-        regex_pattern = re.compile(regex_pattern_str)
-
-        for f in files:
-            match = regex_pattern.search(os.path.basename(f))
-            if match:
-                frame_numbers.append(int(match.group(1)))
-
-        if frame_numbers:
-            return min(frame_numbers), max(frame_numbers)
-        
-    except Exception as e:
-        logger.error(f"시퀀스 프레임 범위 분석 중 오류 발생: {e}")
-
-    return 0, 0
+    metadata = get_media_metadata(sequence_path)
+    if metadata.sequence_start or metadata.sequence_end:
+        return metadata.sequence_start, metadata.sequence_end
+    return 0, metadata.total_frames
 
 
 def get_total_frames(file_path: str) -> int:
     """미디어 파일의 총 프레임 수를 반환합니다."""
-    try:
-        if is_image_sequence(file_path):
-            pattern = file_path.replace('\\', '/')
-            glob_pattern = re.sub(r'%\d*d', '*', pattern)
-            image_files = glob.glob(glob_pattern)
-            return len(image_files)
-        else:
-            probe = ffmpeg.probe(file_path, cmd=FFPROBE_PATH)
-            video_info = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-            if video_info and 'nb_frames' in video_info:
-                total_frames = int(video_info['nb_frames'])
-                if total_frames > 0:
-                    return total_frames
-
-            # nb_frames가 없거나 0인 경우 duration과 framerate로 계산
-            if video_info and 'duration' in video_info and 'r_frame_rate' in video_info:
-                duration = float(video_info['duration'])
-                fps = eval(video_info['r_frame_rate'])
-                return int(duration * fps)
-
-            # 스트림 정보에도 없을 경우 format 정보 확인
-            if 'format' in probe and 'duration' in probe['format']:
-                 duration = float(probe['format']['duration'])
-                 # 비디오 스트림이 있다면 프레임레이트 가져오기
-                 fps = 30 # 기본값
-                 if video_info and 'r_frame_rate' in video_info:
-                     fps = eval(video_info['r_frame_rate'])
-                 return int(duration * fps)
-
-    except (ffmpeg.Error, StopIteration, FileNotFoundError) as e:
-        logger.error(f"'{file_path}'의 총 프레임 수를 가져오는 중 오류 발생: {e}")
-    except Exception as e:
-        logger.exception(f"'{file_path}'의 총 프레임 수를 가져오는 중 예외 발생: {e}")
-
-    return 0 # 오류 발생 시 0 반환
+    metadata = get_media_metadata(file_path)
+    return metadata.total_frames
 
 
 class FFmpegManager:

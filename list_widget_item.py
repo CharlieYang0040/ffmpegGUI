@@ -4,6 +4,8 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QSpinBox
 from PySide6.QtCore import Qt, QEvent
 import os
 
+from metadata_cache import MediaMetadata
+
 
 class ListWidgetItem(QWidget):
     def __init__(self, file_path, start_frame=0, end_frame=0, parent=None):
@@ -49,6 +51,33 @@ class ListWidgetItem(QWidget):
 
     def get_frame_range(self):
         return self.start_frame_spinbox.value(), self.end_frame_spinbox.value()
+
+    def apply_metadata(self, metadata: MediaMetadata):
+        if not metadata:
+            return
+
+        if metadata.is_sequence:
+            start_frame = metadata.sequence_start
+            end_frame = metadata.sequence_end or metadata.total_frames
+        else:
+            start_frame = 0
+            end_frame = metadata.total_frames
+
+        if end_frame <= 0:
+            return
+
+        self.start_frame_spinbox.blockSignals(True)
+        self.end_frame_spinbox.blockSignals(True)
+        self.start_frame_spinbox.setValue(max(0, start_frame))
+        self.end_frame_spinbox.setValue(max(self.start_frame_spinbox.value(), end_frame))
+        self.start_frame_spinbox.blockSignals(False)
+        self.end_frame_spinbox.blockSignals(False)
+        self.validate_frame_range()
+
+        if metadata.width and metadata.height:
+            fps_display = f"{metadata.fps:.2f}fps" if metadata.fps else ""
+            tooltip = f"{self.file_path}\n{metadata.width}x{metadata.height} {fps_display}"
+            self.label.setToolTip(tooltip.strip())
 
     def validate_frame_range(self):
         start_frame = self.start_frame_spinbox.value()
