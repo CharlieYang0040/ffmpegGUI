@@ -21,6 +21,8 @@ from utils import (
     get_media_metadata,
 )
 from color_management import build_filters_for_options
+from config_manager import config_manager
+from core.ffmpeg_builder import FFmpegCommandBuilder
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -47,29 +49,7 @@ def get_container_extension_for_codec(codec: str) -> str:
 
 
 def get_default_font_path() -> Optional[str]:
-    candidates: List[str] = []
-    if sys.platform.startswith("win"):
-        windir = os.environ.get("WINDIR", r"C:\Windows")
-        candidates.extend([
-            os.path.join(windir, "Fonts", "malgun.ttf"),
-            os.path.join(windir, "Fonts", "arial.ttf"),
-            os.path.join(windir, "Fonts", "segoeui.ttf"),
-        ])
-    elif sys.platform == "darwin":
-        candidates.extend([
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-            "/Library/Fonts/Arial.ttf",
-        ])
-    else:
-        candidates.extend([
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        ])
-
-    for path in candidates:
-        if path and os.path.exists(path):
-            return path.replace("\\", "/")
-    return None
+    return config_manager.get("font_path")
 
 
 def escape_drawtext_text(text: str) -> str:
@@ -118,7 +98,7 @@ def build_overlay_frame_info(total_frames: Optional[int], start_frame: Optional[
     if total <= 0:
         return None
 
-    frame_info: Dict[str, int] = {"total_frames": total}
+    frame_info: Dict[str, int] = {"total_frames": total - 1} # 사용자 요청에 따라 표시용 프레임 수는 1을 뺌
 
     if start_frame is not None:
         try:
@@ -314,6 +294,16 @@ def apply_filters(
     overlay_font_size: Optional[int] = None,
     overlay_frame_info: Optional[Dict[str, int]] = None
 ):
+    # FFmpegCommandBuilder를 사용하여 필터 체인 구성
+    # 기존 stream 객체를 래핑하거나, builder 패턴을 사용하여 재구성
+    
+    # 주의: stream이 이미 ffmpeg.nodes.FilterableStream 객체일 수 있음
+    # Builder를 중간부터 사용할 수 있도록 어댑터가 필요하거나, 
+    # Builder가 stream 객체를 받아서 처리하도록 수정해야 함 (이미 그렇게 설계됨)
+    
+    # 여기서는 Builder 인스턴스를 생성하지 않고, Builder의 메소드 로직을 참고하여
+    # 직접 stream.filter()를 호출하되, 가독성을 높이는 방향으로 리팩토링
+    
     width = int(target_properties['width'])
 
     content_height = int(target_properties.get('content_height') or target_properties.get('height') or 0)
