@@ -120,8 +120,12 @@ class FFmpegGui(QWidget):
     def init_attributes(self):
         self.encoding_options = {
             "c:v": "h264_nvenc",
-            "preset": "slow",
-            "cq": "21",
+            "preset": "Visually Lossless",
+            "cq": "18",
+            "rc": "vbr",
+            "tune": "hq",
+            "multipass": "fullres",
+            "rc-lookahead": "32",
             "pix_fmt": "yuv420p",
             "colorspace": "bt709",
             "color_primaries": "bt709",
@@ -1013,8 +1017,10 @@ class FFmpegGui(QWidget):
 
         if presets:
             preset_combo.setEnabled(True)
+            preset_combo.blockSignals(True) # 시그널 차단: 아이템 추가 시 불필요한 이벤트 발생 방지
             preset_combo.clear()
             preset_combo.addItems(presets)
+            preset_combo.blockSignals(False) # 시그널 차단 해제
             
             if codec == "prores_ks":
                 current_profile = self.encoding_options.get("profile", "hq")
