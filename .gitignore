@@ -7,10 +7,12 @@
 
 # 빌드 폴더 무시
 /build
+/build2
 /lhcVideoDownloader/build
 
 # 배포 폴더 무시
 /dist
+/dist2
 /lhcVideoDownloader/dist
 
 # 로그 폴더 무시

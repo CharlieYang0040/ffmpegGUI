@@ -29,7 +29,10 @@ class ConfigManager:
         """기본 설정 로드"""
         # 기본 FFmpeg 경로 설정
         if getattr(sys, 'frozen', False):
-            base_path = sys._MEIPASS
+            if hasattr(sys, '_MEIPASS'):
+                base_path = sys._MEIPASS
+            else:
+                base_path = os.path.dirname(os.path.abspath(__file__))
             default_ffmpeg = os.path.join(base_path, "libs", "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe")
         else:
             # 개발 환경 기본값 (사용자 환경에 맞게 수정 필요할 수 있음)
