@@ -106,22 +106,21 @@ class ConfigManager:
         self.settings.sync()
 
     def get_ffmpeg_path(self) -> str:
-        path = self.get("ffmpeg_path")
         default_path = self._defaults.get("ffmpeg_path", "")
         
-        # 예전에 캐시 목적으로 자동 저장되었던 AppData 경로들을 내장 경로로 강제 업데이트
-        # (사용자가 수동으로 선택한 커스텀 경로가 아닌 AppData 캐시나 _MEI 임시 경로인 경우)
-        if path and (("LHCinema" in path and "ffmpegGUI" in path) or "_MEI" in path):
-            if default_path and os.path.exists(default_path) and os.path.normpath(default_path) != os.path.normpath(path):
-                logger.info("과거 임시/캐시 FFmpeg 파일 경로를 내장된 바이너리 경로로 리셋합니다.")
-                path = None
+        # 사용자의 특별 요청 사항: 
+        # 사용자가 이전에 저장했던 커스텀 경로나 캐시 경로가 있더라도 전부 무시하고, 
+        # 이번에 새로 배포/복사된 내장 버전 경로(default_path)가 있다면 무조건 그 최신 내장 버전을 강제로 사용함.
+        if default_path and os.path.exists(default_path):
+            self.set("ffmpeg_path", default_path)
+            return default_path
 
-        if not path or not os.path.exists(path):
-            # 경로가 유효하지 않거나 구버전 캐시인 경우 기본값으로 재설정
-            path = default_path
-            if os.path.exists(path) or path == "":
-                self.set("ffmpeg_path", path)
-        return path
+        # 만약 내장 경로가 알 수 없는 이유로 없다면, 앱의 설정값이나 빈 값 사용
+        path = self.get("ffmpeg_path")
+        if path and os.path.exists(path):
+            return path
+            
+        return ""
 
     def get_ffprobe_path(self) -> str:
         ffmpeg_path = self.get_ffmpeg_path()
