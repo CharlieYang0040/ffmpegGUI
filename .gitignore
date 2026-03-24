@@ -6,14 +6,13 @@
 /ffmpegGUI_venv
 
 # 빌드 폴더 무시
-/build
-/build2
-/lhcVideoDownloader/build
+/build*
+/lhcVideoDownloader/build*
 
 # 배포 폴더 무시
-/dist
-/dist2
-/lhcVideoDownloader/dist
+/dist*
+/lhcVideoDownloader/dist*
+*.exe
 
 # 로그 폴더 무시
 /log
