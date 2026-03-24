@@ -5,6 +5,8 @@ import logging
 from typing import Dict, Any, Optional
 from PySide6.QtCore import QSettings
 
+from utils import ffmpeg_manager
+
 logger = logging.getLogger(__name__)
 
 class ConfigManager:
@@ -27,16 +29,13 @@ class ConfigManager:
 
     def _load_defaults(self):
         """기본 설정 로드"""
-        # 기본 FFmpeg 경로 설정
-        if getattr(sys, 'frozen', False):
-            if hasattr(sys, '_MEIPASS'):
-                base_path = sys._MEIPASS
-            else:
-                base_path = os.path.dirname(os.path.abspath(__file__))
-            default_ffmpeg = os.path.join(base_path, "libs", "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe")
-        else:
-            # 개발 환경 기본값 (사용자 환경에 맞게 수정 필요할 수 있음)
-            default_ffmpeg = r"\\192.168.2.215\Share_151\art\ffmpeg-7.1\bin\ffmpeg.exe"
+        # FFmpegManager를 통해 AppData 경로의 바이너리 보장 및 가져오기
+        default_ffmpeg = ffmpeg_manager.ensure_ffmpeg_exists()
+        
+        # 만약 바이너리를 찾을 수 없다면 빈 문자열 처리
+        if not default_ffmpeg:
+            logger.warning("FFmpeg 바이너리를 찾지 못했습니다. 설정 기본값이 비어있게 됩니다.")
+            default_ffmpeg = ""
 
         self._defaults = {
             "ffmpeg_path": default_ffmpeg,
@@ -47,7 +46,7 @@ class ConfigManager:
                 "lut_size": 33
             },
             "overlay": {
-                "enabled": True,
+                "enabled": False,
                 "font_size": 48
             }
         }
@@ -108,10 +107,19 @@ class ConfigManager:
 
     def get_ffmpeg_path(self) -> str:
         path = self.get("ffmpeg_path")
+        default_path = self._defaults.get("ffmpeg_path", "")
+        
+        # 예전에 캐시 목적으로 자동 저장되었던 AppData 경로들을 내장 경로로 강제 업데이트
+        # (사용자가 수동으로 선택한 커스텀 경로가 아닌 AppData 캐시나 _MEI 임시 경로인 경우)
+        if path and (("LHCinema" in path and "ffmpegGUI" in path) or "_MEI" in path):
+            if default_path and os.path.exists(default_path) and os.path.normpath(default_path) != os.path.normpath(path):
+                logger.info("과거 임시/캐시 FFmpeg 파일 경로를 내장된 바이너리 경로로 리셋합니다.")
+                path = None
+
         if not path or not os.path.exists(path):
-            # 경로가 유효하지 않으면 기본값으로 재설정 시도
-            path = self._defaults["ffmpeg_path"]
-            if os.path.exists(path):
+            # 경로가 유효하지 않거나 구버전 캐시인 경우 기본값으로 재설정
+            path = default_path
+            if os.path.exists(path) or path == "":
                 self.set("ffmpeg_path", path)
         return path
 

@@ -8,8 +8,6 @@ REM Run Nuitka build command
 echo Building ffmpegGUI with Nuitka...
 python -m nuitka ^
     --standalone ^
-    --onefile ^
-    --onefile-no-compression ^
     --enable-plugin=pyside6 ^
     --enable-plugin=upx ^
     --upx-binary="D:\WORKDATA\upx-5.1.0-win64\upx.exe" ^

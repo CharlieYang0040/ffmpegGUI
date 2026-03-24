@@ -158,7 +158,7 @@ class FFmpegGui(QWidget):
             "output_view": config_manager.get("color_mgmt/output_view", ""),
             "lut_size": config_manager.get("color_mgmt/lut_size", 33),
         }
-        self.shot_overlay_enabled = config_manager.get("overlay/enabled", True)
+        self.shot_overlay_enabled = config_manager.get("overlay/enabled", False)
         self.shot_overlay_font_size = config_manager.get("overlay/font_size", 48)
         self.ensure_color_defaults()
 
@@ -580,7 +580,7 @@ class FFmpegGui(QWidget):
         ffmpeg_layout = QHBoxLayout()
         self.ffmpeg_label = QLabel("FFmpeg 경로:")
         self.ffmpeg_edit = QLineEdit()
-        self.ffmpeg_edit.setText(self.settings.value("ffmpeg_path", self.current_ffmpeg_path))
+        self.ffmpeg_edit.setText(self.current_ffmpeg_path)
         self.ffmpeg_edit.setAcceptDrops(False)
         self.ffmpeg_browse = QPushButton("찾아보기")
         self.ffmpeg_browse.clicked.connect(self.browse_ffmpeg)
@@ -1275,7 +1275,7 @@ class FFmpegGui(QWidget):
     def on_shot_overlay_toggled(self, state):
         enabled = state == Qt.CheckState.Checked.value
         self.shot_overlay_enabled = enabled
-        self.settings.setValue("overlay/shot_enabled", enabled)
+        config_manager.set("overlay/enabled", enabled)
         if hasattr(self, "shot_overlay_font_spin"):
             self.shot_overlay_font_spin.setEnabled(enabled)
 
