@@ -4,8 +4,26 @@ import tempfile
 import glob
 import re
 import logging
-import ffmpeg
-import psutil
+try:
+    import ffmpeg
+except ModuleNotFoundError:
+    class _MissingFFmpegPython:
+        class Error(Exception):
+            pass
+
+        def __getattr__(self, name):
+            raise ModuleNotFoundError("ffmpeg-python is required for FFmpeg processing")
+
+    ffmpeg = _MissingFFmpegPython()
+try:
+    import psutil
+except ModuleNotFoundError:
+    class _PsutilFallback:
+        @staticmethod
+        def cpu_count(logical=True):
+            return os.cpu_count() or 1
+
+    psutil = _PsutilFallback()
 import subprocess
 
 # 로깅 서비스 가져오기
@@ -13,6 +31,7 @@ from app.services.logging_service import LoggingService
 
 # FFmpegManager 싱글톤 가져오기
 from app.core.ffmpeg_manager import FFmpegManager
+from app.core.ffmpeg_process import decode_process_output
 
 # 로깅 설정
 logger = LoggingService().get_logger(__name__)
@@ -56,7 +75,7 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
     """
     ffmpeg_manager = FFmpegManager()
     ffprobe_path = ffmpeg_manager.get_ffprobe_path()
-    
+
     try:
         if is_image_sequence(input_file):
             # 이미지 시퀀스인 경우 첫 번째 이미지 파일을 사용하여 속성 추출
@@ -66,10 +85,10 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
             if not image_files:
                 logger.warning(f"이미지 시퀀스 '{input_file}'를 찾을 수 없습니다.")
                 return {}
-                
+
             # 첫 번째 이미지 파일로 속성 추출
             probe_input = image_files[0]
-            
+
             # PIL을 사용하여 이미지 크기 확인 (ffprobe가 실패할 경우 대비)
             try:
                 from PIL import Image
@@ -92,23 +111,23 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
         # ffprobe 명령어 실행
         if debug_mode:
             logger.debug(f"FFprobe 명령: {ffprobe_path} -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration,nb_frames -of default=noprint_wrappers=1:nokey=0 {probe_input}")
-        
+
         probe = ffmpeg.probe(probe_input, cmd=ffprobe_path)
         video_stream = next(
             (s for s in probe['streams'] if s['codec_type'] == 'video'),
             None
         )
-        
+
         if video_stream is None:
             logger.warning(f"'{input_file}'에서 비디오 스트림을 찾을 수 없습니다.")
             return {}
-        
+
         # 기본 비디오 속성 추출
         properties = {
             'width': video_stream.get('width', 0),
             'height': video_stream.get('height', 0),
         }
-        
+
         # 프레임 레이트 추출 및 계산
         if 'r_frame_rate' in video_stream:
             r_frame_rate = video_stream['r_frame_rate']
@@ -120,7 +139,7 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
             properties['r'] = fps
         else:
             properties['r'] = 30.0  # 기본값
-        
+
         # 지속 시간 추출
         if 'duration' in video_stream:
             properties['duration'] = float(video_stream['duration'])
@@ -128,7 +147,7 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
             properties['duration'] = float(probe['format']['duration'])
         else:
             properties['duration'] = 0.0
-        
+
         # 총 프레임 수 추출
         if 'nb_frames' in video_stream and video_stream['nb_frames'] != 'N/A' and int(video_stream['nb_frames']) > 0:
             properties['nb_frames'] = int(video_stream['nb_frames'])
@@ -140,24 +159,25 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
             properties['nb_frames'] = calculated_frames
             if debug_mode:
                 logger.debug(f"nb_frames 정보가 없어 계산: {properties['duration']} * {properties['r']} = {calculated_frames}")
-            
+
             # 추가 검증: ffprobe로 직접 프레임 수 확인 시도
             try:
                 cmd = [
-                    ffprobe_path, 
-                    '-v', 'error', 
-                    '-count_frames', 
-                    '-select_streams', 'v:0', 
-                    '-show_entries', 'stream=nb_read_frames', 
-                    '-of', 'default=noprint_wrappers=1:nokey=1', 
+                    ffprobe_path,
+                    '-v', 'error',
+                    '-count_frames',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=nb_read_frames',
+                    '-of', 'default=noprint_wrappers=1:nokey=1',
                     probe_input
                 ]
                 if debug_mode:
                     logger.debug(f"프레임 수 확인 명령: {' '.join(cmd)}")
-                
-                result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-                if result.returncode == 0 and result.stdout.strip() and result.stdout.strip() != 'N/A':
-                    frame_count = int(result.stdout.strip())
+
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                stdout = decode_process_output(result.stdout).strip()
+                if result.returncode == 0 and stdout and stdout != 'N/A':
+                    frame_count = int(stdout)
                     if frame_count > 0:
                         properties['nb_frames'] = frame_count
                         if debug_mode:
@@ -165,7 +185,7 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
             except Exception as e:
                 if debug_mode:
                     logger.debug(f"프레임 수 확인 중 오류: {e}")
-        
+
         # 오디오 스트림 존재 여부 확인
         audio_stream = next(
             (s for s in probe['streams'] if s['codec_type'] == 'audio'),
@@ -175,10 +195,10 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
             properties['a'] = True
             if 'sample_rate' in audio_stream:
                 properties['sample_rate'] = int(audio_stream['sample_rate'])
-        
+
         if debug_mode:
             logger.debug(f"비디오 속성: {properties}")
-        
+
         return properties
     except ffmpeg.Error as e:
         logger.error(f"'{input_file}'를 프로브하는 중 오류 발생: {e}")
@@ -213,7 +233,7 @@ def get_video_duration(input_file: str) -> float:
     """
     ffmpeg_manager = FFmpegManager()
     ffprobe_path = ffmpeg_manager.get_ffprobe_path()
-    
+
     try:
         probe = ffmpeg.probe(input_file, cmd=ffprobe_path)
         video_stream = next(
@@ -266,7 +286,7 @@ def get_target_properties(input_files: list, encoding_options: dict, debug_mode:
         if isinstance(file_path, (list, tuple)):
             # 튜플이나 리스트인 경우 첫 번째 요소(파일 경로)를 사용
             file_path = file_path[0]
-        
+
         if file_path and isinstance(file_path, str):
             first_valid_file = file_path
             break
@@ -317,14 +337,14 @@ def get_optimal_thread_count():
 def get_optimal_encoding_options(encoding_options: dict) -> dict:
     """기본 인코딩 옵션에 성능 최적화 옵션을 추가"""
     optimal_options = encoding_options.copy()
-    
+
     # CPU 스레드 최적화
     optimal_options.update({
         "threads": str(get_optimal_thread_count()),  # 최대 16개로 제한된 CPU 스레드 수
-        
+
         # 메모리 버퍼 최적화
         "thread_queue_size": "4096",     # 스레드 큐 크기
         "max_muxing_queue_size": "4096"  # 먹싱 큐 크기
     })
-    
+
     return optimal_options

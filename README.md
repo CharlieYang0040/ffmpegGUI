@@ -12,8 +12,8 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 
 ### 파일목록
 
-![image](https://github.com/user-attachments/assets/6f3189f9-405b-4ef2-bfd3-133b9b65d61a)  
-![image](https://github.com/user-attachments/assets/619be8ba-1891-4d12-9b8e-8d4347294c56)  
+![image](https://github.com/user-attachments/assets/6f3189f9-405b-4ef2-bfd3-133b9b65d61a)
+![image](https://github.com/user-attachments/assets/619be8ba-1891-4d12-9b8e-8d4347294c56)
 
 
 - 비디오 파일을 쉽게 추가하고 관리할 수 있습니다.
@@ -21,7 +21,7 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 
 ### 순서정렬
 
-![image](https://github.com/user-attachments/assets/7fea9482-ed54-4564-ad27-ca0d795498d0)  
+![image](https://github.com/user-attachments/assets/7fea9482-ed54-4564-ad27-ca0d795498d0)
 
 
 - 이름 순 정렬: 파일을 알파벳 순으로 정렬합니다.
@@ -31,7 +31,7 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 ### 트림기능
 
 ![image](https://github.com/user-attachments/assets/7b2bc81e-8567-490b-97d9-b9ad319d2a68)
-![image](https://github.com/user-attachments/assets/d73d5103-e787-4f37-90f4-ff3667602cbb)  
+![image](https://github.com/user-attachments/assets/d73d5103-e787-4f37-90f4-ff3667602cbb)
 
 
 - 전체 트림: 모든 비디오에 동일한 트림 설정을 적용합니다.
@@ -39,7 +39,7 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 
 ### 옵션설정
 
-![image](https://github.com/user-attachments/assets/7b59cbb9-30c8-41c9-bff9-c9d0db1008b6)  
+![image](https://github.com/user-attachments/assets/7b59cbb9-30c8-41c9-bff9-c9d0db1008b6)
 
 
 - 프레임레이트 조정: 1-60 FPS 범위 내 설정 가능
@@ -48,7 +48,7 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 
 ### 미리보기 기능
 
-![image](https://github.com/user-attachments/assets/1c24afa7-b1da-406a-80b5-e7d52b559597)  
+![image](https://github.com/user-attachments/assets/1c24afa7-b1da-406a-80b5-e7d52b559597)
 
 
 - 재생속도 조절이 가능한 미리보기 기능
@@ -56,17 +56,17 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 
 ### 자동 경로, 네이밍
 
-![image](https://github.com/user-attachments/assets/b5cfb6f0-ba3e-416c-9e2f-ba2229c20fc9)  
+![image](https://github.com/user-attachments/assets/b5cfb6f0-ba3e-416c-9e2f-ba2229c20fc9)
 
-![image](https://github.com/user-attachments/assets/af0818b1-4fdd-4123-8dc8-35efd4361e40)  
+![image](https://github.com/user-attachments/assets/af0818b1-4fdd-4123-8dc8-35efd4361e40)
 
 
 - 추가되는 파일명을 출력 경로에 자동으로 입력합니다.
 
 ### 출력 경로
 
-![image](https://github.com/user-attachments/assets/e0162672-2e79-4ea3-8098-dddc57759aac)  
-![image](https://github.com/user-attachments/assets/8dcb9641-d689-4fdd-b207-2524dcb30785)  
+![image](https://github.com/user-attachments/assets/e0162672-2e79-4ea3-8098-dddc57759aac)
+![image](https://github.com/user-attachments/assets/8dcb9641-d689-4fdd-b207-2524dcb30785)
 
 
 - 인코딩된 파일의 저장 위치를 지정할 수 있습니다.
@@ -75,7 +75,7 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 
 ### 실행취소, 다시실행
 
-![image](https://github.com/user-attachments/assets/7a21a537-1045-45b2-b9d0-f6914d41de70)  
+![image](https://github.com/user-attachments/assets/7a21a537-1045-45b2-b9d0-f6914d41de70)
 
 
 - 실행취소 Undo (Ctrl + Z)
@@ -84,7 +84,7 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 
 ### 인코딩 시작
 
-![image](https://github.com/user-attachments/assets/f517ced9-fbef-460b-889f-f7f096f65654)  
+![image](https://github.com/user-attachments/assets/f517ced9-fbef-460b-889f-f7f096f65654)
 
 
 - 설정한 옵션으로 인코딩 프로세스를 시작합니다.
@@ -92,7 +92,7 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 
 ### 업데이트 확인
 
-![image](https://github.com/user-attachments/assets/c528a119-d7c8-4222-935a-279070ffcd80)  
+![image](https://github.com/user-attachments/assets/c528a119-d7c8-4222-935a-279070ffcd80)
 
 
 - 최신 버전의 소프트웨어를 자동으로 확인하고 업데이트할 수 있습니다.
@@ -106,28 +106,36 @@ FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인�
 4. 인코딩 시작을 눌러 인코딩을 합니다.
 5. 진행 상황을 확인하고 완료될 때까지 기다립니다.
 
-## 빌드 방법
+## 빌드/실행 방법
 
 1. 이 저장소를 클론합니다:
-   ```
+   ```bash
    git clone https://github.com/CharlieYang0040/ffmpegGUI
-   ```
-2. 필요한 라이브러리를 설치합니다:
-   ```
-   pip install PyQt5 ffmpeg-python opencv-python-headless
-   ```
-3. 프로젝트 디렉토리로 이동합니다:
-   ```
    cd ffmpegGUI
    ```
-4. 애플리케이션을 실행합니다:
+2. 필요한 라이브러리를 설치합니다:
+   ```bash
+   python -m pip install -r requirements.txt
    ```
+3. 애플리케이션을 실행합니다:
+   ```bash
    python main.py
    ```
+4. 테스트를 실행합니다:
+   ```bash
+   python -m compileall -q app tests
+   python -m unittest discover -s tests -v
+   ```
+5. Windows exe를 빌드합니다:
+   ```bash
+   pyinstaller main.spec
+   ```
+
+FFmpeg가 저장된 경로, 앱 데이터 캐시, PATH에서 발견되지 않으면 첫 실행 시 Windows용 FFmpeg release essentials ZIP을 자동으로 다운로드해 사용자 데이터 디렉터리에 설치합니다.
 
 ## 주의사항
 
-- FFmpegGUI를 사용하기 위해서는 FFmpeg가 시스템에 설치되어 있어야 합니다.
+- FFmpeg는 앱이 자동으로 찾거나 다운로드합니다. 자동 설치가 실패하면 FFmpeg 실행 파일을 수동으로 선택할 수 있습니다.
 - 대용량 비디오 파일을 처리할 때는 충분한 저장 공간과 메모리가 필요할 수 있습니다.
 - 인코딩 과정은 컴퓨터 성능에 따라 시간이 오래 걸릴 수 있습니다.
 - 저작권이 있는 콘텐츠를 처리할 때는 관련 법규를 준수해야 합니다.

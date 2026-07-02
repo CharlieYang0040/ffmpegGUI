@@ -12,13 +12,13 @@ from PySide6.QtGui import QPixmap, QIcon, QImage # Added QImage for robust loadi
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 
-# Removed: from app.core.video_thread import VideoThread as MediaInfoLoaderThread 
 from app.core.image_sequence_loader import ImageSequenceLoaderThread # Keep image loader
 from app.utils.utils import is_video_file, is_image_file, get_resource_path
 from app.services.logging_service import LoggingService
 from app.ui.components.timeline import TimelineComponent
 from app.core.events import event_emitter, Events
 from app.core.ffmpeg_manager import FFmpegManager
+from app.core.ffmpeg_process import decode_process_output
 from PIL import Image # Added for image size reading
 
 # 로깅 서비스 설정
@@ -212,14 +212,16 @@ class MediaInfoFetcher(QRunnable):
                 input_file
             ]
             creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            result = subprocess.run(cmd, capture_output=True, text=True, creationflags=creationflags)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, creationflags=creationflags)
+            stdout = decode_process_output(result.stdout)
+            stderr = decode_process_output(result.stderr)
             
             if result.returncode != 0:
-                self.logger.error(f"FFprobe 실행 실패: {result.stderr}")
+                self.logger.error(f"FFprobe 실행 실패: {stderr}")
                 return {}
                 
             properties = {}
-            for line in result.stdout.splitlines():
+            for line in stdout.splitlines():
                 if '=' in line:
                     key, value = line.split('=', 1)
                     properties[key.strip()] = value.strip()
@@ -301,6 +303,7 @@ class PreviewAreaComponent:
         self.frame_timer = QTimer(self.parent) # Timer for displaying frames
         self.image_sequence_playback_state = PlaybackState.STOPPED
         self.expected_sequence_frame_index = 0 # 0-based index for next frame
+        self.playback_speed = 1.0
 
         self.timeline = None
         self.ffmpeg_manager = FFmpegManager()
@@ -1093,7 +1096,7 @@ class PreviewAreaComponent:
                  # 일시정지 -> 재생 (재개)
                  logger.info("이미지 시퀀스 재생 (재개)")
                  self.image_sequence_playback_state = PlaybackState.PLAYING
-                 interval = int(1000 / self.current_media_fps) if self.current_media_fps > 0 else 33
+                 interval = self._get_sequence_timer_interval()
                  self.frame_timer.start(interval)
                  self.update_play_button_state(PlaybackState.PLAYING)
             elif self.image_sequence_playback_state == PlaybackState.STOPPED:
@@ -1103,7 +1106,7 @@ class PreviewAreaComponent:
                  self._start_image_sequence_loading(self.current_media_path, self.current_media_start_frame_index)
                  # 상태 변경 및 타이머 시작
                  self.image_sequence_playback_state = PlaybackState.PLAYING
-                 interval = int(1000 / self.current_media_fps) if self.current_media_fps > 0 else 33
+                 interval = self._get_sequence_timer_interval()
                  self.frame_timer.start(interval)
                  self.update_play_button_state(PlaybackState.PLAYING) # 버튼 상태 업데이트
             else:
@@ -1202,49 +1205,54 @@ class PreviewAreaComponent:
             # 8. 재생 상태는 STOPPED로 유지 ( _stop_image_sequence_playback 에서 처리됨)
             logger.debug(f"이미지 시퀀스 프레임 탐색 완료: {requested_relative_frame} (절대 인덱스 {target_absolute_index})")
 
+    def _get_sequence_timer_interval(self) -> int:
+        """Calculate the image-sequence timer interval for the current speed."""
+        fps = self.current_media_fps if self.current_media_fps > 0 else 30.0
+        speed = self.playback_speed if self.playback_speed > 0 else 1.0
+        return max(1, int(1000 / (fps * speed)))
+
     def change_speed(self, speed: float):
         """재생 속도를 변경합니다."""
+        if speed <= 0:
+            logger.warning(f"재생 속도 값이 유효하지 않습니다: {speed}")
+            return
+
+        self.playback_speed = speed
         logger.debug(f"재생 속도 변경 요청: {speed:.1f}x")
         if self.is_video_mode:
             if self.media_player:
                 self.media_player.setPlaybackRate(speed)
                 logger.info(f"QMediaPlayer 재생 속도 변경: {speed:.1f}x")
         else:
-            # 이미지 시퀀스 타이머 간격 조절
-            if self.current_media_fps > 0 and speed > 0:
-                interval = int(1000 / (self.current_media_fps * speed))
-                if self.frame_timer.isActive():
-                    self.frame_timer.setInterval(interval)
-                    logger.info(f"이미지 시퀀스 타이머 간격 변경: {interval}ms ({speed:.1f}x)")
-                else:
-                     # 타이머가 비활성 상태면 간격만 저장하고 나중에 start 시 적용?
-                     # 현재 구현에서는 재생 시작 시 항상 새로 계산하므로 별도 저장 불필요
-                     pass
+            interval = self._get_sequence_timer_interval()
+            if self.frame_timer.isActive():
+                self.frame_timer.setInterval(interval)
+                logger.info(f"이미지 시퀀스 타이머 간격 변경: {interval}ms ({speed:.1f}x)")
             else:
-                logger.warning("FPS 또는 속도 정보가 유효하지 않아 타이머 간격 변경 불가")
+                logger.debug(f"이미지 시퀀스 재생 속도 저장: {speed:.1f}x")
 
     def __del__(self):
         """소멸자: 리소스 정리"""
         try:
             logger.debug("PreviewAreaComponent 소멸자 호출")
-            # 비디오 스레드 정리 (이미지 시퀀스용)
-            if hasattr(self, 'video_thread') and self.video_thread:
-                if self.video_thread.isRunning():
-                    self.video_thread.stop()
-                    # 짧게 대기 (블로킹 방지)
-                    if not self.video_thread.wait(500):
-                        logger.warning("소멸자에서 스레드 종료 대기 시간 초과")
-                
-                # 시그널 연결 해제
+
+            image_loader_thread = getattr(self, 'image_loader_thread', None)
+            if image_loader_thread:
+                logger.debug("소멸자: ImageSequenceLoaderThread 정리 시작")
+                if image_loader_thread.isRunning():
+                    image_loader_thread.stop()
+                    if not image_loader_thread.wait(500):
+                        logger.warning("소멸자에서 이미지 로더 스레드 종료 대기 시간 초과")
                 try:
-                    self._disconnect_all_signals()
-                except Exception as e:
-                    logger.warning(f"소멸자에서 시그널 연결 해제 실패: {str(e)}")
-                
-                self.video_thread = None
-                logger.debug("소멸자에서 비디오 스레드 정리 완료")
-            else:
-                logger.debug("기존 비디오 스레드 없음")
+                    image_loader_thread.error.disconnect(self.on_image_loader_error)
+                except (TypeError, RuntimeError):
+                    pass
+                try:
+                    image_loader_thread.finished.disconnect(self._cleanup_image_loader_thread)
+                except (TypeError, RuntimeError):
+                    pass
+                self.image_loader_thread = None
+                logger.debug("소멸자: ImageSequenceLoaderThread 정리 완료")
             
             # QMediaPlayer 정리
             if hasattr(self, 'media_player') and self.media_player:
@@ -1280,20 +1288,3 @@ class PreviewAreaComponent:
                 logger.error(f"소멸자: 이벤트 리스너 해제 중 오류: {str(e)}")
         except Exception as e:
             logger.error(f"PreviewAreaComponent 소멸자에서 오류 발생: {str(e)}")
-
-    def _disconnect_all_signals(self):
-        """모든 시그널 연결 해제"""
-        if not hasattr(self, 'video_thread') or not self.video_thread:
-            return
-        
-        # 모든 시그널 연결 해제
-        try:
-            self.video_thread.frame_ready.disconnect()
-            self.video_thread.finished.disconnect()
-            self.video_thread.playback_completed.disconnect()
-            self.video_thread.video_info_ready.disconnect()
-            self.video_thread.frame_changed.disconnect()
-            self.video_thread.state_changed.disconnect()
-            logger.debug("모든 시그널 연결 해제 완료")
-        except Exception as e:
-            logger.warning(f"모든 시그널 연결 해제 중 오류: {str(e)}") 

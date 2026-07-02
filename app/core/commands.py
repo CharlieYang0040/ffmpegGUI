@@ -357,7 +357,7 @@ class SetOutPointCommand(Command):
 class SeekFrameCommand(Command):
     """프레임 이동 명령"""
     
-    def __init__(self, timeline_widget, current_frame: int, target_frame: int, video_thread=None):
+    def __init__(self, timeline_widget, current_frame: int, target_frame: int):
         """
         프레임 이동 명령 초기화
         
@@ -365,24 +365,16 @@ class SeekFrameCommand(Command):
             timeline_widget: 타임라인 위젯
             current_frame: 현재 프레임
             target_frame: 이동할 프레임
-            video_thread: 비디오 스레드 (선택 사항)
         """
         super().__init__(f"프레임 이동: {current_frame} → {target_frame}")
         self.timeline_widget = timeline_widget
         self.current_frame = current_frame
         self.target_frame = target_frame
-        self.video_thread = video_thread
     
     def execute(self) -> bool:
         """프레임 이동 명령 실행"""
         try:
-            # 타임라인 위젯 프레임 설정
             self.timeline_widget.set_current_frame(self.target_frame)
-            
-            # 비디오 스레드가 있으면 해당 프레임으로 이동
-            if self.video_thread:
-                self.video_thread.seek_to_frame(self.target_frame)
-                
             return True
         except Exception as e:
             self.logger.error(f"프레임 이동 명령 실행 중 오류: {str(e)}")
@@ -391,18 +383,11 @@ class SeekFrameCommand(Command):
     def undo(self) -> bool:
         """프레임 이동 명령 취소"""
         try:
-            # 타임라인 위젯 프레임 설정
             self.timeline_widget.set_current_frame(self.current_frame)
-            
-            # 비디오 스레드가 있으면 해당 프레임으로 이동
-            if self.video_thread:
-                self.video_thread.seek_to_frame(self.current_frame)
-                
             return True
         except Exception as e:
             self.logger.error(f"프레임 이동 명령 취소 중 오류: {str(e)}")
             return False
 
-
 # 전역 명령 관리자 인스턴스
-command_manager = CommandManager() 
+command_manager = CommandManager()

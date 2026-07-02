@@ -3,6 +3,7 @@ import re
 import logging
 import ffmpeg
 import subprocess
+import tempfile
 
 # 로깅 서비스 가져오기
 from app.services.logging_service import LoggingService
@@ -12,6 +13,7 @@ from app.core.ffmpeg_manager import FFmpegManager
 
 # ffmpeg_core에서 필요한 함수 가져오기
 from app.core.ffmpeg_core import apply_filters, get_optimal_encoding_options, get_media_properties
+from app.core.ffmpeg_process import close_process_pipes, iter_decoded_lines, terminate_process
 
 # 로거 설정
 logger = LoggingService().get_logger(__name__)
@@ -39,13 +41,15 @@ class VideoProcessor:
         debug_mode: bool,
         idx: int,
         progress_callback=None,
-        use_frame_based_trim: bool = False
+        use_frame_based_trim: bool = False,
+        cancel_token=None,
     ) -> str:
         """
         비디오 파일을 처리하고 임시 출력 파일을 반환합니다.
         진행률 콜백을 통해 처리 진행 상황을 보고합니다.
         """
-        temp_output = f'temp_output_{idx}.mp4'
+        temp_fd, temp_output = tempfile.mkstemp(prefix=f'ffmpeggui_video_{idx}_', suffix='.mp4')
+        os.close(temp_fd)
         try:
             self.logger.info(f"비디오 파일 처리 시작: {input_file}")
             
@@ -137,6 +141,8 @@ class VideoProcessor:
                 # 트림 끝 프레임 계산
                 end_frame = total_frames - trim_end - 1
             
+            progress_duration = (new_total_frames / fps) if fps > 0 else duration
+
             if debug_mode:
                 self.logger.debug(f"비디오 속성: {video_properties}")
                 self.logger.debug(f"총 프레임 수: {total_frames}")
@@ -252,40 +258,53 @@ class VideoProcessor:
                 progress_callback(30)  # FFmpeg 명령 준비 완료
 
             # FFmpeg 실행 (진행률 모니터링)
-            process = subprocess.Popen(
-                ffmpeg.compile(stream, cmd=ffmpeg_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                bufsize=1
-            )
-            
-            # 진행률 모니터링
-            for line in process.stderr:
-                if debug_mode:
-                    self.logger.debug(line.strip())
-                
-                # 진행률 파싱 및 업데이트
-                if progress_callback and "time=" in line:
-                    try:
-                        time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
-                        if time_match:
-                            time_str = time_match.group(1)
-                            h, m, s = map(float, time_str.split(':'))
-                            current_seconds = h * 3600 + m * 60 + s
-                            # 0으로 나누기 방지
-                            if new_duration > 0:
-                                progress = min(30 + (current_seconds / new_duration) * 70, 100)
-                            else:
-                                progress = 50  # 총 기간을 알 수 없는 경우 기본값 사용
-                            progress_callback(int(progress))
-                    except Exception as e:
-                        self.logger.warning(f"진행률 파싱 오류: {e}")
-            
-            process.wait()
-            
+            process = None
+            stderr_lines = []
+            try:
+                process = subprocess.Popen(
+                    ffmpeg.compile(stream, cmd=ffmpeg_path),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                if cancel_token:
+                    cancel_token.register_process(process)
+
+                for line in iter_decoded_lines(process.stderr):
+                    stderr_lines.append(line)
+                    if debug_mode:
+                        self.logger.debug(line.strip())
+
+                    if progress_callback and "time=" in line:
+                        try:
+                            time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
+                            if time_match:
+                                time_str = time_match.group(1)
+                                h, m, s = map(float, time_str.split(':'))
+                                current_seconds = h * 3600 + m * 60 + s
+                                if progress_duration > 0:
+                                    progress = min(30 + (current_seconds / progress_duration) * 70, 100)
+                                else:
+                                    progress = 50
+                                progress_callback(int(progress))
+                        except Exception as e:
+                            self.logger.warning(f"진행률 파싱 오류: {e}")
+
+                process.wait()
+                if cancel_token:
+                    cancel_token.throw_if_cancelled()
+            except Exception:
+                if process and process.poll() is None:
+                    terminate_process(process)
+                raise
+            finally:
+                if cancel_token and process:
+                    cancel_token.unregister_process(process)
+                if process:
+                    close_process_pipes(process)
+
             if process.returncode != 0:
-                raise Exception(f"FFmpeg 실행 실패 (반환 코드: {process.returncode})")
+                stderr_tail = "\n".join(stderr_lines[-20:])
+                raise Exception(f"FFmpeg 실행 실패 (반환 코드: {process.returncode})\n{stderr_tail}")
             
             self.logger.info(f"비디오 파일 처리 완료: {input_file}")
             

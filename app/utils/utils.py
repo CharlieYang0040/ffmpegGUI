@@ -5,8 +5,37 @@ import os
 import re
 import glob
 from collections import defaultdict
-from PySide6.QtCore import QSettings
-import appdirs
+try:
+    from PySide6.QtCore import QSettings
+except ModuleNotFoundError:
+    class QSettings:
+        def __init__(self, *args, **kwargs):
+            self._values = {}
+
+        def value(self, key, default=None, type=None):
+            value = self._values.get(key, default)
+            if type is not None and value is not None:
+                try:
+                    if type is bool and isinstance(value, str):
+                        return value.lower() in {"1", "true", "yes", "on"}
+                    return type(value)
+                except (TypeError, ValueError):
+                    return default
+            return value
+
+        def setValue(self, key, value):
+            self._values[key] = value
+
+try:
+    import appdirs
+except ModuleNotFoundError:
+    class _AppDirsFallback:
+        @staticmethod
+        def user_data_dir(appname, appauthor):
+            base_dir = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            return os.path.join(base_dir, appauthor, appname)
+
+    appdirs = _AppDirsFallback()
 import shutil
 import sys
 
@@ -19,10 +48,10 @@ logger = logging.getLogger(__name__)
 
 def get_resource_path(relative_path=''):
     """리소스 파일의 절대 경로를 반환합니다.
-    
+
     Args:
         relative_path (str): 리소스 디렉토리 내의 상대 경로
-        
+
     Returns:
         str: 리소스 파일의 절대 경로
     """
@@ -32,7 +61,7 @@ def get_resource_path(relative_path=''):
     else:
         # 개발 환경에서 실행되는 경우
         base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    
+
     return os.path.join(base_path, 'resources', relative_path)
 
 def get_debug_mode():
@@ -50,18 +79,17 @@ def set_debug_mode(value: bool):
 def set_logger_level(is_debug: bool):
     """모든 관련 모듈의 로거 레벨을 설정합니다."""
     import logging
-    
+
     # 기본 로그 포맷 설정
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
+
     # 콘솔 핸들러 설정
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
-    
+
     # 모든 관련 모듈의 로거를 가져옵니다
     loggers = [
         logging.getLogger('__main__'),  # 메인 모듈
-        logging.getLogger('video_thread'),  # video_thread.py
         logging.getLogger('ffmpeg_utils'),  # ffmpeg_utils.py
         logging.getLogger('drag_drop_list_widget'),  # drag_drop_list_widget.py
         logging.getLogger('commands'),  # commands.py
@@ -70,7 +98,7 @@ def set_logger_level(is_debug: bool):
         logging.getLogger('gui'),  # gui.py
         logging.getLogger('utils')  # utils.py
     ]
-    
+
     level = logging.DEBUG if is_debug else logging.INFO
     for logger in loggers:
         # 기존 핸들러 제거
@@ -142,7 +170,7 @@ def process_image_file(file_path):
 
     logger.debug(f"처리 중인 이미지 파일: {file_path}")
     logger.debug(f"파일 이름에서 숫자 부분 검색 중: {base_name}")
-    
+
     # 파일명에서 숫자 네 자리를 찾기 (중간 또는 끝)
     match = re.search(r'(\d{4})', base_name)  # 숫자 네 자리를 찾도록 설정
     if match:
@@ -150,11 +178,11 @@ def process_image_file(file_path):
         logger.debug(f"찾은 숫자 부분: {number_part}")
         prefix = base_name[:match.start()]  # 숫자 앞부분
         logger.debug(f"프리픽스: {prefix}")
-        
+
         # 특수문자를 포함한 파일명에 대응하기 위해 re.escape 사용
         pattern = f"^{re.escape(prefix)}[0-9]+{re.escape(ext)}$"
         logger.debug(f"검색 패턴: {pattern}")
-        
+
         try:
             # glob을 사용하여 네트워크 경로에서도 파일 검색
             import glob
@@ -162,11 +190,11 @@ def process_image_file(file_path):
             matching_files = [os.path.basename(f) for f in glob.glob(search_path)]
             matching_files = [f for f in matching_files if re.match(pattern, f)]
             logger.debug(f"일치하는 파일 목록: {matching_files}")
-            
+
             if len(matching_files) > 1:
                 logger.info(f"이미지 시퀀스 발견: {prefix}%0{len(number_part)}d{ext}")
                 return os.path.join(dir_path, f"{prefix}%0{len(number_part)}d{ext}")
-                
+
         except Exception as e:
             logger.error(f"파일 검색 중 오류 발생: {str(e)}")
     else:
@@ -204,55 +232,14 @@ def format_drag_to_output(file_path):
     base_name = os.path.splitext(filename)[0]
     base_name = re.sub(r'%\d*d', '', base_name)
     base_name = base_name.rstrip('.')
-    
+
     logger.info(f"변환된 출력 이름: {base_name}")
     return base_name
 
 def normalize_path_separator(path):
     return path.replace('\\', '/')
 
-class FFmpegManager:
-    def __init__(self):
-        self.app_name = "ffmpegGUI"
-        self.company = "LHCinema"
-        # 사용자 앱 데이터 디렉토리 사용
-        self.app_dir = appdirs.user_data_dir(self.app_name, self.company)
-        self.ffmpeg_dir = os.path.join(self.app_dir, "ffmpeg")
-        self.ffmpeg_path = os.path.join(self.ffmpeg_dir, "ffmpeg.exe")
-        self.ffprobe_path = os.path.join(self.ffmpeg_dir, "ffprobe.exe")
-        
-    def ensure_ffmpeg_exists(self) -> str:
-        """FFmpeg 바이너리 존재 확인 및 설치"""
-        if os.path.exists(self.ffmpeg_path) and os.path.exists(self.ffprobe_path):
-            logger.info("기존 FFmpeg 바이너리 사용")
-            return self.ffmpeg_path
-            
-        logger.info("FFmpeg 바이너리 설치 시작")
-        os.makedirs(self.ffmpeg_dir, exist_ok=True)
-        
-        if getattr(sys, 'frozen', False):
-            # 실행 파일로 패키징된 경우
-            meipass_ffmpeg = os.path.join(sys._MEIPASS, "libs", "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe")
-            meipass_ffprobe = os.path.join(sys._MEIPASS, "libs", "ffmpeg-7.1-full_build", "bin", "ffprobe.exe")
-            
-            if os.path.exists(meipass_ffmpeg) and os.path.exists(meipass_ffprobe):
-                shutil.copy2(meipass_ffmpeg, self.ffmpeg_path)
-                shutil.copy2(meipass_ffprobe, self.ffprobe_path)
-                logger.info("FFmpeg 바이너리 설치 완료")
-                return self.ffmpeg_path
-                
-        else:
-            # 개발 환경에서는 libs 폴더에서 복사
-            dev_ffmpeg = os.path.join("libs", "ffmpeg-7.1-full_build", "bin", "ffmpeg.exe")
-            dev_ffprobe = os.path.join("libs", "ffmpeg-7.1-full_build", "bin", "ffprobe.exe")
-            
-            if os.path.exists(dev_ffmpeg) and os.path.exists(dev_ffprobe):
-                shutil.copy2(dev_ffmpeg, self.ffmpeg_path)
-                shutil.copy2(dev_ffprobe, self.ffprobe_path)
-                logger.info("FFmpeg 바이너리 설치 완료")
-                return self.ffmpeg_path
-        logger.error("FFmpeg 바이너리를 찾을 수 없습니다")
-        return ""
+from app.core.ffmpeg_manager import FFmpegManager
 
-# 싱글톤 인스턴스
+# Backward-compatible singleton alias. New code should import from app.core.ffmpeg_manager.
 ffmpeg_manager = FFmpegManager()

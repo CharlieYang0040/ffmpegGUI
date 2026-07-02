@@ -15,6 +15,7 @@ from app.services.logging_service import LoggingService
 
 # FFmpegManager 싱글톤 가져오기
 from app.core.ffmpeg_manager import FFmpegManager
+from app.core.ffmpeg_process import decode_process_output
 
 # 로깅 설정
 logger = LoggingService().get_logger(__name__)
@@ -241,9 +242,9 @@ class WebPProcessor:
                         input_file
                     ]
                     
-                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
                     if result.returncode == 0:
-                        ffprobe_data = json.loads(result.stdout)
+                        ffprobe_data = json.loads(decode_process_output(result.stdout))
                         
                         # 스트림 정보에서 프레임레이트 추출
                         for stream in ffprobe_data.get('streams', []):

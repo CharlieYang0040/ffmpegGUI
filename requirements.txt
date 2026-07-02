@@ -8,6 +8,8 @@ altgraph==0.17.4
     # via
     #   -r requirements.in
     #   pyinstaller
+appdirs==1.4.4
+    # via -r requirements.in
 certifi==2024.8.30
     # via
     #   -r requirements.in
@@ -42,6 +44,8 @@ pefile==2023.2.7
     #   -r requirements.in
     #   pyinstaller
 pillow==11.0.0
+    # via -r requirements.in
+psutil==6.1.0
     # via -r requirements.in
 pyinstaller==6.11.0
     # via -r requirements.in

@@ -1,11 +1,15 @@
-# -*- mode: python ; coding: utf-8 -*-
+﻿# -*- mode: python ; coding: utf-8 -*-
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[('libs/ffmpeg-7.1-full_build/bin/ffmpeg.exe', 'libs/ffmpeg-7.1-full_build/bin'), ('libs/ffmpeg-7.1-full_build/bin/ffprobe.exe', 'libs/ffmpeg-7.1-full_build/bin')],
-    datas=[('icon.png', '.'), ('icon.ico', '.')],
+    binaries=[],
+    datas=[
+        ('resources/icon.png', 'resources'),
+        ('resources/icon.ico', 'resources'),
+        ('resources/icons', 'resources/icons'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -22,18 +26,18 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='main',
+    name='ffmpegGUI',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['icon.ico'],
+    icon='resources/icon.ico',
 )

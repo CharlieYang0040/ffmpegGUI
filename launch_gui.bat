@@ -1,58 +1,63 @@
 @echo off
+chcp 65001 >nul
+setlocal
+cd /d "%~dp0"
 
-chcp 65001
 echo.
-
-@REM Python 설치 확인
 where python >nul 2>nul
 if %ERRORLEVEL% neq 0 (
-    echo Python이 설치되어 있지 않습니다.
-    echo https://www.python.org/downloads/ 에서 Python을 설치해주세요.
+    echo Python is not installed or not on PATH.
+    echo Install Python from https://www.python.org/downloads/ and try again.
     pause
     exit /b 1
 )
 
-set "VIRTUAL_ENV=%~dp0ffmpegGUI_venv"
+set "VIRTUAL_ENV=%~dp0.venv"
+set "PYTHON_EXE=%VIRTUAL_ENV%\Scripts\python.exe"
 
-@REM venv 폴더 존재 확인
-if not exist "%VIRTUAL_ENV%" (
-    echo 가상환경을 생성합니다...
-    python -m venv ffmpegGUI_venv
+if not exist "%PYTHON_EXE%" (
+    echo Creating virtual environment...
+    python -m venv "%VIRTUAL_ENV%"
     if %ERRORLEVEL% neq 0 (
-        echo 가상환경 생성에 실패했습니다.
+        echo Failed to create virtual environment.
         pause
         exit /b 1
     )
-    echo 가상환경이 생성되었습니다.
-    echo.
 )
 
-set "PATH=%VIRTUAL_ENV%\Scripts;%PATH%"
-set "PYTHONPATH=%VIRTUAL_ENV%\Lib\site-packages;%PYTHONPATH%"
-
-echo 가상환경 경로: %VIRTUAL_ENV%
-echo Python 인터프리터: "%VIRTUAL_ENV%\Scripts\python.exe"
-
-@REM Python 인터프리터 존재 확인
-if exist "%VIRTUAL_ENV%\Scripts\python.exe" (
-    "%VIRTUAL_ENV%\Scripts\python.exe" -c "import sys; print('Python 버전:', sys.version)"
-) else (
-    echo 오류: Python 인터프리터를 찾을 수 없습니다.
-    echo 경로: "%VIRTUAL_ENV%\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" (
+    echo Python interpreter was not found: "%PYTHON_EXE%"
     pause
     exit /b 1
 )
 
-echo 가상환경이 활성화되었습니다.
-echo.
-
-@REM main.py 실행
-if exist "%~dp0main.py" (
-    "%VIRTUAL_ENV%\Scripts\python.exe" "%~dp0main.py"
+if exist "%~dp0requirements.txt" (
+    "%PYTHON_EXE%" -c "import PySide6, appdirs, psutil" >nul 2>nul
+    if %ERRORLEVEL% neq 0 (
+        echo Installing requirements...
+        "%PYTHON_EXE%" -m pip install --upgrade pip
+        if %ERRORLEVEL% neq 0 goto install_failed
+        "%PYTHON_EXE%" -m pip install -r "%~dp0requirements.txt"
+        if %ERRORLEVEL% neq 0 goto install_failed
+    )
 ) else (
-    echo 오류: main.py 파일을 찾을 수 없습니다.
+    echo requirements.txt was not found.
+    pause
+    exit /b 1
+)
+
+if exist "%~dp0main.py" (
+    "%PYTHON_EXE%" "%~dp0main.py"
+) else (
+    echo main.py was not found.
     pause
     exit /b 1
 )
 
 pause
+exit /b 0
+
+:install_failed
+echo Failed to install requirements.
+pause
+exit /b 1
