@@ -3,11 +3,34 @@
 import os
 import re
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, QThread, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
 
 from app.core.job_builder import detect_media_type
 from app.utils.utils import get_first_sequence_file
+
+
+class MediaMetadataLoader(QThread):
+    loaded = Signal(dict)
+
+    def __init__(self, file_path, debug_mode=False):
+        super().__init__()
+        self.file_path = file_path
+        self.debug_mode = debug_mode
+
+    def run(self):
+        try:
+            probe_path = self.file_path
+            if "%" in self.file_path:
+                first_file = get_first_sequence_file(self.file_path)
+                if first_file:
+                    probe_path = first_file
+            
+            from app.core.ffmpeg_core import get_media_properties
+            props = get_media_properties(probe_path, self.debug_mode)
+            self.loaded.emit(props)
+        except Exception:
+            self.loaded.emit({})
 
 
 class ListWidgetItem(QWidget):
@@ -16,8 +39,17 @@ class ListWidgetItem(QWidget):
         self.file_path = file_path
         self.is_selected = False
         self.is_hovered = False
+        self.total_frames = 0
+        self.fps = 30.0
+        self._pending_trim_end = None
         self.init_ui()
         self.set_file_status(self.check_file_exists())
+        
+        # 백그라운드 미디어 분석 실행
+        from app.utils.utils import get_debug_mode
+        self.loader = MediaMetadataLoader(self.file_path, get_debug_mode())
+        self.loader.loaded.connect(self.on_metadata_loaded)
+        self.loader.start()
 
     def init_ui(self):
         layout = QHBoxLayout()
@@ -37,20 +69,22 @@ class ListWidgetItem(QWidget):
         layout.addLayout(text_layout, 1)
 
         self.trim_start_spinbox = QSpinBox()
-        self.trim_start_spinbox.setPrefix("앞 ")
+        self.trim_start_spinbox.setPrefix("시작 ")
         self.trim_start_spinbox.setSuffix("f")
-        self.trim_start_spinbox.setRange(0, 10000)
+        self.trim_start_spinbox.setRange(1, 1000000)
+        self.trim_start_spinbox.setValue(1)
         self.trim_start_spinbox.setFixedWidth(86)
-        self.trim_start_spinbox.setToolTip("앞에서부터 트림할 프레임 수")
+        self.trim_start_spinbox.setToolTip("트림 시작 프레임 번호 (1-indexed)")
         self.trim_start_spinbox.valueChanged.connect(self.on_trim_changed)
         layout.addWidget(self.trim_start_spinbox)
 
         self.trim_end_spinbox = QSpinBox()
-        self.trim_end_spinbox.setPrefix("뒤 ")
+        self.trim_end_spinbox.setPrefix("끝 ")
         self.trim_end_spinbox.setSuffix("f")
-        self.trim_end_spinbox.setRange(0, 10000)
+        self.trim_end_spinbox.setRange(1, 1000000)
+        self.trim_end_spinbox.setValue(1)
         self.trim_end_spinbox.setFixedWidth(86)
-        self.trim_end_spinbox.setToolTip("뒤에서부터 트림할 프레임 수")
+        self.trim_end_spinbox.setToolTip("트림 종료 프레임 번호 (1-indexed)")
         self.trim_end_spinbox.valueChanged.connect(self.on_trim_changed)
         layout.addWidget(self.trim_end_spinbox)
 
@@ -71,19 +105,68 @@ class ListWidgetItem(QWidget):
         return os.path.exists(self.file_path)
 
     def get_trim_values(self):
-        return self.trim_start_spinbox.value(), self.trim_end_spinbox.value()
+        in_frame = self.trim_start_spinbox.value()
+        out_frame = self.trim_end_spinbox.value()
+        
+        trim_start = max(0, in_frame - 1)
+        if self.total_frames > 0:
+            trim_end = max(0, self.total_frames - out_frame)
+        else:
+            trim_end = 0
+        return trim_start, trim_end
 
     def set_trim_values(self, start_value, end_value, refresh=True):
         self.trim_start_spinbox.blockSignals(True)
         self.trim_end_spinbox.blockSignals(True)
-        self.trim_start_spinbox.setValue(int(start_value))
-        self.trim_end_spinbox.setValue(int(end_value))
+        
+        in_frame = int(start_value) + 1
+        self.trim_start_spinbox.setValue(in_frame)
+        
+        if self.total_frames > 0:
+            out_frame = max(in_frame, self.total_frames - int(end_value))
+            self.trim_end_spinbox.setValue(out_frame)
+        else:
+            self._pending_trim_end = int(end_value)
+            self.trim_end_spinbox.setValue(10000 - int(end_value))
+            
         self.trim_start_spinbox.blockSignals(False)
         self.trim_end_spinbox.blockSignals(False)
         self.update_labels()
         if refresh:
             self._refresh_parent_inspector()
         return True
+
+    def on_metadata_loaded(self, props):
+        if not props:
+            return
+        
+        self.fps = float(props.get('r', 30.0))
+        
+        if 'nb_frames' in props and int(props['nb_frames']) > 0:
+            self.total_frames = int(props['nb_frames'])
+        else:
+            duration = float(props.get('duration', 0.0))
+            self.total_frames = int(duration * self.fps)
+            
+        if self.total_frames <= 0:
+            self.total_frames = 300
+            
+        self.trim_start_spinbox.blockSignals(True)
+        self.trim_end_spinbox.blockSignals(True)
+        
+        self.trim_start_spinbox.setRange(1, self.total_frames)
+        self.trim_end_spinbox.setRange(1, self.total_frames)
+        
+        if self._pending_trim_end is not None:
+            out_frame = max(self.trim_start_spinbox.value(), self.total_frames - self._pending_trim_end)
+            self.trim_end_spinbox.setValue(out_frame)
+            self._pending_trim_end = None
+        else:
+            self.trim_end_spinbox.setValue(self.total_frames)
+            
+        self.trim_start_spinbox.blockSignals(False)
+        self.trim_end_spinbox.blockSignals(False)
+        self.update_labels()
 
     def setSelected(self, selected):
         self.is_selected = selected
@@ -118,9 +201,14 @@ class ListWidgetItem(QWidget):
         self.file_label.setToolTip(self.file_path)
 
         media_type = detect_media_type(self.file_path).value.replace("_", " ").upper()
-        start_trim, end_trim = self.get_trim_values()
+        in_frame = self.trim_start_spinbox.value()
+        out_frame = self.trim_end_spinbox.value()
         status = "OK" if self.check_file_exists() else "MISSING"
-        self.meta_label.setText(f"{media_type} | {status} | trim {start_trim}f / {end_trim}f")
+        
+        if self.total_frames > 0:
+            self.meta_label.setText(f"{media_type} | {status} | range {in_frame}f - {out_frame}f (total: {self.total_frames}f)")
+        else:
+            self.meta_label.setText(f"{media_type} | {status} | range {in_frame}f - {out_frame}f")
         self.set_file_status(status == "OK")
 
     def set_file_status(self, exists):

@@ -199,11 +199,31 @@ class ImageProcessor:
                 if isinstance(trim_end, float):
                     trim_end = int(trim_end)
 
-                # 트림 값 유효성 검사
-                if trim_start > end_number or (trim_end > 0 and trim_end > end_number):
-                    error_msg = f"트림 범위가 유효하지 않습니다. 시작={trim_start}, 끝={trim_end}, 실제 프레임 범위={start_number}~{end_number}"
-                    self.logger.error(error_msg)
-                    raise Exception(error_msg)
+                # 트림 값 유효성 검사 및 보정
+                if trim_start < 0:
+                    trim_start = 0
+                if trim_end < 0:
+                    trim_end = 0
+
+                # 남은 프레임 수 계산
+                new_total_frames = total_frames - trim_start - trim_end
+                if new_total_frames <= 0:
+                    self.logger.warning("트림 후 남은 프레임이 없습니다. 모든 프레임을 사용합니다.")
+                    trim_start = 0
+                    trim_end = 0
+                    new_total_frames = total_frames
+
+                # 시작 프레임 번호 및 프레임 수 결정
+                if actual_frame_numbers:
+                    sorted_frames = sorted(actual_frame_numbers)
+                    if trim_start < len(sorted_frames):
+                        start_number = sorted_frames[trim_start]
+                    else:
+                        start_number = sorted_frames[0]
+                    frame_count = new_total_frames
+                else:
+                    start_number = start_number + trim_start
+                    frame_count = new_total_frames
 
                 # 기본 FFmpeg 명령 구성 (트림 적용)
                 command = [
@@ -211,56 +231,18 @@ class ImageProcessor:
                     '-framerate', str(fps)
                 ]
 
-                # 시작 프레임 번호 조정 - 실제 파일의 시작 번호 사용
+                # 시작 프레임 번호 설정
                 command.extend(['-start_number', str(start_number)])
                 self.logger.debug(f"시작 프레임 번호 설정: {start_number}")
 
                 # 입력 파일 지정
                 command.extend(['-i', input_pattern])
 
-                # 프레임 수 제한 (트림 끝 적용)
-                if trim_end > 0:
-                    # 실제 프레임 번호 기준으로 프레임 수 계산
-                    if actual_frame_numbers:
-                        sorted_frames = sorted(actual_frame_numbers)
+                # 프레임 수 제한
+                command.extend(['-frames:v', str(frame_count)])
+                self.logger.debug(f"프레임 수 설정: {frame_count}")
 
-                        if trim_end < len(sorted_frames):
-                            # trim_end 인덱스에 해당하는 실제 프레임까지 사용
-                            end_frame = sorted_frames[trim_end]
-                            # 시작 프레임부터 끝 프레임까지의 프레임 수 계산
-                            if trim_start > 0 and trim_start < len(sorted_frames):
-                                start_frame = sorted_frames[trim_start]
-                                frame_count = sorted_frames.index(end_frame) - sorted_frames.index(start_frame) + 1
-                            else:
-                                # 처음부터 끝 프레임까지
-                                frame_count = sorted_frames.index(end_frame) + 1
-                        else:
-                            # trim_end가 범위를 벗어나면 모든 프레임 사용
-                            frame_count = len(sorted_frames) - (trim_start if trim_start < len(sorted_frames) else 0)
-                    else:
-                        # 기본 계산 방식 사용
-                        frame_count = trim_end - trim_start + 1
-
-                    if frame_count <= 0:
-                        self.logger.warning(f"계산된 프레임 수가 0 이하입니다: {frame_count}. 모든 프레임을 사용합니다.")
-                        frame_count = total_frames
-
-                    command.extend(['-frames:v', str(frame_count)])
-                    self.logger.debug(f"프레임 수 계산: {frame_count}")
-                else:
-                    # 트림 끝이 지정되지 않은 경우 모든 프레임 처리
-                    if total_frames > 0:
-                        # 시작 프레임부터 끝까지의 프레임 수 계산
-                        if trim_start > 0 and actual_frame_numbers and trim_start < len(actual_frame_numbers):
-                            frame_count = total_frames - trim_start
-                        else:
-                            frame_count = total_frames
-
-                        if frame_count > 0:
-                            command.extend(['-frames:v', str(frame_count)])
-                            self.logger.debug(f"시작 프레임({trim_start})부터 끝까지 프레임 수: {frame_count}")
-
-                self.logger.info(f"이미지 시퀀스 트림 명령: 시작={trim_start}, 끝={trim_end}, 프레임 수={frame_count if 'frame_count' in locals() else '전체'}, 시작 번호={start_number}, 총 프레임 수={total_frames}, 실제 프레임 번호 범위={min(actual_frame_numbers)}~{max(actual_frame_numbers)}")
+                self.logger.info(f"이미지 시퀀스 트림 명령: 시작={trim_start}, 끝={trim_end}, 프레임 수={frame_count}, 시작 번호={start_number}, 총 프레임 수={total_frames}")
             else:
                 # 기본 FFmpeg 명령 구성 (트림 없음)
                 command = [

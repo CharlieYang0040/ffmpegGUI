@@ -110,8 +110,8 @@ class VideoProcessor:
                 if trim_end <= 0:
                     end_frame = total_frames - 1
                 else:
-                    # 끝 프레임이 총 프레임 수보다 크면 조정
-                    end_frame = min(total_frames - 1, trim_end)
+                    # 끝 프레임 인덱스 = 전체 프레임 수 - 꼬리 잘라낼 프레임 수 - 1
+                    end_frame = max(0, total_frames - trim_end - 1)
                 
                 # 시작 프레임이 끝 프레임보다 크면 조정
                 if trim_start >= end_frame:
@@ -186,18 +186,21 @@ class VideoProcessor:
                 # 오디오 스트림이 있는 경우에만 오디오 처리
                 if has_audio:
                     try:
-                        # 오디오 필터 설정
-                        af_filter = f"aselect=between(n\\,{trim_start * 1470 // total_frames}\\,{end_frame * 1470 // total_frames}),asetpts=PTS-STARTPTS"
+                        # 오디오 필터 설정 (시간 기준 t 파라미터 사용)
+                        start_time = trim_start / fps if fps > 0 else 0
+                        end_time = (end_frame + 1) / fps if fps > 0 else duration
+
+                        af_filter = f"aselect=between(t\\,{start_time}\\,{end_time}),asetpts=PTS-STARTPTS"
                         self.logger.info(f"오디오 필터: {af_filter}")
-                        
+
                         if debug_mode:
                             self.logger.debug(f"오디오 트림 필터: {af_filter}")
-                        
+
                         # 오디오 필터 적용
-                        audio_stream = stream.audio.filter('aselect', f'between(n,{trim_start * 1470 // total_frames},{end_frame * 1470 // total_frames})').filter('asetpts', 'PTS-STARTPTS')
-                        
-                        # 출력 스트림 설정 (비디오 + 오디오)
-                        stream = ffmpeg.output(video_stream, audio_stream, temp_output, **encoding_options)
+                        audio_stream = stream.audio.filter('aselect', f'between(t,{start_time},{end_time})').filter('asetpts', 'PTS-STARTPTS')
+
+                        # 출력 스트림 설정 (비디오 + 오디오, 싱크 보정을 위해 shortest=None 추가)
+                        stream = ffmpeg.output(video_stream, audio_stream, temp_output, shortest=None, **encoding_options)
                     except Exception as e:
                         self.logger.warning(f"오디오 스트림 처리 중 오류 발생: {e}")
                         # 오디오 처리 실패 시 비디오만 출력

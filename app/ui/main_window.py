@@ -389,9 +389,12 @@ class FFmpegGui(QMainWindow):
 
     def apply_selected_item_trim_to_timeline(self):
         timeline = getattr(getattr(self.preview_area, "timeline", None), "timeline_widget", None)
-        if not timeline or not getattr(self, "list_widget", None) or not self.list_widget.currentItem():
+        if not timeline or not getattr(self, "list_widget", None):
             return
-        item_widget = self.list_widget.itemWidget(self.list_widget.currentItem())
+        current_item = self.list_widget.currentItem()
+        if not current_item or not current_item.isSelected():
+            return
+        item_widget = self.list_widget.itemWidget(current_item)
         if not item_widget or not hasattr(item_widget, "get_trim_values"):
             return
         frame_count = getattr(timeline, "frame_count", 0)
@@ -415,12 +418,15 @@ class FFmpegGui(QMainWindow):
         if self._syncing_timeline_trim:
             return
         timeline = getattr(getattr(self.preview_area, "timeline", None), "timeline_widget", None)
-        if not timeline or not getattr(self, "list_widget", None) or not self.list_widget.currentItem():
+        if not timeline or not getattr(self, "list_widget", None):
+            return
+        current_item = self.list_widget.currentItem()
+        if not current_item or not current_item.isSelected():
             return
         frame_count = getattr(timeline, "frame_count", 0)
         if frame_count <= 0:
             return
-        item_widget = self.list_widget.itemWidget(self.list_widget.currentItem())
+        item_widget = self.list_widget.itemWidget(current_item)
         if not item_widget or not hasattr(item_widget, "set_trim_values"):
             return
         start_trim = max(0, timeline.in_point - 1)

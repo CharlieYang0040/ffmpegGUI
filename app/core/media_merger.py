@@ -154,12 +154,16 @@ class MediaMerger:
                 encoding_options['s'] = f"{target_properties['width']}x{target_properties['height']}"
                 self.logger.info(f"인코딩 옵션에 해상도 설정: {encoding_options['s']}")
 
-            # 필터 적용 (필요한 경우)
-            if target_properties:
-                stream = apply_filters(stream, target_properties)
+            # Concat Demuxer 병합 시 재인코딩을 방지하고 스트림 복사(copy)를 적용하여
+            # 타임스탬프 오류(av_read_frame failed) 및 중복 인코딩 오버헤드를 완벽히 차단합니다.
+            concat_output_options = {
+                'c': 'copy'
+            }
+            if encoding_options and 'movflags' in encoding_options:
+                concat_output_options['movflags'] = encoding_options['movflags']
 
             # 출력 스트림 설정
-            stream = ffmpeg.output(stream, output_file, **encoding_options)
+            stream = ffmpeg.output(stream, output_file, **concat_output_options)
             stream = stream.overwrite_output()
 
             if debug_mode:
