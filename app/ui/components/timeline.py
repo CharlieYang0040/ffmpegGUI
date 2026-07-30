@@ -12,12 +12,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from app.core.commands import (
-    SeekFrameCommand,
-    SetInPointCommand,
-    SetOutPointCommand,
-    command_manager,
-)
 from app.core.events import Events, event_emitter
 from app.services.logging_service import LoggingService
 from app.ui.widgets.cut_timeline_widget import CutTimelineWidget
@@ -125,6 +119,10 @@ class TimelineComponent:
     def set_current_frame(self, frame: int, emit_signal: bool = True):
         if self.timeline_widget:
             self.timeline_widget.set_current_frame(frame, emit_signal)
+            # Playback-driven updates intentionally suppress the public seek
+            # signal, but the viewer timecode must still follow the playhead.
+            if not emit_signal:
+                self._on_frame_changed(self.timeline_widget.current_frame)
 
     def get_current_frame(self) -> int:
         return self.timeline_widget.current_frame if self.timeline_widget else 1
@@ -194,31 +192,19 @@ class TimelineComponent:
         timeline = self.timeline_widget
         if not timeline or timeline.current_frame > timeline.out_point:
             return
-        command_manager.execute(
-            SetInPointCommand(
-                timeline,
-                timeline.in_point,
-                timeline.current_frame,
-            )
-        )
+        timeline.commit_in_point(timeline.current_frame)
         event_emitter.emit(Events.TIMELINE_SET_IN_POINT, timeline.current_frame)
 
     def set_current_as_out_point(self):
         timeline = self.timeline_widget
         if not timeline or timeline.current_frame < timeline.in_point:
             return
-        command_manager.execute(
-            SetOutPointCommand(
-                timeline,
-                timeline.out_point,
-                timeline.current_frame,
-            )
-        )
+        timeline.commit_out_point(timeline.current_frame)
         event_emitter.emit(Events.TIMELINE_SET_OUT_POINT, timeline.current_frame)
 
     def seek_prev_frame(self):
         timeline = self.timeline_widget
-        if timeline and timeline.current_frame > 1:
+        if timeline and timeline.current_frame > timeline.in_point:
             timeline.set_current_frame(timeline.current_frame - 1)
             event_emitter.emit(
                 Events.TIMELINE_SEEK_PREV_FRAME,
@@ -227,7 +213,7 @@ class TimelineComponent:
 
     def seek_next_frame(self):
         timeline = self.timeline_widget
-        if timeline and timeline.current_frame < timeline.frame_count:
+        if timeline and timeline.current_frame < timeline.out_point:
             timeline.set_current_frame(timeline.current_frame + 1)
             event_emitter.emit(
                 Events.TIMELINE_SEEK_NEXT_FRAME,
@@ -238,19 +224,15 @@ class TimelineComponent:
         timeline = self.timeline_widget
         if not timeline:
             return
-        command_manager.execute(
-            SeekFrameCommand(timeline, timeline.current_frame, 1)
-        )
-        event_emitter.emit(Events.TIMELINE_SEEK_START, 1)
+        timeline.set_current_frame(timeline.in_point)
+        event_emitter.emit(Events.TIMELINE_SEEK_START, timeline.in_point)
 
     def seek_to_end(self):
         timeline = self.timeline_widget
         if not timeline:
             return
-        last_frame = max(1, timeline.frame_count)
-        command_manager.execute(
-            SeekFrameCommand(timeline, timeline.current_frame, last_frame)
-        )
+        last_frame = max(timeline.in_point, timeline.out_point)
+        timeline.set_current_frame(last_frame)
         event_emitter.emit(Events.TIMELINE_SEEK_END, last_frame)
 
     def reset_in_out_points(self):

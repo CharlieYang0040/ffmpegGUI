@@ -9,8 +9,7 @@ from typing import Dict, Optional, Tuple, Union, Any # Added for type hinting
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy, QMessageBox, QWidget
 from PySide6.QtCore import Qt, QUrl, Slot, QTimer, QRunnable, QThreadPool, QObject, QThread, Signal # Added QRunnable, QThreadPool, QObject, Signal
 from PySide6.QtGui import QPixmap, QIcon, QImage # Added QImage for robust loading
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink, QVideoFrame
 
 from app.core.image_sequence_loader import ImageSequenceLoaderThread # Keep image loader
 from app.utils.utils import is_video_file, is_image_file, get_resource_path
@@ -19,6 +18,7 @@ from app.ui.components.timeline import TimelineComponent
 from app.core.events import event_emitter, Events
 from app.core.ffmpeg_manager import FFmpegManager
 from app.core.ffmpeg_process import decode_process_output
+from app.core.process_utils import run_hidden
 from PIL import Image # Added for image size reading
 
 # 로깅 서비스 설정
@@ -230,8 +230,12 @@ class MediaInfoFetcher(QRunnable):
                 '-of', 'default=noprint_wrappers=1:nokey=0',
                 input_file
             ]
-            creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, creationflags=creationflags)
+            result = run_hidden(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
             stdout = decode_process_output(result.stdout)
             stderr = decode_process_output(result.stderr)
             
@@ -298,12 +302,16 @@ class PreviewAreaComponent:
         self.image_loader_thread = None # For loading image sequences
         self.thread_pool = QThreadPool.globalInstance() # Use global thread pool
         self.last_request_id = 0 # 요청 ID 카운터 추가
+        self.media_info_loading = False
+        self._media_info_tasks = {}
         # self.current_fetcher_task = None # Optional: Keep track of the running task
         self.current_fetcher_task = None # ★ 현재 실행 중인 fetcher 참조
 
         self.media_player = None
         self.audio_output = None
+        self.video_sink = None
         self.video_widget = None
+        self._last_video_pixmap = None
         self.image_preview_label = None
         self.media_container = None # 16:9 비율 컨테이너 추가
 
@@ -358,9 +366,13 @@ class PreviewAreaComponent:
         self.image_preview_label.setScaledContents(False) # 직접 스케일링하므로 False
         self.image_preview_label.hide()
 
-        self.video_widget = QVideoWidget()
-        self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding) # 컨테이너 채우도록
+        # QVideoWidget's native rendering surface can stay black on some Windows
+        # GPU/driver combinations. Render QVideoSink frames into a regular QLabel
+        # so playback uses the same reliable Qt paint path as image previews.
+        self.video_widget = QLabel(alignment=Qt.AlignCenter)
+        self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         self.video_widget.setStyleSheet("background-color: #1a1a1a;")
+        self.video_widget.setScaledContents(False)
         self.video_widget.hide()
         
         # 컨테이너 레이아웃에 미디어 위젯 추가
@@ -376,8 +388,10 @@ class PreviewAreaComponent:
         # --- Media Player Setup --- 
         self.media_player = QMediaPlayer()
         self.audio_output = QAudioOutput()
+        self.video_sink = QVideoSink(self.parent)
         self.media_player.setAudioOutput(self.audio_output)
-        self.media_player.setVideoOutput(self.video_widget)
+        self.media_player.setVideoOutput(self.video_sink)
+        self.video_sink.videoFrameChanged.connect(self.on_video_frame_changed)
 
         # Connect signals
         self.media_player.durationChanged.connect(self.on_duration_changed)
@@ -393,6 +407,35 @@ class PreviewAreaComponent:
         self.timeline.create_playback_controls(preview_layout)
 
         top_layout.addWidget(preview_frame, 1)
+
+    @Slot(QVideoFrame)
+    def on_video_frame_changed(self, frame: QVideoFrame):
+        """Paint decoded video frames through QWidget instead of a native overlay."""
+        if not self.is_video_mode or not frame.isValid() or not self.video_widget:
+            return
+
+        image = frame.toImage()
+        if image.isNull():
+            logger.warning("QVideoSink가 빈 비디오 프레임을 전달했습니다.")
+            return
+
+        self._last_video_pixmap = QPixmap.fromImage(image)
+        target_size = self.video_widget.size()
+        if target_size.width() <= 0 or target_size.height() <= 0:
+            return
+
+        transform = (
+            Qt.FastTransformation
+            if self.media_player and self.media_player.playbackState() == QMediaPlayer.PlayingState
+            else Qt.SmoothTransformation
+        )
+        self.video_widget.setPixmap(
+            self._last_video_pixmap.scaled(
+                target_size,
+                Qt.KeepAspectRatio,
+                transform,
+            )
+        )
     
     def update_preview(self):
         """현재 선택된 파일의 미리보기 업데이트"""
@@ -415,6 +458,7 @@ class PreviewAreaComponent:
             # 다른 파일 선택 시 현재 재생/로딩 중인 것 모두 중지
             self.stop_current_preview() 
             self.current_media_path = file_path # ★ 정규화된 경로 저장
+            self.media_info_loading = True
             logger.info(f"미리보기 업데이트 시작: {file_path}")
             
             # 위젯 초기화 (로딩 중 표시?) 
@@ -427,19 +471,18 @@ class PreviewAreaComponent:
             current_request_id = self.last_request_id
             logger.debug(f"새 미디어 정보 요청 생성 (ID: {current_request_id}): {os.path.basename(file_path)}")
 
-            # 이전 fetcher 참조 제거 (선택적이지만 명확성을 위해)
-            self.current_fetcher_task = None
-
             # 백그라운드에서 미디어 정보 가져오기 시작 (request_id 전달)
             fetcher = MediaInfoFetcher(current_request_id, file_path, self.ffmpeg_manager) # ID 전달
             fetcher.signals.result_ready.connect(self.on_media_info_ready)
             fetcher.signals.error.connect(self.on_media_info_error)
             self.current_fetcher_task = fetcher # ★ Keep a reference to the current fetcher
+            self._media_info_tasks[current_request_id] = fetcher
             self.thread_pool.start(fetcher)
             # logger.debug(f"미디어 정보 로딩 작업 시작됨: {os.path.basename(file_path)}") # 로그 변경됨
 
         except Exception as e:
             self.parent._loading_selected_media_trim = False
+            self.media_info_loading = False
             logger.error(f"미리보기 업데이트 준비 중 오류: {str(e)}", exc_info=True)
             self._clear_preview_widgets()
             QMessageBox.critical(self.parent, "오류", f"미리보기 업데이트 준비 중 오류 발생:\n{str(e)}")
@@ -471,6 +514,7 @@ class PreviewAreaComponent:
             self.current_media_duration_ms = int(media_info['duration'] * 1000)
             self.current_media_frame_count = media_info['frame_count']
             self.is_video_mode = not media_info['is_image_sequence'] and not media_info['is_single_image']
+            self.media_info_loading = False
             is_image_sequence = media_info['is_image_sequence']
             is_single_image = media_info['is_single_image']
             # 이미지 시퀀스 시작 프레임 정보 가져오기 (0-based)
@@ -505,6 +549,8 @@ class PreviewAreaComponent:
             if self.is_video_mode:
                 logger.debug("비디오 파일 미리보기 설정 (QMediaPlayer)")
                 self.image_preview_label.hide()
+                self._last_video_pixmap = None
+                self.video_widget.clear()
                 self.video_widget.show()
                 try:
                     # 오디오 출력 설정 확인 (선택적)
@@ -553,6 +599,7 @@ class PreviewAreaComponent:
                  self.current_media_path = None
         
         except Exception as e:
+             self.media_info_loading = False
              if hasattr(self.parent, "_loading_selected_media_trim"):
                  self.parent._loading_selected_media_trim = False
              # 슬롯 실행 중 발생한 예외 로깅
@@ -564,6 +611,10 @@ class PreviewAreaComponent:
                  self.current_media_path = None
              except Exception as inner_e:
                  logger.error(f"on_media_info_ready 오류 처리 중 추가 예외 발생: {inner_e}")
+        finally:
+             task = self._media_info_tasks.pop(request_id, None)
+             if self.current_fetcher_task is task:
+                 self.current_fetcher_task = None
 
     @Slot(int, str, str)
     def on_media_info_error(self, request_id: int, error_file_path: str, error_msg: str):
@@ -585,9 +636,11 @@ class PreviewAreaComponent:
             QMessageBox.critical(self.parent, "오류", f"미디어 정보를 가져오는 중 오류 발생:\n{error_msg}")
             self._clear_preview_widgets() # 위젯 초기화
             self.current_media_path = None # 경로 초기화
+            self.media_info_loading = False
             self.parent._loading_selected_media_trim = False
         
         except Exception as e:
+            self.media_info_loading = False
             self.parent._loading_selected_media_trim = False
             # 슬롯 실행 중 발생한 예외 로깅
             logger.exception(f"on_media_info_error 슬롯 실행 중 예외 발생 (ID: {request_id}): {e}")
@@ -597,6 +650,10 @@ class PreviewAreaComponent:
                  self.current_media_path = None
             except Exception as inner_e:
                  logger.error(f"on_media_info_error 오류 처리 중 추가 예외 발생: {inner_e}")
+        finally:
+            task = self._media_info_tasks.pop(request_id, None)
+            if self.current_fetcher_task is task:
+                self.current_fetcher_task = None
 
     def _clear_preview_widgets(self):
         """미리보기 위젯 숨기고 초기화"""
@@ -604,10 +661,12 @@ class PreviewAreaComponent:
             self.image_preview_label.clear()
             self.image_preview_label.hide()
         if self.video_widget:
+            self.video_widget.clear()
             self.video_widget.hide()
+        self._last_video_pixmap = None
         if self.timeline:
             self.timeline.set_video_info(0, 0, 0) # 비디오 정보 초기화
-            self.timeline.set_current_frame(1)    # 현재 프레임 1로 설정
+            self.timeline.set_current_frame(1, emit_signal=False)
             self.timeline.reset_in_out_points() # In/Out 지점 초기화
         if hasattr(self.parent, 'play_button'):
             self.parent.play_button.setEnabled(False)
@@ -623,7 +682,9 @@ class PreviewAreaComponent:
                  self.media_player.stop()
 
         # 이미지 시퀀스 로더 및 타이머 정리
-        self._stop_image_sequence_playback() # 내부에서 스레드/타이머 중지
+        self._stop_image_sequence_playback(
+            reset_frame=False
+        ) # 정리 중에는 이전 프레임을 다시 그리지 않음
 
         # 이미지 로더 스레드 종료 요청 (wait 제거)
         if self.image_loader_thread and self.image_loader_thread.isRunning():
@@ -639,12 +700,17 @@ class PreviewAreaComponent:
         self.current_media_path = None # 현재 경로 초기화 (★ 중요: 다음 fetcher 결과 처리를 위해)
         self.is_video_mode = False
         self.image_sequence_playback_state = PlaybackState.STOPPED
-        self.current_fetcher_task = None # ★ Clear fetcher reference
+        self.media_info_loading = False
         logger.debug("현재 미리보기 정리 완료 (wait 제거됨)")
 
     def update_preview_label(self):
         """Handles resizing of the preview label, rescaling the displayed image/frame."""
-        if self.is_video_mode or not self.image_preview_label or not self.image_preview_label.isVisible():
+        if (
+            self.media_info_loading
+            or self.is_video_mode
+            or not self.image_preview_label
+            or not self.image_preview_label.isVisible()
+        ):
             # 비디오 모드이거나 라벨이 없거나 보이지 않으면 아무것도 안 함
             return
 
@@ -661,7 +727,7 @@ class PreviewAreaComponent:
 
     def _display_sequence_frame(self, frame_index: int):
          """지정된 인덱스의 이미지 시퀀스 프레임을 표시 (첫 프레임 표시에 주로 사용)"""
-         if self.is_video_mode or not self.image_preview_label: return
+         if self.media_info_loading or self.is_video_mode or not self.image_preview_label: return
          
          # 경로 정규화 (백슬래시 -> 슬래시)
          if not self.current_media_path:
@@ -867,7 +933,7 @@ class PreviewAreaComponent:
             # self.image_loader_thread.wait(500) # 필요하다면 짧게 대기
         
         # 프레임 리셋 및 UI 업데이트
-        if reset_frame:
+        if reset_frame and not self.media_info_loading and self.current_media_path:
              # expected_sequence_frame_index를 시작 프레임의 0-based 인덱스로 초기화
              self.expected_sequence_frame_index = self.current_media_start_frame_index
              if not self.is_video_mode:
@@ -1308,11 +1374,15 @@ class PreviewAreaComponent:
                 except: pass
 
                 self.media_player.setVideoOutput(None) # 출력 연결 해제
+                if self.video_sink:
+                    try: self.video_sink.videoFrameChanged.disconnect(self.on_video_frame_changed)
+                    except (TypeError, RuntimeError): pass
                 self.media_player.setAudioOutput(None)
                 self.media_player.stop() # 재생 중지
                 # self.media_player.deleteLater() # Qt 객체 삭제는 부모가 관리하거나 deleteLater 권장
                 self.media_player = None # 참조 제거
                 self.audio_output = None
+                self.video_sink = None
                 logger.debug("소멸자: QMediaPlayer 정리 완료")
 
             # 이벤트 리스너 해제

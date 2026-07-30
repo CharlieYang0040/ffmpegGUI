@@ -10,6 +10,7 @@ import ffmpeg
 import tempfile
 import time
 import shutil
+from app.core.process_utils import probe_media_json
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -159,7 +160,7 @@ class OTIOGenerator:
                 if not FFPROBE_PATH:
                     raise ValueError("FFprobe 경로가 설정되지 않았습니다.")
                     
-                probe = ffmpeg.probe(file_path, cmd=FFPROBE_PATH)
+                probe = probe_media_json(FFPROBE_PATH, file_path)
                 video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
                 total_frames = int(video_info.get('nb_frames', 0))
                 

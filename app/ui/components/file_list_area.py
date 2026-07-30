@@ -28,7 +28,15 @@ def _state_path(state):
 
 
 def _state_paths(states):
-    return [_state_path(state) for state in states]
+    return [
+        (
+            str(state.get("clip_id", "") or "")
+            or _state_path(state)
+        )
+        if isinstance(state, dict)
+        else state
+        for state in states
+    ]
 
 class FileListAreaComponent:
     """
@@ -361,7 +369,10 @@ class FileListAreaComponent:
             extension = f".{extension}"
         label = extension.lstrip(".").upper()
         primary_filter = f"{label} 파일 (*{extension})"
-        filters = f"{primary_filter};;MP4 파일 (*.mp4);;WebM 파일 (*.webm);;모든 파일 (*.*)"
+        filters = (
+            f"{primary_filter};;MP4 파일 (*.mp4);;MKV 파일 (*.mkv);;"
+            "MOV 파일 (*.mov);;WebM 파일 (*.webm);;모든 파일 (*.*)"
+        )
         output_file, _ = QFileDialog.getSaveFileName(self.parent, '출력 파일 저장', last_path, filters)
         if output_file:
             if not os.path.splitext(output_file)[1]:

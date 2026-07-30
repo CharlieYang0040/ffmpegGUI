@@ -7,7 +7,7 @@ import sys
 
 # 애플리케이션 정보
 APP_NAME = "ffmpegGUI"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 APP_COMPANY = "LHCinema"
 
 # 경로 설정

@@ -137,7 +137,15 @@ class DragDropListWidget(QListWidget):
 
     @staticmethod
     def _state_paths(states):
-        return [state.get("file_path", state) if isinstance(state, dict) else state for state in states]
+        return [
+            (
+                str(state.get("clip_id", "") or "")
+                or state.get("file_path", "")
+            )
+            if isinstance(state, dict)
+            else state
+            for state in states
+        ]
 
     def _state_from_item(self, item):
         file_path = item.data(Qt.UserRole) if item else ""
@@ -178,6 +186,91 @@ class DragDropListWidget(QListWidget):
         list_item, item_widget = self._make_list_item(state)
         self.insertItem(row, list_item)
         self.setItemWidget(list_item, item_widget)
+
+    def insert_cloned_item(
+        self,
+        row,
+        template_widget,
+        clip_id,
+        source_range,
+        refresh=True,
+    ):
+        item_widget = template_widget.clone_for_edit(clip_id, source_range)
+        list_item = QListWidgetItem()
+        list_item.setSizeHint(item_widget.sizeHint())
+        list_item.setData(Qt.UserRole, item_widget.file_path)
+        self.insertItem(row, list_item)
+        self.setItemWidget(list_item, item_widget)
+        if refresh:
+            self._finish_structural_edit()
+        return list_item, item_widget
+
+    def detach_item_at(self, row):
+        if not 0 <= int(row) < self.count():
+            return None
+        item = self.item(int(row))
+        widget = self.itemWidget(item)
+        self.removeItemWidget(item)
+        item = self.takeItem(int(row))
+        return item, widget
+
+    def attach_item_at(self, row, item, widget):
+        row = max(0, min(int(row), self.count()))
+        self.insertItem(row, item)
+        self.setItemWidget(item, widget)
+
+    def _finish_structural_edit(self, sync_selection=False):
+        self.placeholder_visible = self.count() == 0
+        self.viewport().update()
+        main_window = getattr(self, "main_window", None)
+        file_list_area = getattr(main_window, "file_list_area", None)
+        if (
+            sync_selection
+            and file_list_area is not None
+            and hasattr(file_list_area, "on_item_selection_changed")
+        ):
+            file_list_area.on_item_selection_changed()
+            return
+        self._refresh_parent_inspector()
+
+    def reorder_existing_items(self, states):
+        """Reorder current clips without constructing new media widgets."""
+        desired_ids = [
+            str(self._coerce_item_state(state).get("clip_id", "") or "")
+            for state in states
+        ]
+        current = []
+        for row in range(self.count()):
+            item = self.item(row)
+            widget = self.itemWidget(item)
+            current.append((str(getattr(widget, "clip_id", "") or ""), item, widget))
+        if not all(desired_ids) or set(desired_ids) != {value[0] for value in current}:
+            return False
+
+        current_id = ""
+        current_item = self.currentItem()
+        if current_item is not None:
+            current_widget = self.itemWidget(current_item)
+            current_id = str(getattr(current_widget, "clip_id", "") or "")
+        selected_ids = {
+            str(getattr(self.itemWidget(item), "clip_id", "") or "")
+            for item in self.selectedItems()
+        }
+        bundles = {clip_id: (item, widget) for clip_id, item, widget in current}
+        previous_blocked = self.blockSignals(True)
+        try:
+            for row in range(self.count() - 1, -1, -1):
+                self.detach_item_at(row)
+            for row, clip_id in enumerate(desired_ids):
+                item, widget = bundles[clip_id]
+                self.attach_item_at(row, item, widget)
+                item.setSelected(clip_id in selected_ids)
+                if clip_id == current_id:
+                    self.setCurrentItem(item)
+        finally:
+            self.blockSignals(previous_blocked)
+        self._finish_structural_edit()
+        return True
 
     def add_items(self, file_paths):
         for file_path in file_paths:

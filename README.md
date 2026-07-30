@@ -10,6 +10,8 @@ ffmpegGUI는 Windows에서 영상, 이미지 시퀀스, 애니메이션 WebP를 
 - CPU H.264·H.265·VP9과 NVIDIA NVENC 프리셋
 - 실제 실행 가능 여부까지 확인하는 NVENC 사전 검사와 CPU 대체 안내
 - 출력 이름 자동 생성, 실행 전 문제 확인, 취소 후 안전한 재실행
+- 같은 출력 파일이 있을 때 자동 넘버링·덮어쓰기·취소 선택
+- MP4·MKV·MOV·WebM 출력 컨테이너에 맞춘 안전한 최종화
 - OTIO 가져오기·내보내기와 프레임 단위 미리보기
 - FFmpeg가 없을 때 공식 Windows 빌드를 SHA-256 검증 후 사용자 폴더에 설치
 
@@ -88,7 +90,7 @@ FFmpeg 경로를 설정하지 않아도 첫 실행 시 자동으로 준비합니
 ## 문서
 
 - [현재 개발 상태와 완료 기준](docs/development_plan.md)
-- [2.0 변경 기록](CHANGELOG.md)
+- [변경 기록](CHANGELOG.md)
 - [UI/UX V2 결과](docs/ui_ux_redesign_v2_plan.md)
 - [미리보기 구조](docs/media_play_refactor_plan.md)
 - [마이그레이션 가이드](app/utils/migration_guide.md)

@@ -32,6 +32,7 @@ from app.services.logging_service import LoggingService
 # FFmpegManager 싱글톤 가져오기
 from app.core.ffmpeg_manager import FFmpegManager
 from app.core.ffmpeg_process import decode_process_output
+from app.core.process_utils import probe_media_json, run_hidden
 
 # 로깅 설정
 logger = LoggingService().get_logger(__name__)
@@ -112,7 +113,7 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
         if debug_mode:
             logger.debug(f"FFprobe 명령: {ffprobe_path} -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration,nb_frames -of default=noprint_wrappers=1:nokey=0 {probe_input}")
 
-        probe = ffmpeg.probe(probe_input, cmd=ffprobe_path)
+        probe = probe_media_json(ffprobe_path, probe_input)
         video_stream = next(
             (s for s in probe['streams'] if s['codec_type'] == 'video'),
             None
@@ -174,7 +175,7 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
                 if debug_mode:
                     logger.debug(f"프레임 수 확인 명령: {' '.join(cmd)}")
 
-                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                result = run_hidden(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
                 stdout = decode_process_output(result.stdout).strip()
                 if result.returncode == 0 and stdout and stdout != 'N/A':
                     frame_count = int(stdout)
@@ -200,9 +201,6 @@ def get_media_properties(input_file: str, debug_mode: bool = False) -> dict:
             logger.debug(f"비디오 속성: {properties}")
 
         return properties
-    except ffmpeg.Error as e:
-        logger.error(f"'{input_file}'를 프로브하는 중 오류 발생: {e}")
-        return {}
     except Exception as e:
         logger.exception(f"'{input_file}'의 속성을 가져오는 중 예외 발생: {e}")
         return {}
@@ -235,7 +233,7 @@ def get_video_duration(input_file: str) -> float:
     ffprobe_path = ffmpeg_manager.get_ffprobe_path()
 
     try:
-        probe = ffmpeg.probe(input_file, cmd=ffprobe_path)
+        probe = probe_media_json(ffprobe_path, input_file)
         video_stream = next(
             (s for s in probe['streams'] if s['codec_type'] == 'video'),
             None
@@ -246,7 +244,7 @@ def get_video_duration(input_file: str) -> float:
             format_info = probe.get('format', {})
             if 'duration' in format_info:
                 return float(format_info['duration'])
-    except ffmpeg.Error as e:
+    except Exception as e:
         logger.error(f"'{input_file}'의 길이를 가져오는 중 오류 발생: {e}")
     return 0.0
 
