@@ -46,7 +46,7 @@
 
 ## 검증 기준선
 
-- 자동 테스트: 73개
+- 자동 테스트: 74개
 - 컴파일 검사와 `pip check`
 - 실제 미디어 자동 회귀: CFR, VFR, PNG 시퀀스, WebP, 취소, 재실행,
   NVENC의 7개 시나리오
@@ -85,7 +85,7 @@ git diff --check
 - 지원 개발 환경: Windows x64, Python 3.13
 - 태그 형식: `v<APP_VERSION>`
 - 산출물: `ffmpegGUI-v<버전>-windows-x64.exe`, `SHA256SUMS.txt`
-- `main`과 PR은 Windows CI에서 컴파일, 73개 테스트, 의존성 검사를 수행한다.
+- `main`과 PR은 Windows CI에서 컴파일, 74개 테스트, 의존성 검사를 수행한다.
 - 태그가 푸시되면 별도 릴리즈 워크플로가 테스트, 패키징, 체크섬 생성,
   GitHub Release 업로드를 수행한다.
 - 공개 산출물은 다운로드한 파일의 체크섬까지 다시 확인해야 배포 완료로 본다.
