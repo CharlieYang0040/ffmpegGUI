@@ -35,7 +35,6 @@ class LoggingService:
         # 기본 로그 레벨 설정
         self.default_level = logging.INFO
         
-        print("LoggingService 초기화됨")
     
     def setup_file_logging(self, log_dir=None):
         """
@@ -71,7 +70,7 @@ class LoggingService:
         for logger in self.loggers.values():
             logger.addHandler(self.file_handler)
         
-        print(f"파일 로깅 설정 완료: {self.log_file_path}")
+        self.get_logger(__name__).info("File logging enabled: %s", self.log_file_path)
     
     def get_logger(self, name):
         """

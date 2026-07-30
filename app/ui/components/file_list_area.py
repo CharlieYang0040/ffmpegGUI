@@ -1,8 +1,9 @@
 import os
 import logging
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QCheckBox,
-    QLineEdit, QFileDialog, QMessageBox
+    QLineEdit, QFileDialog, QMessageBox, QMenu, QToolButton
 )
 from PySide6.QtCore import Qt, QItemSelectionModel
 
@@ -46,36 +47,21 @@ class FileListAreaComponent:
         """소스 큐와 관련 작업 컨트롤을 생성합니다."""
         self.left_layout = QVBoxLayout()
 
-        title_layout = QHBoxLayout()
-        title_label = QLabel("소스 큐")
-        title_label.setStyleSheet("font-weight: bold; font-size: 14px;")
-        title_layout.addWidget(title_label)
-        title_layout.addStretch()
-        self.left_layout.addLayout(title_layout)
-
-        checkbox_layout = QHBoxLayout()
-        checkbox_layout.setAlignment(Qt.AlignLeft)
-
         self.parent.preview_mode_checkbox = QCheckBox("미리보기")
         self.parent.preview_mode_checkbox.setChecked(True)
-        checkbox_layout.addWidget(self.parent.preview_mode_checkbox)
+        self.parent.preview_mode_checkbox.hide()
 
         self.parent.auto_output_path_checkbox = QCheckBox("출력 경로 자동")
         self.parent.auto_output_path_checkbox.setChecked(True)
         self.parent.auto_output_path_checkbox.stateChanged.connect(self._refresh_parent)
-        checkbox_layout.addWidget(self.parent.auto_output_path_checkbox)
 
         self.parent.auto_naming_checkbox = QCheckBox("파일명 자동")
         self.parent.auto_naming_checkbox.setChecked(True)
         self.parent.auto_naming_checkbox.stateChanged.connect(self._refresh_parent)
-        checkbox_layout.addWidget(self.parent.auto_naming_checkbox)
 
         self.parent.auto_foldernaming_checkbox = QCheckBox("폴더명 기준")
         self.parent.auto_foldernaming_checkbox.setChecked(False)
         self.parent.auto_foldernaming_checkbox.stateChanged.connect(self._refresh_parent)
-        checkbox_layout.addWidget(self.parent.auto_foldernaming_checkbox)
-
-        self.left_layout.addLayout(checkbox_layout)
         self.left_layout.addWidget(self.parent.tab_list_widget)
 
         self.parent.list_widget = self.parent.tab_list_widget.get_current_list_widget()
@@ -109,59 +95,104 @@ class FileListAreaComponent:
             logger.warning("left_layout이 초기화되지 않았습니다.")  # left_layout이 없는 경우 경고 출력
 
     def create_button_layout(self, left_layout):
-        """버튼 레이아웃 생성"""
+        """Create primary source actions and move low-frequency actions to a menu."""
         button_layout = QHBoxLayout()
 
-        self.parent.add_button = QPushButton('➕ 파일 추가')
+        self.parent.add_button = QPushButton("미디어 추가")
+        self.parent.add_button.setProperty("role", "primary")
         self.parent.add_button.clicked.connect(self.add_files)
-        button_layout.addWidget(self.parent.add_button)
+        button_layout.addWidget(self.parent.add_button, 1)
 
-        self.parent.remove_button = QPushButton('➖ 파일 제거')
+        self.parent.remove_button = QPushButton("−")
+        self.parent.remove_button.setToolTip("선택한 클립 삭제")
+        self.parent.remove_button.setFixedWidth(34)
         self.parent.remove_button.clicked.connect(self.remove_selected_files)
         button_layout.addWidget(self.parent.remove_button)
 
-        self.parent.clear_button = QPushButton('🗑️ 목록 비우기')
-        self.parent.clear_button.clicked.connect(self.clear_list)
-        button_layout.addWidget(self.parent.clear_button)
+        more_button = QToolButton()
+        more_button.setText("•••")
+        more_button.setToolTip("클립 및 목록 명령")
+        more_button.setFixedWidth(38)
+        more_button.setPopupMode(QToolButton.InstantPopup)
+        more_menu = QMenu(more_button)
 
-        self.parent.sort_button = QPushButton('🔠 이름 순 정렬')
-        self.parent.sort_button.clicked.connect(self.toggle_sort_list)
-        button_layout.addWidget(self.parent.sort_button)
+        self.parent.move_up_button = QAction("위로 이동", more_menu)
+        self.parent.move_up_button.triggered.connect(self.move_item_up)
+        more_menu.addAction(self.parent.move_up_button)
+        self.parent.move_down_button = QAction("아래로 이동", more_menu)
+        self.parent.move_down_button.triggered.connect(self.move_item_down)
+        more_menu.addAction(self.parent.move_down_button)
+        duplicate_action = QAction("클립 복제", more_menu)
+        duplicate_action.triggered.connect(self.parent.duplicate_selected_clip)
+        more_menu.addAction(duplicate_action)
+        reset_ranges_action = QAction("모든 컷 구간 초기화", more_menu)
+        reset_ranges_action.triggered.connect(self.parent.reset_all_clip_ranges)
+        more_menu.addAction(reset_ranges_action)
+        more_menu.addSeparator()
+        undo_action = QAction("실행 취소", more_menu)
+        undo_action.triggered.connect(self.parent.undo)
+        more_menu.addAction(undo_action)
+        redo_action = QAction("다시 실행", more_menu)
+        redo_action.triggered.connect(self.parent.redo)
+        more_menu.addAction(redo_action)
+        more_menu.addSeparator()
+        self.parent.sort_button = QAction("이름순 정렬", more_menu)
+        self.parent.sort_button.triggered.connect(self.toggle_sort_list)
+        more_menu.addAction(self.parent.sort_button)
+        self.parent.reverse_button = QAction("순서 뒤집기", more_menu)
+        self.parent.reverse_button.triggered.connect(self.reverse_list_order)
+        more_menu.addAction(self.parent.reverse_button)
+        more_menu.addSeparator()
+        self.parent.clear_button = QAction("목록 비우기", more_menu)
+        self.parent.clear_button.triggered.connect(self.clear_list)
+        more_menu.addAction(self.parent.clear_button)
 
-        self.parent.reverse_button = QPushButton('🔃 순서 반대로')
-        self.parent.reverse_button.clicked.connect(self.reverse_list_order)
-        button_layout.addWidget(self.parent.reverse_button)
-
-        self.parent.move_up_button = QPushButton('🔼 위로 이동')
-        self.parent.move_up_button.clicked.connect(self.move_item_up)
-        button_layout.addWidget(self.parent.move_up_button)
-
-        self.parent.move_down_button = QPushButton('🔽 아래로 이동')
-        self.parent.move_down_button.clicked.connect(self.move_item_down)
-        button_layout.addWidget(self.parent.move_down_button)
+        more_button.setMenu(more_menu)
+        button_layout.addWidget(more_button)
 
         left_layout.addLayout(button_layout)
 
     def create_output_layout(self, left_layout):
         """출력 레이아웃 생성"""
-        output_layout = QHBoxLayout()
-        self.parent.output_label = QLabel("출력 경로:")
+        self.parent.auto_output_path_checkbox.hide()
+        self.parent.auto_naming_checkbox.hide()
+        self.parent.auto_foldernaming_checkbox.hide()
+
+        naming_button = QToolButton()
+        naming_button.setText("이름 규칙")
+        naming_button.setPopupMode(QToolButton.InstantPopup)
+        naming_menu = QMenu(naming_button)
+        for label, checkbox in (
+            ("출력 경로 자동", self.parent.auto_output_path_checkbox),
+            ("파일명 자동", self.parent.auto_naming_checkbox),
+            ("폴더명 기준", self.parent.auto_foldernaming_checkbox),
+        ):
+            action = QAction(label, naming_menu)
+            action.setCheckable(True)
+            action.setChecked(checkbox.isChecked())
+            action.toggled.connect(checkbox.setChecked)
+            checkbox.toggled.connect(action.setChecked)
+            naming_menu.addAction(action)
+        naming_button.setMenu(naming_menu)
+        left_layout.addWidget(naming_button, 0, Qt.AlignRight)
+
+        self.parent.output_label = QLabel("저장 위치")
+        left_layout.addWidget(self.parent.output_label)
         self.parent.output_edit = DroppableLineEdit(self.parent)
         self.parent.output_edit.setText(self.parent.settings_service.get("last_output_path", ""))
+        left_layout.addWidget(self.parent.output_edit)
 
-        self.parent.output_browse = QPushButton("찾아보기")
+        output_actions = QHBoxLayout()
+        self.parent.output_browse = QPushButton("위치 선택")
         self.parent.output_browse.clicked.connect(self.browse_output)
 
-        self.parent.open_folder_button = QPushButton("📂")
+        self.parent.open_folder_button = QPushButton("폴더 열기")
         self.parent.open_folder_button.setToolTip("출력 폴더 열기")
-        # 람다를 사용하여 output_edit의 경로 전달
         self.parent.open_folder_button.clicked.connect(lambda: self.parent.open_folder(self.parent.output_edit.text()))
 
-        output_layout.addWidget(self.parent.output_label)
-        output_layout.addWidget(self.parent.output_edit)
-        output_layout.addWidget(self.parent.open_folder_button)
-        output_layout.addWidget(self.parent.output_browse)
-        left_layout.addLayout(output_layout)
+        output_actions.addWidget(self.parent.output_browse)
+        output_actions.addWidget(self.parent.open_folder_button)
+        left_layout.addLayout(output_actions)
 
         ffmpeg_layout = QHBoxLayout()
         self.parent.ffmpeg_label = QLabel("FFmpeg 경로:")
@@ -176,11 +207,12 @@ class FileListAreaComponent:
         # 람다를 사용하여 ffmpeg_edit의 경로 전달
         self.parent.open_ffmpeg_folder_button.clicked.connect(lambda: self.parent.open_folder(self.parent.ffmpeg_edit.text()))
 
-        ffmpeg_layout.addWidget(self.parent.ffmpeg_label)
-        ffmpeg_layout.addWidget(self.parent.ffmpeg_edit)
-        ffmpeg_layout.addWidget(self.parent.open_ffmpeg_folder_button)
-        ffmpeg_layout.addWidget(self.parent.ffmpeg_browse)
-        left_layout.addLayout(ffmpeg_layout)
+        # The widgets remain as a compatibility bridge for existing setup code.
+        # FFmpeg configuration is exposed through the app-level Settings dialog.
+        self.parent.ffmpeg_label.hide()
+        self.parent.ffmpeg_edit.hide()
+        self.parent.open_ffmpeg_folder_button.hide()
+        self.parent.ffmpeg_browse.hide()
 
     def create_encode_button(self, left_layout):
         """인코딩 버튼 생성"""
@@ -233,10 +265,10 @@ class FileListAreaComponent:
 
         if self.sort_ascending:
             new_order = sorted(old_order, key=lambda state: os.path.basename(_state_path(state)).lower())
-            self.parent.sort_button.setText('🔠 이름 역순 정렬')
+            self.parent.sort_button.setText("이름 역순 정렬")
         else:
             new_order = sorted(old_order, key=lambda state: os.path.basename(_state_path(state)).lower(), reverse=True)
-            self.parent.sort_button.setText('🔠 이름 순 정렬')
+            self.parent.sort_button.setText("이름순 정렬")
 
         if _state_paths(old_order) != _state_paths(new_order):
             command = ReorderItemsCommand(self.parent.list_widget, old_order, new_order)
@@ -377,8 +409,9 @@ class FileListAreaComponent:
     def on_item_selection_changed(self):
         """리스트 위젯의 아이템 선택이 변경될 때 호출되는 메서드"""
         if self.parent.preview_mode_checkbox.isChecked():
+            self.parent._loading_selected_media_trim = True
             self.parent.preview_area.update_preview()
-        if hasattr(self.parent, "apply_selected_item_trim_to_timeline"):
+        elif hasattr(self.parent, "apply_selected_item_trim_to_timeline"):
             self.parent.apply_selected_item_trim_to_timeline()
         self._refresh_parent()
 

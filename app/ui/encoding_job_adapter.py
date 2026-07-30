@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 
 from app.core.job_builder import (
     detect_media_type,
+    edit_sequence_to_media_items,
     normalize_trim,
     timeline_range_to_trim,
 )
@@ -104,16 +105,8 @@ def _collect_encoding_options(window) -> EncodingOptions:
     else:
         ffmpeg_options.pop("s", None)
 
-    global_trim = FrameTrim()
-    if control_area and getattr(control_area, "use_global_trim", False):
-        global_trim = FrameTrim(
-            getattr(control_area, "global_trim_start", 0),
-            getattr(control_area, "global_trim_end", 0),
-        )
-
     return EncodingOptions(
         ffmpeg_options=ffmpeg_options,
-        global_trim=global_trim,
         debug_mode=_get_debug_mode(),
         use_frame_based_trim=True,
     )
@@ -122,6 +115,14 @@ def _collect_encoding_options(window) -> EncodingOptions:
 def collect_encoding_job(window) -> EncodingJob:
     """Collect current GUI state into an EncodingJob."""
     output_file = window.output_edit.text() if hasattr(window, "output_edit") else ""
+    workspace_state = getattr(window, "workspace_state", None)
+    if workspace_state and workspace_state.edit_sequence.clips:
+        return EncodingJob(
+            media_items=edit_sequence_to_media_items(workspace_state.edit_sequence),
+            output_file=output_file,
+            options=_collect_encoding_options(window),
+        )
+
     media_items = []
     list_widget = getattr(window, "list_widget", None)
     current_row = list_widget.currentRow() if list_widget else -1

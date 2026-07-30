@@ -1,7 +1,15 @@
 import unittest
 
 from app.core.job_builder import detect_media_type, media_items_to_legacy_tuples
-from app.core.models import FrameTrim, MediaItem, MediaType
+from app.core.models import (
+    ClipRange,
+    EditClip,
+    EditSequence,
+    FrameTrim,
+    MediaItem,
+    MediaType,
+    WorkspaceState,
+)
 from app.ui.encoding_job_adapter import collect_encoding_job
 
 
@@ -47,9 +55,6 @@ class FakeControlArea:
     use_custom_resolution = True
     video_width = 1920
     video_height = 1080
-    use_global_trim = True
-    global_trim_start = 5
-    global_trim_end = 7
 
 
 class FakeTimeline:
@@ -128,7 +133,6 @@ class JobBuilderTests(unittest.TestCase):
         self.assertEqual(job.media_items[1].media_type, MediaType.IMAGE_SEQUENCE)
         self.assertEqual(job.options.ffmpeg_options["r"], "24.0")
         self.assertEqual(job.options.ffmpeg_options["s"], "1920x1080")
-        self.assertEqual(job.options.global_trim, FrameTrim(5, 7))
         self.assertEqual(window.encoding_options["r"], "30")
         self.assertEqual(window.encoding_options["s"], "1280x720")
 
@@ -141,6 +145,34 @@ class JobBuilderTests(unittest.TestCase):
         self.assertEqual(job.media_items[0].trim, FrameTrim(20, 20))
         self.assertEqual(job.media_items[0].fps, 24.0)
         self.assertEqual(job.media_items[0].frame_count, 100)
+
+    def test_collect_encoding_job_prefers_workspace_clip_ranges(self):
+        window = FakeWindow()
+        window.workspace_state = WorkspaceState(
+            edit_sequence=EditSequence(
+                (
+                    EditClip(
+                        clip_id="clip-a",
+                        source_path="selected.mp4",
+                        source_range=ClipRange(15, 90),
+                        source_frame_count=100,
+                        media_type=MediaType.VIDEO,
+                        source_fps=24.0,
+                    ),
+                )
+            ),
+            selected_clip_id="clip-a",
+            output_file="output.mp4",
+        )
+
+        job = collect_encoding_job(window)
+
+        self.assertEqual(len(job.media_items), 1)
+        self.assertEqual(job.media_items[0].source_range, ClipRange(15, 90))
+        self.assertEqual(
+            media_items_to_legacy_tuples(job.media_items),
+            [("selected.mp4", 15, 10)],
+        )
 
 
 if __name__ == "__main__":

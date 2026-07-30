@@ -24,7 +24,7 @@ _DEFAULT_MP4_OPTIONS = {
 _PRESETS = [
     EncodingPreset(
         preset_id="h264_review",
-        name="H.264 Review",
+        name="빠른 검토 (CPU H.264)",
         description="빠른 리뷰와 사내 공유용 균형 프리셋",
         ffmpeg_options={
             "c:v": "libx264",
@@ -38,7 +38,7 @@ _PRESETS = [
     ),
     EncodingPreset(
         preset_id="h265_small",
-        name="H.265 Small",
+        name="용량 절약 (CPU H.265)",
         description="용량을 줄인 납품/아카이브용 프리셋",
         ffmpeg_options={
             "c:v": "libx265",
@@ -53,7 +53,7 @@ _PRESETS = [
     ),
     EncodingPreset(
         preset_id="vp9_web",
-        name="VP9 Web",
+        name="웹용 (VP9)",
         description="웹 미리보기와 브라우저 재생용 프리셋",
         ffmpeg_options={
             "c:v": "libvpx-vp9",
@@ -67,7 +67,7 @@ _PRESETS = [
     ),
     EncodingPreset(
         preset_id="gpu_h264_draft",
-        name="GPU H.264 Draft",
+        name="초고속 초안 (GPU H.264)",
         description="NVENC 기반 빠른 초안 확인용 프리셋",
         ffmpeg_options={
             "c:v": "h264_nvenc",
@@ -83,7 +83,7 @@ _PRESETS = [
     ),
     EncodingPreset(
         preset_id="gpu_h264_review",
-        name="GPU H.264 Review",
+        name="빠른 검토 (GPU H.264)",
         description="NVENC 기반 반복 리뷰용 균형 프리셋",
         ffmpeg_options={
             "c:v": "h264_nvenc",
@@ -99,7 +99,7 @@ _PRESETS = [
     ),
     EncodingPreset(
         preset_id="gpu_h264_delivery",
-        name="GPU H.264 Delivery",
+        name="고품질 납품 (GPU H.264)",
         description="NVENC 기반 고품질 납품용 H.264 프리셋",
         ffmpeg_options={
             "c:v": "h264_nvenc",
@@ -115,7 +115,7 @@ _PRESETS = [
     ),
     EncodingPreset(
         preset_id="gpu_h265_small",
-        name="GPU H.265 Small",
+        name="용량 절약 (GPU H.265)",
         description="NVENC 기반 용량 절감용 H.265 프리셋",
         ffmpeg_options={
             "c:v": "hevc_nvenc",
@@ -132,7 +132,7 @@ _PRESETS = [
     ),
     EncodingPreset(
         preset_id="gpu_h265_quality",
-        name="GPU H.265 Quality",
+        name="고품질 보관 (GPU H.265)",
         description="NVENC 기반 고품질 H.265 마스터 프리셋",
         ffmpeg_options={
             "c:v": "hevc_nvenc",
@@ -149,7 +149,7 @@ _PRESETS = [
     ),
     EncodingPreset(
         preset_id=CUSTOM_PRESET_ID,
-        name="Custom",
+        name="직접 설정",
         description="현재 고급 FFmpeg 옵션을 그대로 사용",
         ffmpeg_options={},
         extension=".mp4",
@@ -161,6 +161,17 @@ _PRESETS = [
 
 _PRESET_BY_ID = {preset.preset_id: preset for preset in _PRESETS}
 _PRESET_BY_NAME = {preset.name: preset for preset in _PRESETS}
+_PRESET_BY_NAME.update({
+    "H.264 Review": _PRESET_BY_ID["h264_review"],
+    "H.265 Small": _PRESET_BY_ID["h265_small"],
+    "VP9 Web": _PRESET_BY_ID["vp9_web"],
+    "GPU H.264 Draft": _PRESET_BY_ID["gpu_h264_draft"],
+    "GPU H.264 Review": _PRESET_BY_ID["gpu_h264_review"],
+    "GPU H.264 Delivery": _PRESET_BY_ID["gpu_h264_delivery"],
+    "GPU H.265 Small": _PRESET_BY_ID["gpu_h265_small"],
+    "GPU H.265 Quality": _PRESET_BY_ID["gpu_h265_quality"],
+    "Custom": _PRESET_BY_ID[CUSTOM_PRESET_ID],
+})
 
 
 def get_presets() -> Iterable[EncodingPreset]:

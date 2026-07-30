@@ -1,6 +1,6 @@
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIntValidator
-from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout
 
 from app.services.logging_service import LoggingService
 from app.ui.components.timeline import TimelineComponent
@@ -18,9 +18,6 @@ class ControlAreaComponent:
         self.video_height = 1080
         self.use_custom_framerate = False
         self.use_custom_resolution = False
-        self.global_trim_start = 0
-        self.global_trim_end = 0
-        self.use_global_trim = False
         self.timeline_component = None
 
     def create_control_area(self, parent_layout):
@@ -30,15 +27,13 @@ class ControlAreaComponent:
             self.timeline_component = self.parent.preview_area.timeline
         else:
             self.timeline_component = TimelineComponent(self.parent)
-        self.timeline_component.create_frame_controls(control_layout)
         parent_layout.addLayout(control_layout)
 
     def create_offset_group(self, control_layout):
-        options_group = QGroupBox("작업 설정")
+        options_group = QGroupBox("추가 설정")
         options_layout = QVBoxLayout(options_group)
         self.create_framerate_control(options_layout)
         self.create_resolution_control(options_layout)
-        self.create_global_trim_control(options_layout)
         control_layout.addWidget(options_group)
 
     def create_framerate_control(self, layout):
@@ -79,37 +74,6 @@ class ControlAreaComponent:
         row.addWidget(self.parent.height_edit)
         layout.addLayout(row)
 
-    def create_global_trim_control(self, layout):
-        trim_group = QGroupBox("전역 트림")
-        trim_layout = QVBoxLayout(trim_group)
-        self.parent.global_trim_checkbox = QCheckBox("모든 소스에 추가 트림 적용")
-        self.parent.global_trim_checkbox.setChecked(False)
-        self.parent.global_trim_checkbox.stateChanged.connect(self.toggle_global_trim)
-        trim_layout.addWidget(self.parent.global_trim_checkbox)
-
-        start_row = QHBoxLayout()
-        start_row.addWidget(QLabel("앞"))
-        self.parent.global_trim_start_spinbox = QSpinBox()
-        self.parent.global_trim_start_spinbox.setRange(0, 10000)
-        self.parent.global_trim_start_spinbox.setValue(0)
-        self.parent.global_trim_start_spinbox.setSuffix("f")
-        self.parent.global_trim_start_spinbox.setEnabled(False)
-        self.parent.global_trim_start_spinbox.valueChanged.connect(self.update_global_trim_start)
-        start_row.addWidget(self.parent.global_trim_start_spinbox)
-        trim_layout.addLayout(start_row)
-
-        end_row = QHBoxLayout()
-        end_row.addWidget(QLabel("뒤"))
-        self.parent.global_trim_end_spinbox = QSpinBox()
-        self.parent.global_trim_end_spinbox.setRange(0, 10000)
-        self.parent.global_trim_end_spinbox.setValue(0)
-        self.parent.global_trim_end_spinbox.setSuffix("f")
-        self.parent.global_trim_end_spinbox.setEnabled(False)
-        self.parent.global_trim_end_spinbox.valueChanged.connect(self.update_global_trim_end)
-        end_row.addWidget(self.parent.global_trim_end_spinbox)
-        trim_layout.addLayout(end_row)
-        layout.addWidget(trim_group)
-
     def toggle_framerate(self, state):
         self.use_custom_framerate = state == Qt.CheckState.Checked.value
         self.parent.framerate_spinbox.setEnabled(self.use_custom_framerate)
@@ -135,21 +99,6 @@ class ControlAreaComponent:
         self.framerate = value
         if self.use_custom_framerate:
             self.parent.encoding_options["r"] = str(self.framerate)
-        self._notify_options_changed()
-
-    def toggle_global_trim(self, state):
-        self.use_global_trim = state == Qt.CheckState.Checked.value
-        self.parent.global_trim_start_spinbox.setEnabled(self.use_global_trim)
-        self.parent.global_trim_end_spinbox.setEnabled(self.use_global_trim)
-        logger.info("전역 트림 %s", "활성화" if self.use_global_trim else "비활성화")
-        self._notify_options_changed()
-
-    def update_global_trim_start(self, value):
-        self.global_trim_start = value
-        self._notify_options_changed()
-
-    def update_global_trim_end(self, value):
-        self.global_trim_end = value
         self._notify_options_changed()
 
     def _notify_options_changed(self):

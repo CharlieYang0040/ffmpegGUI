@@ -209,6 +209,72 @@ class FFmpegManager:
                 encoders.add(name)
         return encoders
 
+    @staticmethod
+    def _summarize_encoder_error(output: str) -> str:
+        """Keep the actionable part of an encoder initialization failure."""
+        keywords = (
+            "driver does not support",
+            "minimum required",
+            "no capable devices",
+            "cannot load",
+            "error while opening encoder",
+        )
+        selected = []
+        for line in (output or "").splitlines():
+            stripped = line.strip()
+            if stripped and any(keyword in stripped.lower() for keyword in keywords):
+                if stripped not in selected:
+                    selected.append(stripped)
+        if selected:
+            return " ".join(selected)
+        lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+        return " ".join(lines[-3:]) or "인코더 초기화에 실패했습니다."
+
+    def _probe_encoder(self, encoder_name: str) -> tuple[bool, str]:
+        """Initialize an encoder with one synthetic frame.
+
+        `ffmpeg -encoders` only reports build-time support. This probe also
+        catches missing devices and driver/API incompatibilities.
+        """
+        ffmpeg_path = self.get_ffmpeg_path()
+        if not ffmpeg_path:
+            return False, "FFmpeg 경로가 설정되지 않았습니다."
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg_path,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    # Current NVENC drivers reject very small frames even
+                    # when the encoder and driver are otherwise compatible.
+                    "color=c=black:s=256x256:r=1:d=1",
+                    "-frames:v",
+                    "1",
+                    "-an",
+                    "-c:v",
+                    encoder_name,
+                    "-f",
+                    "null",
+                    "-",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                creationflags=creationflags,
+                timeout=10,
+            )
+        except Exception as exc:
+            return False, f"인코더 점검 실패: {exc}"
+        if result.returncode == 0:
+            return True, ""
+        output = decode_process_output(result.stdout) + decode_process_output(result.stderr)
+        return False, self._summarize_encoder_error(output)
+
     def get_encoder_capabilities(self, force_refresh: bool = False) -> FFmpegEncoderCapabilities:
         """Return encoder capabilities for the configured FFmpeg binary."""
         self._ensure_encoder_capability_cache()
@@ -247,11 +313,29 @@ class FFmpegManager:
                 )
             else:
                 encoders = self.parse_encoder_names(output)
+                encoder_errors = {}
+                for encoder_name in ("h264_nvenc", "hevc_nvenc"):
+                    if encoder_name not in encoders:
+                        continue
+                    available, error = self._probe_encoder(encoder_name)
+                    if not available:
+                        encoder_errors[encoder_name] = error
                 capabilities = FFmpegEncoderCapabilities(
                     encoders=encoders,
-                    nvenc_available=bool({"h264_nvenc", "hevc_nvenc"} & encoders),
+                    nvenc_available=any(
+                        encoder in encoders and encoder not in encoder_errors
+                        for encoder in ("h264_nvenc", "hevc_nvenc")
+                    ),
+                    encoder_errors=encoder_errors,
                     checked_at=time.time(),
-                    message=f"{len(encoders)}개 encoder 확인됨",
+                    message=(
+                        f"{len(encoders)}개 encoder 확인됨"
+                        + (
+                            f", 초기화 실패 {len(encoder_errors)}개"
+                            if encoder_errors
+                            else ""
+                        )
+                    ),
                 )
         except Exception as exc:
             capabilities = FFmpegEncoderCapabilities(
@@ -266,7 +350,11 @@ class FFmpegManager:
         return capabilities
 
     def supports_encoder(self, encoder_name: str) -> bool:
-        return encoder_name in self.get_encoder_capabilities().encoders
+        capabilities = self.get_encoder_capabilities()
+        return (
+            encoder_name in capabilities.encoders
+            and encoder_name not in capabilities.encoder_errors
+        )
 
     def _download_file(self, url: str, output_path: str, progress_callback: ProgressCallback = None) -> str:
         with urllib.request.urlopen(url, timeout=60) as response:

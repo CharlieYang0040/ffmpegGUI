@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QHBoxLayout, QPushButton, QLineEdit, QFileDialog, 
 from PySide6.QtCore import Qt
 
 from app.services.logging_service import LoggingService
+from app.utils.utils import is_image_file, process_image_file
 
 # 로깅 서비스 설정
 logger = LoggingService().get_logger(__name__)
@@ -117,8 +118,8 @@ class OtioControlsComponent:
                     file_path = file_path.replace('\\', '/')  # 경로 정규화
                     
                     # 이미지 파일인 경우 시퀀스 처리
-                    if self.parent.utils.is_image_file(file_path):
-                        processed_path = self.parent.utils.process_image_file(file_path)
+                    if is_image_file(file_path):
+                        processed_path = process_image_file(file_path)
                         logger.debug(f"이미지 시퀀스 처리 결과: {processed_path}")
                         if processed_path and '%' in processed_path:  # 시퀀스 패턴이 있는 경우
                             file_path = processed_path
@@ -144,11 +145,10 @@ class OtioControlsComponent:
                             trim_start, trim_end = trim_values[file_path]
                             item_widget = self.parent.list_widget.itemWidget(item)
                             if item_widget:
-                                item_widget.trim_start_spinbox.setValue(trim_start)
-                                item_widget.trim_end_spinbox.setValue(trim_end)
+                                item_widget.set_trim_values(trim_start, trim_end)
                 else:
                     QMessageBox.warning(self.parent, "경고", "처리할 수 있는 파일이 없습니다.")
                 
         except Exception as e:
             logger.error(f"OTIO 파일 불러오기 실패: {str(e)}", exc_info=True)
-            QMessageBox.warning(self.parent, "오류", f"OTIO 파일을 불러오는 중 오류가 발생했습니다: {str(e)}") 
+            QMessageBox.warning(self.parent, "오류", f"OTIO 파일을 불러오는 중 오류가 발생했습니다: {str(e)}")

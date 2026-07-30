@@ -1,161 +1,106 @@
-# FFmpegGUI by LHCinema
+# ffmpegGUI 2.0
 
-![image](https://github.com/user-attachments/assets/cd7e4b50-da90-485f-b22f-335e94c2afc0)
+ffmpegGUI는 Windows에서 영상, 이미지 시퀀스, 애니메이션 WebP를 한 작업
+목록에 놓고 프레임 단위로 컷 편집한 뒤 FFmpeg로 변환하는 데스크톱 앱입니다.
 
+## 주요 기능
 
+- 단일 트랙 컷 타임라인에서 선택, 구간 조정, 분할, 복제, 삭제, 재정렬
+- CFR/VFR 영상, PNG·JPG 이미지 시퀀스, 애니메이션 WebP 지원
+- CPU H.264·H.265·VP9과 NVIDIA NVENC 프리셋
+- 실제 실행 가능 여부까지 확인하는 NVENC 사전 검사와 CPU 대체 안내
+- 출력 이름 자동 생성, 실행 전 문제 확인, 취소 후 안전한 재실행
+- OTIO 가져오기·내보내기와 프레임 단위 미리보기
+- FFmpeg가 없을 때 공식 Windows 빌드를 SHA-256 검증 후 사용자 폴더에 설치
 
-FFmpegGUI는 FFmpeg를 사용하여 비디오 파일을 쉽게 편집하고 인코딩할 수 있는 그래픽 사용자 인터페이스(GUI) 애플리케이션입니다.
+## 기본 사용법
 
-## 기능 소개
+1. `소스 추가` 또는 드래그 앤 드롭으로 미디어를 추가합니다.
+2. 소스를 선택하고 미리보기와 하단 타임라인에서 사용할 구간을 조정합니다.
+3. 결과 프리셋과 저장 위치를 선택합니다.
+4. 실행 전 확인 결과가 `문제 없음`인지 확인한 뒤 `인코딩 시작`을 누릅니다.
 
+### 편집 조작
 
+| 조작 | 기능 |
+|---|---|
+| 타임라인 클릭 | 클립 선택 및 해당 프레임으로 이동 |
+| 클립 가장자리 드래그 | 사용할 시작·끝 구간 조정 |
+| 클립 본문 드래그 | 클립 순서 변경 |
+| `Ctrl+K` | 재생 헤드에서 클립 분할 |
+| `Ctrl+D` | 선택 클립 복제 |
+| `Delete` | 선택 클립 삭제 |
+| `I` / `O` | 현재 프레임을 시작 / 끝 지점으로 지정 |
+| `Space` | 재생 / 일시정지 |
+| `←` / `→` | 한 프레임 이동 |
+| `Ctrl+마우스 휠` | 타임라인 확대 / 축소 |
+| `마우스 휠` | 확대된 타임라인 가로 이동 |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | 실행 취소 / 다시 실행 |
 
-### 파일목록
+## 설치
 
-![image](https://github.com/user-attachments/assets/6f3189f9-405b-4ef2-bfd3-133b9b65d61a)
-![image](https://github.com/user-attachments/assets/619be8ba-1891-4d12-9b8e-8d4347294c56)
+가장 간단한 방법은
+[GitHub Releases](https://github.com/CharlieYang0040/ffmpegGUI/releases/latest)에서
+`ffmpegGUI-*-windows-x64.exe`와 `SHA256SUMS.txt`를 내려받는 것입니다.
+실행 파일은 현재 코드 서명이 없으므로 Windows SmartScreen 안내가 나타날 수
+있습니다.
 
+## 개발 환경
 
-- 비디오 파일을 쉽게 추가하고 관리할 수 있습니다.
-- 드래그 앤 드롭으로 파일 추가 가능
+- Windows 10/11 x64
+- Python 3.13
+- PySide6 6.8
+- FFmpeg 8.x
 
-### 순서정렬
+```powershell
+git clone https://github.com/CharlieYang0040/ffmpegGUI.git
+cd ffmpegGUI
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe main.py
+```
 
-![image](https://github.com/user-attachments/assets/7fea9482-ed54-4564-ad27-ca0d795498d0)
+FFmpeg 경로를 설정하지 않아도 첫 실행 시 자동으로 준비합니다. 수동으로
+사용하려면 설정 화면에서 `ffmpeg.exe` 경로를 지정할 수 있습니다.
 
+## 검사와 빌드
 
-- 이름 순 정렬: 파일을 알파벳 순으로 정렬합니다.
-- 순서 반대로: 현재 목록의 순서를 반대로 뒤집습니다.
-- 수동 정렬: 원하는 순서로 파일을 드래그하여 재배치할 수 있습니다.
+```powershell
+.\.venv\Scripts\python.exe -m compileall -q app tests
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m pip check
+.\scripts\build_release.ps1
+```
 
-### 트림기능
+릴리즈 스크립트는 테스트 후 `main.spec`으로 단일 실행 파일을 만들고
+`artifacts/release/v<버전>/`에 실행 파일과 SHA-256 체크섬을 생성합니다.
+버전의 단일 원천은 `app/config.py`의 `APP_VERSION`입니다.
 
-![image](https://github.com/user-attachments/assets/7b2bc81e-8567-490b-97d9-b9ad319d2a68)
-![image](https://github.com/user-attachments/assets/d73d5103-e787-4f37-90f4-ff3667602cbb)
+실제 미디어 검증은 다음 명령으로 실행합니다.
 
+```powershell
+.\.venv\Scripts\python.exe .\scripts\run_real_media_regression.py
+```
 
-- 전체 트림: 모든 비디오에 동일한 트림 설정을 적용합니다.
-- 개별 트림: 각 비디오마다 다른 트림 설정을 적용할 수 있습니다.
+샘플 구성과 판정 기준은
+[실제 미디어 회귀 가이드](docs/manual_real_media_regression.md)를 참고하세요.
 
-### 옵션설정
+## 문서
 
-![image](https://github.com/user-attachments/assets/7b59cbb9-30c8-41c9-bff9-c9d0db1008b6)
+- [현재 개발 상태와 완료 기준](docs/development_plan.md)
+- [2.0 변경 기록](CHANGELOG.md)
+- [UI/UX V2 결과](docs/ui_ux_redesign_v2_plan.md)
+- [미리보기 구조](docs/media_play_refactor_plan.md)
+- [마이그레이션 가이드](app/utils/migration_guide.md)
 
+## 알려진 제한
 
-- 프레임레이트 조정: 1-60 FPS 범위 내 설정 가능
-- 해상도 변경: 사전 정의된 해상도 또는 사용자 지정 해상도 선택
-- 다양한 인코딩 옵션 제공: H.264, H.265, VP9 등 코덱 선택 가능
-
-### 미리보기 기능
-
-![image](https://github.com/user-attachments/assets/1c24afa7-b1da-406a-80b5-e7d52b559597)
-
-
-- 재생속도 조절이 가능한 미리보기 기능
-- 0.25x에서 8x까지 재생 속도 조절
-
-### 자동 경로, 네이밍
-
-![image](https://github.com/user-attachments/assets/b5cfb6f0-ba3e-416c-9e2f-ba2229c20fc9)
-
-![image](https://github.com/user-attachments/assets/af0818b1-4fdd-4123-8dc8-35efd4361e40)
-
-
-- 추가되는 파일명을 출력 경로에 자동으로 입력합니다.
-
-### 출력 경로
-
-![image](https://github.com/user-attachments/assets/e0162672-2e79-4ea3-8098-dddc57759aac)
-![image](https://github.com/user-attachments/assets/8dcb9641-d689-4fdd-b207-2524dcb30785)
-
-
-- 인코딩된 파일의 저장 위치를 지정할 수 있습니다.
-- 이전에 사용했던 저장 위치를 자동으로 기억합니다.
-- 폴더 버튼을 누르면 경로를 탐색기로 바로 엽니다.
-
-### 실행취소, 다시실행
-
-![image](https://github.com/user-attachments/assets/7a21a537-1045-45b2-b9d0-f6914d41de70)
-
-
-- 실행취소 Undo (Ctrl + Z)
-- 다시실행 Redo (Ctrl + Shift + Z) 기능으로 저장위치나 파일 순서를 이전으로 돌릴 수 있습니다.
-
-
-### 인코딩 시작
-
-![image](https://github.com/user-attachments/assets/f517ced9-fbef-460b-889f-f7f096f65654)
-
-
-- 설정한 옵션으로 인코딩 프로세스를 시작합니다.
-- 진행 상황을 실시간으로 확인할 수 있는 프로그레스 바
-
-### 업데이트 확인
-
-![image](https://github.com/user-attachments/assets/c528a119-d7c8-4222-935a-279070ffcd80)
-
-
-- 최신 버전의 소프트웨어를 자동으로 확인하고 업데이트할 수 있습니다.
-- 업데이트 알림 및 자동 업데이트 옵션
-
-## 사용 방법
-
-1. 목록에 파일 또는 폴더를 드래그 하여 추가합니다.
-2. 파일 순서를 맞추고 세부 설정을 합니다.
-3. 출력 경로를 지정합니다.
-4. 인코딩 시작을 눌러 인코딩을 합니다.
-5. 진행 상황을 확인하고 완료될 때까지 기다립니다.
-
-## 빌드/실행 방법
-
-1. 이 저장소를 클론합니다:
-   ```bash
-   git clone https://github.com/CharlieYang0040/ffmpegGUI
-   cd ffmpegGUI
-   ```
-2. 필요한 라이브러리를 설치합니다:
-   ```bash
-   python -m pip install -r requirements.txt
-   ```
-3. 애플리케이션을 실행합니다:
-   ```bash
-   python main.py
-   ```
-4. 테스트를 실행합니다:
-   ```bash
-   python -m compileall -q app tests
-   python -m unittest discover -s tests -v
-   ```
-5. Windows exe를 빌드합니다:
-   ```bash
-   pyinstaller main.spec
-   ```
-
-FFmpeg가 저장된 경로, 앱 데이터 캐시, PATH에서 발견되지 않으면 첫 실행 시 Windows용 FFmpeg release essentials ZIP을 자동으로 다운로드해 사용자 데이터 디렉터리에 설치합니다.
-
-## 주의사항
-
-- FFmpeg는 앱이 자동으로 찾거나 다운로드합니다. 자동 설치가 실패하면 FFmpeg 실행 파일을 수동으로 선택할 수 있습니다.
-- 대용량 비디오 파일을 처리할 때는 충분한 저장 공간과 메모리가 필요할 수 있습니다.
-- 인코딩 과정은 컴퓨터 성능에 따라 시간이 오래 걸릴 수 있습니다.
-- 저작권이 있는 콘텐츠를 처리할 때는 관련 법규를 준수해야 합니다.
-
-## 기여하기
-
-버그 리포트, 기능 제안 또는 풀 리퀘스트는 언제나 환영합니다. 기여하기 전에 프로젝트의 기여 가이드라인을 확인해주세요.
-
-1. 프로젝트를 포크합니다.
-2. 새로운 브랜치를 생성합니다 (`git checkout -b feature/AmazingFeature`).
-3. 변경사항을 커밋합니다 (`git commit -m 'Add some AmazingFeature'`).
-4. 브랜치에 푸시합니다 (`git push origin feature/AmazingFeature`).
-5. 풀 리퀘스트를 생성합니다.
+- Windows 전용입니다.
+- 실행 파일은 Authenticode 코드 서명되지 않았습니다.
+- 실제 출력 장치에서의 주관적 오디오 청취는 자동 회귀 범위에 포함하지
+  않습니다. 대신 오디오 스트림, 비무음 신호, 앱 재생 진행을 확인합니다.
+- 이미지 시퀀스에는 자체 FPS 정보가 없으므로 출력 FPS를 명시해야 합니다.
 
 ## 라이선스
 
-이 프로젝트는 [MIT 라이선스](LICENSE)에 따라 라이선스가 부여됩니다.
-
-## 연락처
-
-LHCinema - [charlieyang@lionhearts.co.kr]
-
-프로젝트 링크: https://github.com/CharlieYang0040/ffmpegGUI
+[MIT License](LICENSE) — Copyright © 2024-2026 LHCinema
