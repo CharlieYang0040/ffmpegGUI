@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QTabWidget, QWidget, QVBoxLayout, QPushButton, QHBoxLayout
+from PySide6.QtWidgets import QHBoxLayout, QTabWidget, QWidget, QVBoxLayout, QToolButton
 from PySide6.QtCore import Qt, QSize
 from app.ui.widgets.drag_drop_list_widget import DragDropListWidget
 from app.utils.utils import process_file
@@ -18,14 +18,28 @@ class TabListWidget(QWidget):
         
         # 탭 위젯
         self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
-        self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        self.tab_widget.setTabsClosable(False)
         
-        # 새 탭 버튼을 탭바에 직접 추가
-        self.add_tab_button = QPushButton("➕")
-        self.add_tab_button.setFixedSize(36, 24)  # 버튼 크기 조정
+        corner = QWidget()
+        corner_layout = QHBoxLayout(corner)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.setSpacing(0)
+        self.remove_tab_button = QToolButton()
+        self.remove_tab_button.setObjectName("remove-sequence-button")
+        self.remove_tab_button.setText("×")
+        self.remove_tab_button.setToolTip("현재 시퀀스 닫기")
+        self.remove_tab_button.setFixedSize(28, 28)
+        self.remove_tab_button.clicked.connect(self.close_current_tab)
+        corner_layout.addWidget(self.remove_tab_button)
+
+        self.add_tab_button = QToolButton()
+        self.add_tab_button.setObjectName("add-sequence-button")
+        self.add_tab_button.setText("+")
+        self.add_tab_button.setToolTip("새 시퀀스")
+        self.add_tab_button.setFixedSize(28, 28)
         self.add_tab_button.clicked.connect(self.add_new_tab)
-        self.tab_widget.setCornerWidget(self.add_tab_button, Qt.TopRightCorner)
+        corner_layout.addWidget(self.add_tab_button)
+        self.tab_widget.setCornerWidget(corner, Qt.TopRightCorner)
         
         layout.addWidget(self.tab_widget)
         
@@ -74,15 +88,20 @@ class TabListWidget(QWidget):
         tab_count = self.tab_widget.count()
         self.tab_widget.addTab(new_tab, f"시퀀스 {tab_count + 1}")
         self.tab_widget.setCurrentIndex(tab_count)
+        self.remove_tab_button.setEnabled(self.tab_widget.count() > 1)
         logger.info(f"새 탭 추가됨: 시퀀스 {tab_count + 1}")
+
+    def close_current_tab(self):
+        self.close_tab(self.tab_widget.currentIndex())
         
     def close_tab(self, index):
         if self.tab_widget.count() > 1:  # 최소 1개의 탭은 유지
             self.tab_widget.removeTab(index)
+            self.remove_tab_button.setEnabled(self.tab_widget.count() > 1)
             logger.info(f"탭 닫힘: 인덱스 {index}")
             
     def get_current_list_widget(self) -> DragDropListWidget:
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
             return current_tab.findChild(DragDropListWidget)
-        return None 
+        return None

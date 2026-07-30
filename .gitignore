@@ -12,9 +12,11 @@ libs
 # 배포 폴더 무시
 /dist
 /lhcVideoDownloader/dist
+/artifacts
 
 # 로그 폴더 무시
 /logs
+/crash_log.txt
 
 # 캐시 폴더 무시
 /cache

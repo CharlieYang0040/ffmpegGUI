@@ -222,10 +222,11 @@ def generate_and_open_otio(clips: List[Tuple[str, int, int]], output_path: str, 
     OTIO 파일을 생성하고 OpenRV로 엽니다
     """
     try:
-        # ffmpeg_utils의 ffmpeg 경로를 공유
-        from app.utils.ffmpeg_utils import FFMPEG_PATH
-        if FFMPEG_PATH:
-            set_ffmpeg_path(FFMPEG_PATH)
+        # 중앙 FFmpeg 관리자에서 현재 경로를 가져온다.
+        from app.core.ffmpeg_manager import FFmpegManager
+        ffmpeg_path = FFmpegManager().get_ffmpeg_path()
+        if ffmpeg_path:
+            set_ffmpeg_path(ffmpeg_path)
         
         generator = OTIOGenerator()
         timeline = generator.create_otio(clips)

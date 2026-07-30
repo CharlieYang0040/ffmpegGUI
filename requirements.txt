@@ -34,7 +34,7 @@ numpy==2.1.2
     #   opencv-python
 opencv-python==4.10.0.84
     # via -r requirements.in
-packaging==24.1
+packaging==24.2
     # via
     #   -r requirements.in
     #   pyinstaller
@@ -47,9 +47,9 @@ pillow==11.0.0
     # via -r requirements.in
 psutil==6.1.0
     # via -r requirements.in
-pyinstaller==6.11.0
+pyinstaller==6.21.0
     # via -r requirements.in
-pyinstaller-hooks-contrib==2024.9
+pyinstaller-hooks-contrib==2026.6
     # via
     #   -r requirements.in
     #   pyinstaller

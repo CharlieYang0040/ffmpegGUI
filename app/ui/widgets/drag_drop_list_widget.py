@@ -26,8 +26,8 @@ class DragDropListWidget(QListWidget):
         self.drag_start_position = None
 
         self.setViewportMargins(0, 0, 0, 0)
-        self.placeholder_text = "파일 또는 폴더를 드래그하여 추가하세요."
-        self.placeholder_subtext = "이미지 시퀀스는 대표 프레임 한 장만 추가해도 됩니다."
+        self.placeholder_text = "미디어 추가"
+        self.placeholder_subtext = ""
         self.placeholder_visible = True
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.itemDoubleClicked.connect(self.on_item_double_clicked)
@@ -131,8 +131,9 @@ class DragDropListWidget(QListWidget):
                 "file_path": state.get("file_path", ""),
                 "trim_start": as_int(state.get("trim_start", 0)),
                 "trim_end": as_int(state.get("trim_end", 0)),
+                "clip_id": str(state.get("clip_id", "") or ""),
             }
-        return {"file_path": state, "trim_start": 0, "trim_end": 0}
+        return {"file_path": state, "trim_start": 0, "trim_end": 0, "clip_id": ""}
 
     @staticmethod
     def _state_paths(states):
@@ -145,11 +146,18 @@ class DragDropListWidget(QListWidget):
         widget = self.itemWidget(item) if item else None
         if widget and hasattr(widget, "get_trim_values"):
             trim_start, trim_end = widget.get_trim_values()
-        return {"file_path": file_path, "trim_start": int(trim_start), "trim_end": int(trim_end)}
+        return {
+            "file_path": file_path,
+            "trim_start": int(trim_start),
+            "trim_end": int(trim_end),
+            "clip_id": str(getattr(widget, "clip_id", "") or ""),
+        }
 
     def _make_list_item(self, state):
         state = self._coerce_item_state(state)
         item_widget = ListWidgetItem(state["file_path"])
+        if state.get("clip_id"):
+            item_widget.clip_id = state["clip_id"]
         if hasattr(item_widget, "set_trim_values"):
             try:
                 item_widget.set_trim_values(state["trim_start"], state["trim_end"], refresh=False)
@@ -231,12 +239,11 @@ class DragDropListWidget(QListWidget):
             painter = QPainter(self.viewport())
             painter.save()
             col = self.palette().placeholderText().color()
-            darker_col = QColor(col.red() // 3, col.green() // 3, col.blue() // 3)
-            painter.setPen(darker_col)
+            painter.setPen(QColor("#d7dde5"))
 
             main_font = QApplication.font()
-            main_font.setPointSize(14)
-            main_font.setBold(True)
+            main_font.setPointSize(11)
+            main_font.setBold(False)
             painter.setFont(main_font)
             fm = painter.fontMetrics()
             main_text_rect = fm.boundingRect(self.viewport().rect(), Qt.AlignCenter, self.placeholder_text)

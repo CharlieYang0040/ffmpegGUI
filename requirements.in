@@ -7,12 +7,12 @@ future
 idna
 numpy
 opencv-python
-packaging
+packaging>=24.2
 pefile
 pillow
 psutil
-pyinstaller
-pyinstaller-hooks-contrib
+pyinstaller>=6.16,<7
+pyinstaller-hooks-contrib>=2026.6,<2027
 PySide6
 PySide6_Addons
 PySide6_Essentials

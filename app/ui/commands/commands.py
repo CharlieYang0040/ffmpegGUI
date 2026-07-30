@@ -206,6 +206,43 @@ class ReorderItemsCommand(Command):
                 _restore_list_item_state(self.list_widget, self.list_widget.count(), state)
         self.logger.info("[ReorderItemsCommand] order applied")
 
+
+class ReplaceListStateCommand(Command):
+    """Replace an edit sequence atomically for split/duplicate operations."""
+
+    def __init__(
+        self,
+        list_widget: QListWidget,
+        old_states: List,
+        new_states: List,
+        old_selected_row: int,
+        new_selected_row: int,
+        description: str,
+    ):
+        super().__init__(description)
+        self.list_widget = list_widget
+        self.old_states = [_normalize_item_state(list_widget, state) for state in old_states]
+        self.new_states = [_normalize_item_state(list_widget, state) for state in new_states]
+        self.old_selected_row = old_selected_row
+        self.new_selected_row = new_selected_row
+
+    def execute(self) -> bool:
+        return self._apply(self.new_states, self.new_selected_row)
+
+    def undo(self) -> bool:
+        return self._apply(self.old_states, self.old_selected_row)
+
+    def _apply(self, states: List[dict], selected_row: int) -> bool:
+        try:
+            self.list_widget.update_items(states)
+            if 0 <= selected_row < self.list_widget.count():
+                self.list_widget.setCurrentRow(selected_row)
+            return True
+        except Exception as exc:
+            self.logger.error("%s 실패: %s", self.description, exc)
+            return False
+
+
 class ChangeOutputPathCommand(Command):
     def __init__(self, output_edit, old_path: str, new_path: str):
         super().__init__(f"출력 경로 변경: {old_path} → {new_path}")

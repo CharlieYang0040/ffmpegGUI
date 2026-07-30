@@ -68,19 +68,31 @@ class BatchProcessor:
         cancel_token=None,
     ) -> str:
         """Process an EncodingJob through the existing batch pipeline."""
-        from app.core.job_builder import media_items_to_legacy_tuples, validate_encoding_job
+        from app.core.job_builder import (
+            media_items_to_legacy_tuples,
+            validate_encoding_job,
+        )
 
         validate_encoding_job(job)
         if cancel_token:
             cancel_token.throw_if_cancelled()
         encoding_options = dict(job.options.ffmpeg_options)
+        canonical_clips = [
+            (item.source_path, item.source_range, int(item.frame_count))
+            for item in job.media_items
+            if item.source_range is not None and item.frame_count
+        ]
+        uses_canonical_ranges = len(canonical_clips) == len(job.media_items)
         return self.process_all_media(
-            media_files=media_items_to_legacy_tuples(job.media_items),
+            media_files=(
+                []
+                if uses_canonical_ranges
+                else media_items_to_legacy_tuples(job.media_items)
+            ),
+            clip_ranges=canonical_clips if uses_canonical_ranges else None,
             output_file=job.output_file,
             encoding_options=encoding_options,
             debug_mode=job.options.debug_mode,
-            global_trim_start=job.options.global_trim.head_frames,
-            global_trim_end=job.options.global_trim.tail_frames,
             progress_callback=progress_callback,
             task_callback=task_callback,
             use_frame_based_trim=job.options.use_frame_based_trim,
@@ -93,9 +105,6 @@ class BatchProcessor:
         output_file: str,
         encoding_options: Dict[str, str],
         debug_mode: bool = False,
-        trim_values: List[Tuple[int, int]] = None,
-        global_trim_start: int = 0,
-        global_trim_end: int = 0,
         progress_callback: Optional[Callable[[int], None]] = None,
         task_callback: Optional[Callable[[str], None]] = None,
         target_properties: Optional[Dict[str, str]] = None,
@@ -106,18 +115,17 @@ class BatchProcessor:
         custom_height: int = 0,
         use_frame_based_trim: bool = False,
         cancel_token=None,
+        clip_ranges=None,
     ) -> str:
         """
         여러 미디어 파일을 처리하고 하나의 출력 파일로 병합합니다.
 
         Args:
-            media_files: 처리할 미디어 파일 목록 (파일 경로, 트림 시작, 트림 끝)
+            media_files: 레거시 입력 목록 (파일 경로, 앞/뒤 제거 프레임)
+            clip_ranges: 현대 입력 목록 (파일 경로, ClipRange, 전체 프레임 수)
             output_file: 출력 파일 경로
             encoding_options: 인코딩 옵션
             debug_mode: 디버그 모드 여부
-            trim_values: 각 파일별 트림 값 (시작, 끝)
-            global_trim_start: 전역 트림 시작 값
-            global_trim_end: 전역 트림 끝 값
             progress_callback: 진행률 콜백 함수
             task_callback: 작업 상태 콜백 함수
             target_properties: 출력 미디어의 속성 (해상도 등)
@@ -131,6 +139,15 @@ class BatchProcessor:
         Returns:
             처리된 출력 파일 경로
         """
+        if clip_ranges is not None:
+            media_files = [
+                (
+                    file_path,
+                    source_range.source_in,
+                    source_frame_count - source_range.source_out,
+                )
+                for file_path, source_range, source_frame_count in clip_ranges
+            ]
         target_properties = target_properties or {}
         self._last_progress = 0
         if cancel_token:
@@ -330,65 +347,15 @@ class BatchProcessor:
 
             # 각 미디어 파일 처리
             for i, (file_path, trim_start, trim_end) in enumerate(media_files):
-                # 트림 값 검증 및 변환
-                if isinstance(trim_start, str):
-                    try:
-                        trim_start = float(trim_start)
-                    except ValueError:
-                        trim_start = 0
-
-                if isinstance(trim_end, str):
-                    try:
-                        trim_end = float(trim_end)
-                    except ValueError:
-                        trim_end = 0
-
-                # 소수점 트림 값을 프레임 단위로 변환 (초 단위로 잘못 입력된 경우 처리)
-                if isinstance(trim_start, float) and not trim_start.is_integer() and trim_start > 0 and trim_start < 100:
-                    try:
-                        video_properties = get_media_properties(file_path, debug_mode)
-                        fps = float(video_properties.get('r', 30))
-                        # 초 단위를 프레임 단위로 변환
-                        original_trim_start = trim_start
-                        trim_start = int(trim_start * fps)
-                        self.logger.info(f"소수점 트림 값을 프레임으로 변환: {original_trim_start:.2f}초 -> {trim_start}프레임 (fps: {fps})")
-                    except Exception as e:
-                        self.logger.warning(f"트림 값 변환 중 오류: {e}")
-                        trim_start = int(trim_start)
-                elif isinstance(trim_start, float):
-                    trim_start = int(trim_start)
-
-                if isinstance(trim_end, float) and not trim_end.is_integer() and trim_end > 0 and trim_end < 100:
-                    try:
-                        video_properties = get_media_properties(file_path, debug_mode)
-                        fps = float(video_properties.get('r', 30))
-                        # 초 단위를 프레임 단위로 변환
-                        original_trim_end = trim_end
-                        trim_end = int(trim_end * fps)
-                        self.logger.info(f"소수점 트림 값을 프레임으로 변환: {original_trim_end:.2f}초 -> {trim_end}프레임 (fps: {fps})")
-                    except Exception as e:
-                        self.logger.warning(f"트림 값 변환 중 오류: {e}")
-                        trim_end = int(trim_end)
-                elif isinstance(trim_end, float):
-                    trim_end = int(trim_end)
-
-                # 전역 트림 값 적용
-                if global_trim_start > 0:
-                    original_trim_start = trim_start
-                    trim_start += global_trim_start
-                    self.logger.info(f"전역 트림 시작 값 적용: {original_trim_start} + {global_trim_start} = {trim_start}프레임")
-                if global_trim_end > 0:
-                    original_trim_end = trim_end
-                    trim_end += global_trim_end
-                    self.logger.info(f"전역 트림 끝 값 적용: {original_trim_end} + {global_trim_end} = {trim_end}프레임")
-
-                # 개별 트림 값이 있으면 적용
-                if trim_values and i < len(trim_values):
-                    custom_trim_start, custom_trim_end = trim_values[i]
-                    if custom_trim_start > 0:
-                        trim_start = custom_trim_start
-                    if custom_trim_end > 0:
-                        trim_end = custom_trim_end
+                if (
+                    isinstance(trim_start, bool)
+                    or isinstance(trim_end, bool)
+                    or not isinstance(trim_start, int)
+                    or not isinstance(trim_end, int)
+                ):
+                    raise TypeError("클립 경계는 정수 프레임이어야 합니다.")
+                trim_start = max(0, trim_start)
+                trim_end = max(0, trim_end)
 
                 # 프레임 기반 트림 사용 시 로그 출력 및 값 검증
                 if use_frame_based_trim:

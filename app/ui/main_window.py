@@ -1,9 +1,11 @@
 import os
 import subprocess
+import uuid
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QCursor, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -26,8 +29,8 @@ from app.core.commands import Command, command_manager
 from app.core.encoding_presets import apply_preset_options, get_preset, get_presets
 from app.core.events import Events, event_emitter
 from app.core.ffmpeg_manager import FFmpegManager
-from app.core.job_builder import validate_encoding_job
-from app.core.models import CancellationToken, EncodingProgressStage, PreflightSeverity
+from app.core.job_builder import clip_range_to_trim, validate_encoding_job
+from app.core.models import CancellationToken, ClipRange, EncodingProgressStage, PreflightSeverity
 from app.core.preflight import build_preflight
 from app.services.logging_service import LoggingService
 from app.services.settings_service import SettingsService
@@ -36,11 +39,14 @@ from app.ui.components.control_area import ControlAreaComponent
 from app.ui.components.file_list_area import FileListAreaComponent
 from app.ui.components.otio_controls import OtioControlsComponent
 from app.ui.components.preview_area import PreviewAreaComponent
+from app.ui.commands.commands import ReplaceListStateCommand
 from app.ui.dialogs.encoding_options_dialog import EncodingOptionsDialog
 from app.ui.dialogs.progress_dialog import EncodingProgressDialog, ProgressSignals
+from app.ui.dialogs.settings_dialog import SettingsDialog
 from app.ui.encoding_job_adapter import collect_encoding_job
 from app.ui.styles import Styles
 from app.ui.threads.encoding_thread import EncodingThread
+from app.ui.workspace_state_adapter import collect_workspace_state, split_clip_item_state
 from app.ui.widgets.tab_list_widget import TabListWidget
 from app.utils.ffmpeg_utils import FFmpegUtils
 from app.utils.utils import get_debug_mode, get_resource_path, set_debug_mode, set_logger_level
@@ -92,6 +98,8 @@ class FFmpegGui(QMainWindow):
         self._is_encoding = False
         self._ffmpeg_setup_in_progress = False
         self._syncing_timeline_trim = False
+        self._loading_selected_media_trim = False
+        self.workspace_state = None
 
         saved_ffmpeg_path = self.settings_service.get("ffmpeg_path", "")
         self.default_ffmpeg_path = self.ffmpeg_manager.find_existing_ffmpeg(saved_ffmpeg_path)
@@ -102,7 +110,7 @@ class FFmpegGui(QMainWindow):
         self.init_tab_list_widget()
         self.init_shortcuts()
         self.init_ui()
-        self.setStyleSheet(Styles.get_unreal_style())
+        self.setStyleSheet(Styles.get_app_style())
         self.set_icon()
 
         self.progress_signals = ProgressSignals()
@@ -143,6 +151,13 @@ class FFmpegGui(QMainWindow):
         undo_shortcut.activated.connect(self.undo)
         redo_shortcut = QShortcut(QKeySequence.Redo, self)
         redo_shortcut.activated.connect(self.redo)
+        duplicate_shortcut = QShortcut(QKeySequence("Ctrl+D"), self)
+        duplicate_shortcut.activated.connect(self.duplicate_selected_clip)
+        self._global_shortcuts = (
+            undo_shortcut,
+            redo_shortcut,
+            duplicate_shortcut,
+        )
 
     def init_ui(self):
         self.setWindowTitle("ffmpegGUI by LHCinema")
@@ -152,45 +167,139 @@ class FFmpegGui(QMainWindow):
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(8)
 
+        self.create_app_bar(main_layout)
+
         workspace = QSplitter(Qt.Horizontal)
         workspace.setChildrenCollapsible(False)
+        self.workspace_splitter = workspace
         main_layout.addWidget(workspace, 1)
 
         source_panel = self.create_panel("source-panel")
+        source_panel.setMinimumWidth(240)
         source_layout = QVBoxLayout(source_panel)
         source_layout.setContentsMargins(10, 10, 10, 10)
+        source_layout.addWidget(self.create_section_title("소스"))
         self.file_list_area.create_left_layout(source_layout, include_job_controls=False)
         workspace.addWidget(source_panel)
 
         preview_panel = self.create_panel("preview-panel")
+        preview_panel.setMinimumWidth(500)
         preview_layout = QVBoxLayout(preview_panel)
         preview_layout.setContentsMargins(10, 10, 10, 10)
         self.preview_area.create_preview_area(preview_layout)
         workspace.addWidget(preview_panel)
 
         inspector_scroll = QScrollArea()
+        self.inspector_scroll = inspector_scroll
+        inspector_scroll.setMinimumWidth(300)
         inspector_scroll.setWidgetResizable(True)
         inspector_scroll.setFrameShape(QFrame.NoFrame)
         inspector_widget = self.create_panel("inspector-panel")
         inspector_layout = QVBoxLayout(inspector_widget)
         inspector_layout.setContentsMargins(10, 10, 10, 10)
+        inspector_layout.addWidget(self.create_section_title("출력"))
         self.create_job_inspector(inspector_layout)
         inspector_scroll.setWidget(inspector_widget)
         workspace.addWidget(inspector_scroll)
-        workspace.setSizes([330, 620, 360])
+        saved_sizes = self.settings_service.get(
+            "workspace_splitter_sizes",
+            [280, 760, 320],
+        )
+        try:
+            saved_sizes = [max(1, int(size)) for size in saved_sizes]
+        except (TypeError, ValueError):
+            saved_sizes = [280, 760, 320]
+        workspace.setSizes(
+            saved_sizes if len(saved_sizes) == 3 else [280, 760, 320]
+        )
 
+        self.preview_area.timeline.create_timeline_area(main_layout)
         self.create_bottom_progress_area(main_layout)
         self.setup_timeline_sync()
         self.setup_update_checker()
 
-        self.setGeometry(100, 100, 1280, 760)
-        self.setMinimumSize(1120, 680)
+        self.setMinimumSize(1050, 700)
+        saved_geometry = self.settings_service.get("window_geometry")
+        restored = bool(saved_geometry and self.restoreGeometry(saved_geometry))
+        available = self.screen().availableGeometry()
+        if not restored or self.width() < 1200 or self.height() < 720:
+            target_width = min(1440, int(available.width() * 0.92))
+            target_height = min(900, int(available.height() * 0.92))
+            self.resize(target_width, target_height)
+            self.move(
+                available.x() + max(0, (available.width() - target_width) // 2),
+                available.y() + max(0, (available.height() - target_height) // 2),
+            )
+        if (
+            self.settings_service.get("window_maximized", False, type=bool)
+            or available.width() < 1400
+            or available.height() < 850
+        ):
+            self.showMaximized()
         self.statusBar().showMessage("준비됨")
 
         self.debug_checkbox.setChecked(get_debug_mode())
         set_logger_level(self.debug_checkbox.isChecked())
         logger.info("UI initialized")
         self.print_settings_info()
+
+    def create_app_bar(self, layout):
+        app_bar = QFrame()
+        app_bar.setObjectName("app-bar")
+        app_bar_layout = QHBoxLayout(app_bar)
+        app_bar_layout.setContentsMargins(12, 8, 12, 8)
+
+        title = QLabel("ffmpegGUI")
+        title.setObjectName("app-title")
+        app_bar_layout.addWidget(title)
+        app_bar_layout.addStretch(1)
+
+        self.ffmpeg_status_badge = QLabel("확인 중")
+        self.ffmpeg_status_badge.setProperty("role", "status-pending")
+        app_bar_layout.addWidget(self.ffmpeg_status_badge)
+        settings_button = QPushButton("설정")
+        settings_button.setObjectName("settings-button")
+        settings_button.clicked.connect(self.show_settings_dialog)
+        app_bar_layout.addWidget(settings_button)
+        layout.addWidget(app_bar)
+
+    def create_section_title(self, title, description=None):
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 2)
+        title_label = QLabel(title)
+        title_label.setProperty("role", "section-title")
+        row.addWidget(title_label)
+        row.addStretch(1)
+        if description:
+            description_label = QLabel(description)
+            row.addWidget(description_label)
+        return container
+
+    def show_settings_dialog(self):
+        dialog = SettingsDialog(
+            ffmpeg_path=self.ffmpeg_edit.text() if hasattr(self, "ffmpeg_edit") else "",
+            debug_enabled=self.debug_checkbox.isChecked() if hasattr(self, "debug_checkbox") else False,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        ffmpeg_path = dialog.ffmpeg_path_edit.text().strip()
+        if ffmpeg_path and ffmpeg_path != self.current_ffmpeg_path:
+            if not self.ffmpeg_manager.initialize_ffmpeg(ffmpeg_path):
+                QMessageBox.warning(self, "FFmpeg 설정", "선택한 FFmpeg를 사용할 수 없습니다.")
+                return
+            self.current_ffmpeg_path = ffmpeg_path
+            self.default_ffmpeg_path = ffmpeg_path
+            self.ffmpeg_edit.setText(ffmpeg_path)
+            self.settings_service.set_ffmpeg_path(ffmpeg_path)
+
+        debug_enabled = dialog.debug_checkbox.isChecked()
+        self.debug_checkbox.setChecked(debug_enabled)
+        self.settings_service.set("debug_mode", debug_enabled)
+        self.settings_service.sync()
+        self.refresh_job_inspector()
 
     def create_panel(self, object_name):
         panel = QFrame()
@@ -200,12 +309,7 @@ class FFmpegGui(QMainWindow):
         return panel
 
     def create_job_inspector(self, layout):
-        title = QLabel("Job Inspector")
-        title.setStyleSheet("font-weight: bold; font-size: 15px;")
-        layout.addWidget(title)
-
-        preset_group = QGroupBox("인코딩 프리셋")
-        preset_layout = QVBoxLayout(preset_group)
+        layout.addWidget(QLabel("프리셋"))
         self.preset_combo = QComboBox()
         for preset in get_presets():
             self.preset_combo.addItem(preset.name, preset.preset_id)
@@ -213,11 +317,8 @@ class FFmpegGui(QMainWindow):
         self.preset_combo.setCurrentIndex(max(0, preset_index))
         self.preset_combo.currentIndexChanged.connect(self.on_preset_changed)
         self.preset_description_label = QLabel(get_preset(self.current_preset_id).description)
-        self.preset_description_label.setWordWrap(True)
-        self.preset_description_label.setStyleSheet("color: #b0b8c0;")
-        preset_layout.addWidget(self.preset_combo)
-        preset_layout.addWidget(self.preset_description_label)
-        layout.addWidget(preset_group)
+        self.preset_description_label.hide()
+        layout.addWidget(self.preset_combo)
 
         self.file_list_area.create_output_layout(layout)
         self.output_edit.textChanged.connect(self.refresh_job_inspector)
@@ -225,19 +326,25 @@ class FFmpegGui(QMainWindow):
 
         self.control_area.create_control_area(layout)
 
-        preflight_group = QGroupBox("Preflight")
+        preflight_group = QFrame()
+        preflight_group.setObjectName("preflight-panel")
         preflight_layout = QVBoxLayout(preflight_group)
+        preflight_layout.setContentsMargins(0, 8, 0, 8)
         self.preflight_summary_label = QLabel("소스와 출력 경로를 준비하세요.")
         self.preflight_summary_label.setWordWrap(True)
         self.preflight_issues_label = QLabel("입력 대기 중")
         self.preflight_issues_label.setWordWrap(True)
-        self.preflight_issues_label.setStyleSheet("color: #b0b8c0;")
         preflight_layout.addWidget(self.preflight_summary_label)
         preflight_layout.addWidget(self.preflight_issues_label)
+        self.preflight_action_button = QPushButton()
+        self.preflight_action_button.hide()
+        self.preflight_action_button.clicked.connect(self.resolve_preflight_issue)
+        preflight_layout.addWidget(self.preflight_action_button)
         layout.addWidget(preflight_group)
 
         action_layout = QHBoxLayout()
-        self.encode_button = QPushButton("인코딩 시작")
+        self.encode_button = QPushButton("내보내기")
+        self.encode_button.setProperty("role", "primary")
         self.encode_button.clicked.connect(self.start_encoding)
         self.cancel_button = QPushButton("취소")
         self.cancel_button.setEnabled(False)
@@ -250,47 +357,109 @@ class FFmpegGui(QMainWindow):
         layout.addStretch(1)
 
     def create_advanced_tools(self, layout):
-        tools_group = QGroupBox("Tools / Advanced")
-        tools_layout = QVBoxLayout(tools_group)
+        advanced_button = QPushButton("고급 도구")
+        advanced_button.clicked.connect(self.show_advanced_tools_dialog)
+        layout.addWidget(advanced_button)
 
-        version_options_layout = QHBoxLayout()
-        version_down_button = QPushButton("버전다운")
-        version_up_button = QPushButton("버전업")
+        # Compatibility controls used by the existing update/command services.
+        # They are intentionally not part of the default workspace.
+        self.update_button = QPushButton()
+        self.update_button.hide()
+        self.update_button.clicked.connect(self.update_checker.check_for_updates)
+        self.undo_button = QPushButton()
+        self.undo_button.hide()
+        self.undo_button.clicked.connect(self.undo)
+        self.redo_button = QPushButton()
+        self.redo_button.hide()
+        self.redo_button.clicked.connect(self.redo)
+        self.debug_checkbox = QCheckBox()
+        self.debug_checkbox.hide()
+        self.debug_checkbox.stateChanged.connect(self.toggle_debug_mode)
+        self.clear_settings_button = QPushButton()
+        self.clear_settings_button.hide()
+        self.clear_settings_button.clicked.connect(self.clear_settings)
+
+    def show_advanced_tools_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("고급 도구")
+        dialog.setMinimumWidth(520)
+        tools_layout = QVBoxLayout(dialog)
+
+        description = QLabel(
+            "OTIO 교환, 파일 버전 경로 변경, 직접 FFmpeg 옵션처럼 "
+            "일반 변환에 필요하지 않은 기능입니다."
+        )
+        description.setWordWrap(True)
+        description.setProperty("role", "muted")
+        tools_layout.addWidget(description)
+
+        version_layout = QHBoxLayout()
+        version_down_button = QPushButton("파일 버전 내리기")
+        version_up_button = QPushButton("파일 버전 올리기")
         version_down_button.clicked.connect(lambda: self.file_list_area.change_version(-1))
         version_up_button.clicked.connect(lambda: self.file_list_area.change_version(1))
-        options_button = QPushButton("고급 옵션")
+        options_button = QPushButton("직접 FFmpeg 옵션")
         options_button.clicked.connect(self.show_encoding_options)
-        version_options_layout.addWidget(version_down_button)
-        version_options_layout.addWidget(version_up_button)
-        version_options_layout.addWidget(options_button)
-        tools_layout.addLayout(version_options_layout)
+        version_layout.addWidget(version_down_button)
+        version_layout.addWidget(version_up_button)
+        version_layout.addWidget(options_button)
+        tools_layout.addLayout(version_layout)
 
         self.otio_controls.setup_otio_controls(tools_layout)
-        self.file_list_area.create_update_button(tools_layout)
-        self.file_list_area.create_undo_redo_buttons(tools_layout)
-        layout.addWidget(tools_group)
+        tools_layout.addStretch(1)
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(dialog.accept)
+        tools_layout.addWidget(close_button)
+        dialog.exec()
 
     def create_bottom_progress_area(self, main_layout):
-        bottom_group = QGroupBox("진행 상태")
+        bottom_group = QFrame()
+        bottom_group.setObjectName("status-strip")
         bottom_layout = QVBoxLayout(bottom_group)
+        bottom_layout.setContentsMargins(10, 5, 10, 5)
         header_layout = QHBoxLayout()
         self.progress_stage_label = QLabel("대기")
-        self.progress_task_label = QLabel("인코딩 작업이 아직 시작되지 않았습니다.")
-        self.progress_task_label.setStyleSheet("color: #b0b8c0;")
+        self.progress_task_label = QLabel("")
         header_layout.addWidget(self.progress_stage_label)
         header_layout.addStretch(1)
         header_layout.addWidget(self.progress_task_label)
         self.bottom_progress_bar = QProgressBar()
         self.bottom_progress_bar.setRange(0, 100)
         self.bottom_progress_bar.setValue(0)
+        self.bottom_progress_bar.setFixedWidth(150)
         self.job_log_view = QTextEdit()
         self.job_log_view.setReadOnly(True)
         self.job_log_view.setFixedHeight(70)
         self.job_log_view.setPlaceholderText("인코딩 단계와 경고가 여기에 표시됩니다.")
+        self.job_log_view.hide()
+        self.log_toggle_button = QToolButton()
+        self.log_toggle_button.setText("로그 보기")
+        self.log_toggle_button.setCheckable(True)
+        self.log_toggle_button.toggled.connect(self.toggle_job_log)
+        header_layout.addWidget(self.log_toggle_button)
+        header_layout.addWidget(self.bottom_progress_bar)
         bottom_layout.addLayout(header_layout)
-        bottom_layout.addWidget(self.bottom_progress_bar)
         bottom_layout.addWidget(self.job_log_view)
+        self.job_result_actions = QWidget()
+        result_actions_layout = QHBoxLayout(self.job_result_actions)
+        result_actions_layout.setContentsMargins(0, 2, 0, 0)
+        result_actions_layout.addStretch(1)
+        self.open_result_folder_button = QPushButton("결과 폴더 열기")
+        self.open_result_folder_button.clicked.connect(self.open_last_result_folder)
+        result_actions_layout.addWidget(self.open_result_folder_button)
+        self.add_result_button = QPushButton("결과를 소스에 추가")
+        self.add_result_button.clicked.connect(self.add_last_result_to_sources)
+        result_actions_layout.addWidget(self.add_result_button)
+        self.retry_job_button = QPushButton("다시 실행")
+        self.retry_job_button.clicked.connect(self.start_encoding)
+        result_actions_layout.addWidget(self.retry_job_button)
+        self.job_result_actions.hide()
+        bottom_layout.addWidget(self.job_result_actions)
         main_layout.addWidget(bottom_group)
+
+    def toggle_job_log(self, visible):
+        self.job_log_view.setVisible(visible)
+        self.log_toggle_button.setText("로그 닫기" if visible else "로그 보기")
 
     def setup_timeline_sync(self):
         timeline_component = getattr(self.preview_area, "timeline", None)
@@ -299,6 +468,11 @@ class FFmpegGui(QMainWindow):
             return
         timeline_widget.in_point_changed.connect(self.sync_current_item_trim_from_timeline)
         timeline_widget.out_point_changed.connect(self.sync_current_item_trim_from_timeline)
+        timeline_widget.frame_changed.connect(self.preview_area.on_timeline_seek_frame)
+        timeline_widget.clip_selected.connect(self.select_clip_from_timeline)
+        timeline_widget.clip_range_committed.connect(self.commit_timeline_clip_range)
+        timeline_widget.clip_move_committed.connect(self.commit_timeline_clip_move)
+        timeline_widget.split_requested.connect(self.split_selected_clip_at_playhead)
         timeline_component.setup_shortcuts()
         logger.debug("Timeline shortcuts initialized")
 
@@ -306,6 +480,9 @@ class FFmpegGui(QMainWindow):
         if not hasattr(self, "preflight_summary_label") or self._is_encoding:
             return
         try:
+            workspace_state = collect_workspace_state(self)
+            self.workspace_state = workspace_state
+            self.update_cut_timeline(workspace_state)
             job = collect_encoding_job(self)
             preset = get_preset(self.current_preset_id)
             summary = build_preflight(job, self.settings_service, preset)
@@ -316,10 +493,17 @@ class FFmpegGui(QMainWindow):
                 parts.append(f"해상도 {summary.resolution}")
             if summary.framerate:
                 parts.append(f"FPS {summary.framerate}")
-            if summary.total_head_trim or summary.total_tail_trim:
-                parts.append(f"트림 앞 {summary.total_head_trim}f / 뒤 {summary.total_tail_trim}f")
+            workspace_state = getattr(self, "workspace_state", None)
+            if workspace_state and workspace_state.edit_sequence.clips:
+                parts.append(
+                    f"클립 {len(workspace_state.edit_sequence.clips)}개 · "
+                    f"결과 {workspace_state.edit_sequence.frame_count}프레임"
+                )
+            elif summary.total_head_trim or summary.total_tail_trim:
+                parts.append("구간 조정됨")
             self.preflight_summary_label.setText(" | ".join(parts))
 
+            action_issue = None
             if summary.issues:
                 lines = []
                 has_error = False
@@ -327,6 +511,8 @@ class FFmpegGui(QMainWindow):
                     prefix = "차단" if issue.severity == PreflightSeverity.ERROR else "경고" if issue.severity == PreflightSeverity.WARNING else "정보"
                     if issue.severity == PreflightSeverity.ERROR:
                         has_error = True
+                        if action_issue is None:
+                            action_issue = issue
                     target = f" ({issue.target})" if issue.target else ""
                     lines.append(f"[{prefix}] {issue.message}{target}")
                 self.preflight_issues_label.setText("\n".join(lines))
@@ -334,12 +520,129 @@ class FFmpegGui(QMainWindow):
             else:
                 self.preflight_issues_label.setText("문제 없음. 바로 인코딩할 수 있습니다.")
                 self.preflight_issues_label.setStyleSheet("color: #8bd17c;")
+            self.configure_preflight_action(action_issue)
             self.encode_button.setEnabled(summary.can_start and not self._ffmpeg_setup_in_progress)
         except Exception as exc:
             self.preflight_summary_label.setText("Preflight를 계산할 수 없습니다.")
             self.preflight_issues_label.setText(str(exc))
             self.preflight_issues_label.setStyleSheet("color: #ff8a80;")
             self.encode_button.setEnabled(False)
+
+    def update_cut_timeline(self, workspace_state=None):
+        timeline = getattr(getattr(self.preview_area, "timeline", None), "timeline_widget", None)
+        if timeline is None or not hasattr(timeline, "set_workspace_state"):
+            return
+        thumbnails = {}
+        if self.list_widget:
+            for row in range(self.list_widget.count()):
+                widget = self.list_widget.itemWidget(self.list_widget.item(row))
+                if not widget:
+                    continue
+                pixmap = widget.thumbnail_label.pixmap() if hasattr(widget, "thumbnail_label") else None
+                if pixmap is not None and not pixmap.isNull():
+                    thumbnails[widget.clip_id] = pixmap
+        timeline.set_workspace_state(workspace_state, thumbnails)
+
+    def select_clip_from_timeline(self, clip_id):
+        if not self.list_widget:
+            return
+        for row in range(self.list_widget.count()):
+            item = self.list_widget.item(row)
+            widget = self.list_widget.itemWidget(item)
+            if widget and widget.clip_id == clip_id:
+                self.list_widget.setCurrentItem(item)
+                item.setSelected(True)
+                return
+
+    def commit_timeline_clip_range(self, clip_id, source_in, source_out):
+        if not self.list_widget:
+            return
+        old_states = self.list_widget.get_all_item_states()
+        new_states = [dict(state) for state in old_states]
+        selected_row = self.list_widget.currentRow()
+        for row in range(self.list_widget.count()):
+            widget = self.list_widget.itemWidget(self.list_widget.item(row))
+            if widget and widget.clip_id == clip_id:
+                trim = clip_range_to_trim(
+                    ClipRange(source_in, source_out),
+                    widget.total_frames,
+                )
+                new_states[row]["trim_start"] = trim.head_frames
+                new_states[row]["trim_end"] = trim.tail_frames
+                selected_row = row
+                break
+        command_manager.execute(
+            ReplaceListStateCommand(
+                self.list_widget,
+                old_states,
+                new_states,
+                self.list_widget.currentRow(),
+                selected_row,
+                "타임라인 구간 조정",
+            )
+        )
+        self.refresh_job_inspector()
+
+    def commit_timeline_clip_move(self, clip_id, target_index):
+        if not self.list_widget:
+            return
+        old_states = self.list_widget.get_all_item_states()
+        old_index = next(
+            (
+                row
+                for row in range(self.list_widget.count())
+                if self.list_widget.itemWidget(self.list_widget.item(row)).clip_id == clip_id
+            ),
+            -1,
+        )
+        if old_index < 0 or old_index == target_index:
+            return
+        new_states = [dict(state) for state in old_states]
+        state = new_states.pop(old_index)
+        new_states.insert(max(0, min(int(target_index), len(new_states))), state)
+        command_manager.execute(
+            ReplaceListStateCommand(
+                self.list_widget,
+                old_states,
+                new_states,
+                old_index,
+                target_index,
+                "타임라인 클립 이동",
+            )
+        )
+        self.refresh_job_inspector()
+
+    def configure_preflight_action(self, issue):
+        self._preflight_action_code = getattr(issue, "code", "") if issue else ""
+        labels = {
+            "invalid_job": "소스 또는 저장 위치 준비",
+            "missing_output_dir": "다른 저장 위치 선택",
+            "missing_required_encoder": "CPU 프리셋으로 전환",
+            "encoder_runtime_unavailable": "CPU 프리셋으로 전환",
+            "missing_input": "누락된 소스 확인",
+        }
+        label = labels.get(self._preflight_action_code, "")
+        self.preflight_action_button.setText(label)
+        self.preflight_action_button.setVisible(bool(label))
+
+    def resolve_preflight_issue(self):
+        code = getattr(self, "_preflight_action_code", "")
+        if code in {"missing_required_encoder", "encoder_runtime_unavailable"}:
+            index = self.preset_combo.findData("h264_review")
+            if index >= 0:
+                self.preset_combo.setCurrentIndex(index)
+            return
+        if code == "missing_output_dir":
+            self.file_list_area.browse_output()
+            return
+        if code == "missing_input":
+            self.statusBar().showMessage("빨간색으로 표시된 누락 소스를 삭제하거나 다시 추가하세요.")
+            return
+        if code == "invalid_job":
+            if not self.list_widget or self.list_widget.count() == 0:
+                self.file_list_area.add_files()
+            else:
+                self.file_list_area.browse_output()
 
     def on_preset_changed(self, index):
         preset_id = self.preset_combo.itemData(index)
@@ -392,17 +695,29 @@ class FFmpegGui(QMainWindow):
         if not timeline or not getattr(self, "list_widget", None):
             return
         current_item = self.list_widget.currentItem()
-        if not current_item or not current_item.isSelected():
+        if not current_item:
+            return
+        is_selected = getattr(current_item, "isSelected", None)
+        if callable(is_selected) and not is_selected():
             return
         item_widget = self.list_widget.itemWidget(current_item)
-        if not item_widget or not hasattr(item_widget, "get_trim_values"):
+        if not item_widget:
             return
         frame_count = getattr(timeline, "frame_count", 0)
         if frame_count <= 0:
             return
-        start_trim, end_trim = item_widget.get_trim_values()
-        in_frame = max(1, min(frame_count, int(start_trim) + 1))
-        out_frame = max(in_frame, min(frame_count, frame_count - int(end_trim)))
+        source_range = (
+            item_widget.get_clip_range()
+            if hasattr(item_widget, "get_clip_range")
+            else None
+        )
+        if source_range is not None:
+            in_frame = source_range.source_in + 1
+            out_frame = source_range.source_out
+        else:
+            start_trim, end_trim = item_widget.get_trim_values()
+            in_frame = max(1, min(frame_count, int(start_trim) + 1))
+            out_frame = max(in_frame, min(frame_count, frame_count - int(end_trim)))
         self._syncing_timeline_trim = True
         try:
             if in_frame > getattr(timeline, "out_point", 0):
@@ -415,7 +730,7 @@ class FFmpegGui(QMainWindow):
             self._syncing_timeline_trim = False
 
     def sync_current_item_trim_from_timeline(self, *args):
-        if self._syncing_timeline_trim:
+        if self._syncing_timeline_trim or self._loading_selected_media_trim:
             return
         timeline = getattr(getattr(self.preview_area, "timeline", None), "timeline_widget", None)
         if not timeline or not getattr(self, "list_widget", None):
@@ -427,11 +742,122 @@ class FFmpegGui(QMainWindow):
         if frame_count <= 0:
             return
         item_widget = self.list_widget.itemWidget(current_item)
-        if not item_widget or not hasattr(item_widget, "set_trim_values"):
+        if not item_widget:
             return
-        start_trim = max(0, timeline.in_point - 1)
-        end_trim = max(0, frame_count - timeline.out_point)
-        item_widget.set_trim_values(start_trim, end_trim)
+        source_range = ClipRange(timeline.in_point - 1, timeline.out_point)
+        if hasattr(item_widget, "set_clip_range"):
+            item_widget.set_clip_range(source_range, refresh=False)
+        else:
+            start_trim = source_range.source_in
+            end_trim = max(0, frame_count - source_range.source_out)
+            item_widget.set_trim_values(start_trim, end_trim)
+        self.refresh_job_inspector()
+
+    def apply_loaded_media_trim_to_timeline(self):
+        """Restore the selected item's trim after async media metadata is loaded."""
+        self._loading_selected_media_trim = False
+        self.apply_selected_item_trim_to_timeline()
+
+    def split_selected_clip_at_playhead(self):
+        """Split the selected source after the current displayed frame."""
+        list_widget = getattr(self, "list_widget", None)
+        timeline = getattr(getattr(self.preview_area, "timeline", None), "timeline_widget", None)
+        if not list_widget or not timeline or list_widget.currentRow() < 0:
+            QMessageBox.information(self, "클립 분할", "먼저 분할할 클립을 선택하세요.")
+            return
+
+        row = list_widget.currentRow()
+        item = list_widget.item(row)
+        item_widget = list_widget.itemWidget(item)
+        total_frames = int(getattr(item_widget, "total_frames", 0) or 0)
+        if total_frames <= 0:
+            QMessageBox.information(self, "클립 분할", "클립 정보를 읽은 뒤 다시 시도하세요.")
+            return
+
+        source_range = (
+            item_widget.get_clip_range()
+            if hasattr(item_widget, "get_clip_range")
+            else None
+        )
+        if source_range is not None:
+            source_in = source_range.source_in
+            source_out = source_range.source_out
+        else:
+            head_trim, tail_trim = item_widget.get_trim_values()
+            source_in = int(head_trim)
+            source_out = total_frames - int(tail_trim)
+        split_boundary = int(timeline.current_frame)
+        if not source_in < split_boundary < source_out:
+            QMessageBox.information(
+                self,
+                "클립 분할",
+                "재생 헤드를 선택 구간의 시작과 끝 사이로 이동하세요.",
+            )
+            return
+
+        old_states = list_widget.get_all_item_states()
+        left, right = split_clip_item_state(
+            old_states[row],
+            total_frames,
+            split_boundary,
+            uuid.uuid4().hex,
+            uuid.uuid4().hex,
+        )
+        new_states = old_states[:row] + [left, right] + old_states[row + 1 :]
+        command = ReplaceListStateCommand(
+            list_widget,
+            old_states,
+            new_states,
+            row,
+            row + 1,
+            "클립 분할",
+        )
+        command_manager.execute(command)
+        self.refresh_job_inspector()
+
+    def duplicate_selected_clip(self):
+        list_widget = getattr(self, "list_widget", None)
+        if not list_widget or list_widget.currentRow() < 0:
+            return
+        row = list_widget.currentRow()
+        old_states = list_widget.get_all_item_states()
+        duplicate = dict(old_states[row])
+        duplicate["clip_id"] = uuid.uuid4().hex
+        new_states = old_states[: row + 1] + [duplicate] + old_states[row + 1 :]
+        command = ReplaceListStateCommand(
+            list_widget,
+            old_states,
+            new_states,
+            row,
+            row + 1,
+            "클립 복제",
+        )
+        command_manager.execute(command)
+        self.refresh_job_inspector()
+
+    def reset_all_clip_ranges(self):
+        list_widget = getattr(self, "list_widget", None)
+        if not list_widget or list_widget.count() == 0:
+            return
+        old_states = list_widget.get_all_item_states()
+        new_states = []
+        for state in old_states:
+            reset_state = dict(state)
+            reset_state["trim_start"] = 0
+            reset_state["trim_end"] = 0
+            new_states.append(reset_state)
+        if new_states == old_states:
+            return
+        current_row = list_widget.currentRow()
+        command = ReplaceListStateCommand(
+            list_widget,
+            old_states,
+            new_states,
+            current_row,
+            current_row,
+            "모든 컷 구간 초기화",
+        )
+        command_manager.execute(command)
         self.refresh_job_inspector()
 
     def print_settings_info(self):
@@ -493,6 +919,11 @@ class FFmpegGui(QMainWindow):
         self.settings_service.sync()
         if hasattr(self, "ffmpeg_edit"):
             self.ffmpeg_edit.setText(ffmpeg_path)
+        if hasattr(self, "ffmpeg_status_badge"):
+            self.ffmpeg_status_badge.setText("준비됨")
+            self.ffmpeg_status_badge.setProperty("role", "status-ok")
+            self.ffmpeg_status_badge.style().unpolish(self.ffmpeg_status_badge)
+            self.ffmpeg_status_badge.style().polish(self.ffmpeg_status_badge)
         self.set_encoding_active(True)
         dialog = getattr(self, "progress_dialog", None)
         if dialog and dialog.isVisible() and self._ffmpeg_setup_in_progress:
@@ -571,10 +1002,21 @@ class FFmpegGui(QMainWindow):
             self.encoding_thread.wait()
         self.encoding_thread = None
         if "취소" in message:
+            dialog = getattr(self, "progress_dialog", None)
+            if dialog and dialog.isVisible():
+                dialog.stop_timer()
+                dialog.status_label.setText("취소됨")
+                dialog.update_task("인코딩이 취소되었습니다.")
+                QTimer.singleShot(300, dialog.reject)
             self.update_task("인코딩이 취소되었습니다.")
             self.statusBar().showMessage("인코딩 취소됨")
         else:
             self.show_error(message)
+        if hasattr(self, "job_result_actions"):
+            self.open_result_folder_button.hide()
+            self.add_result_button.hide()
+            self.retry_job_button.show()
+            self.job_result_actions.show()
         self.cancel_token = None
 
     def encoding_completed(self):
@@ -594,7 +1036,21 @@ class FFmpegGui(QMainWindow):
         self.update_progress(100)
         self.update_task("인코딩 완료")
         self.statusBar().showMessage("인코딩 완료")
-        QMessageBox.information(self, "완료", "인코딩이 완료되었습니다.")
+        self.last_completed_output = self.output_edit.text().strip()
+        if hasattr(self, "job_result_actions"):
+            self.open_result_folder_button.show()
+            self.add_result_button.show()
+            self.retry_job_button.show()
+            self.job_result_actions.show()
+
+    def open_last_result_folder(self):
+        self.open_folder(getattr(self, "last_completed_output", self.output_edit.text()))
+
+    def add_last_result_to_sources(self):
+        output_path = getattr(self, "last_completed_output", "")
+        if output_path and os.path.exists(output_path):
+            self.list_widget.handle_new_files([output_path])
+            self.statusBar().showMessage("완료된 결과를 소스에 추가했습니다.")
 
     def show_update_error(self, error_message):
         QMessageBox.critical(self, "업데이트 오류", f"업데이트 중 오류가 발생했습니다:\n{error_message}")
@@ -690,6 +1146,13 @@ class FFmpegGui(QMainWindow):
         self.settings_service.set("last_output_path", self.output_edit.text())
         self.settings_service.set("ffmpeg_path", self.ffmpeg_edit.text())
         self.settings_service.set("last_encoding_preset", self.current_preset_id)
+        self.settings_service.set("window_geometry", self.saveGeometry())
+        self.settings_service.set("window_maximized", self.isMaximized())
+        if hasattr(self, "workspace_splitter"):
+            self.settings_service.set(
+                "workspace_splitter_sizes",
+                self.workspace_splitter.sizes(),
+            )
         self.settings_service.sync()
         if hasattr(self, "preview_area"):
             self.preview_area.stop_current_preview()
@@ -751,22 +1214,31 @@ class FFmpegGui(QMainWindow):
             logger.info("Encoding options: %s", job.options.ffmpeg_options)
             logger.info("Output file: %s", job.output_file)
             for index, item in enumerate(job.media_items, start=1):
-                logger.info(
-                    "Encoding file %s: %s, head trim: %sf, tail trim: %sf",
-                    index,
-                    item.source_path,
-                    item.trim.head_frames,
-                    item.trim.tail_frames,
-                )
+                if item.source_range is not None:
+                    logger.info(
+                        "Encoding clip %s: %s, source range: [%s, %s)",
+                        index,
+                        item.source_path,
+                        item.source_range.source_in,
+                        item.source_range.source_out,
+                    )
+                else:
+                    logger.info(
+                        "Encoding legacy source %s: %s, head=%sf, tail=%sf",
+                        index,
+                        item.source_path,
+                        item.trim.head_frames,
+                        item.trim.tail_frames,
+                    )
 
             self._encoding_failed = False
             self.cancel_token = CancellationToken()
             self.set_encoding_active(False)
             self.bottom_progress_bar.setValue(0)
             self.job_log_view.clear()
-            self.progress_dialog = EncodingProgressDialog(self)
-            self.progress_dialog.show()
-            self.progress_dialog.start_timer()
+            self.job_result_actions.hide()
+            self.progress_stage_label.setText("준비")
+            self.progress_task_label.setText("인코딩 준비 중...")
 
             self.encoding_thread = EncodingThread(job=job, cancel_token=self.cancel_token)
             self.encoding_thread.progress_updated.connect(self.update_progress)

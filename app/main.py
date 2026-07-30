@@ -9,7 +9,7 @@ from app.core.ffmpeg_manager import FFmpegManager
 from app.services.logging_service import LoggingService
 from app.services.settings_service import SettingsService
 from app.ui.main_window import FFmpegGui
-from app.utils.ffmpeg_utils import __version__
+from app.config import APP_VERSION
 
 
 def setup_services():
@@ -35,7 +35,7 @@ def setup_services():
     else:
         logger.warning("FFmpeg를 아직 찾지 못했습니다. GUI에서 자동 다운로드를 시도합니다.")
 
-    logger.info(f"FFmpegGUI 버전 {__version__} 시작")
+    logger.info(f"FFmpegGUI 버전 {APP_VERSION} 시작")
     return True
 
 

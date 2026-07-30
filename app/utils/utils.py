@@ -221,9 +221,13 @@ def get_sequence_start_number(sequence_path):
     return None
 
 def get_first_sequence_file(sequence_pattern):
-    pattern = sequence_pattern.replace('%04d', '*')
-    files = sorted(glob.glob(pattern))
+    files = get_sequence_files(sequence_pattern)
     return files[0] if files else ""
+
+def get_sequence_files(sequence_pattern):
+    """Return files matched by an FFmpeg-style image sequence pattern."""
+    pattern = re.sub(r'%0?\d*d', '*', sequence_pattern)
+    return sorted(glob.glob(pattern))
 
 def format_drag_to_output(file_path):
     logger.info(f"드래그 출력 형식 변환: {file_path}")

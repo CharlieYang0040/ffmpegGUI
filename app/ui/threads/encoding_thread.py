@@ -78,20 +78,12 @@ class EncodingThread(QThread):
         self._emit_state(stage, self._last_progress, error_message)
         self.encoding_error.emit(error_message)
 
-    def _coerce_frame_value(self, value) -> int:
-        try:
-            return max(0, int(float(value)))
-        except (TypeError, ValueError):
-            return 0
-
     def _build_legacy_job(self) -> EncodingJob:
         media_files = self.kwargs.pop("media_files", self.args[0] if self.args else [])
         output_file = self.kwargs.pop("output_file", self.args[1] if len(self.args) > 1 else "")
         encoding_options = dict(self.kwargs.pop("encoding_options", self.args[2] if len(self.args) > 2 else {}) or {})
         use_frame_based_trim = self.kwargs.pop("use_frame_based_trim", False)
         debug_mode = self.kwargs.pop("debug_mode", False)
-        global_trim_start = self.kwargs.pop("global_trim_start", 0)
-        global_trim_end = self.kwargs.pop("global_trim_end", 0)
 
         if self.kwargs.pop("use_custom_framerate", False):
             encoding_options["r"] = str(self.kwargs.pop("custom_framerate", 30.0))
@@ -107,7 +99,7 @@ class EncodingThread(QThread):
                 MediaItem(
                     source_path=file_path,
                     media_type=detect_media_type(file_path),
-                    trim=FrameTrim(self._coerce_frame_value(trim_start), self._coerce_frame_value(trim_end)),
+                    trim=FrameTrim(trim_start, trim_end),
                 )
             )
 
@@ -116,7 +108,6 @@ class EncodingThread(QThread):
             output_file=output_file,
             options=EncodingOptions(
                 ffmpeg_options=encoding_options,
-                global_trim=FrameTrim(global_trim_start, global_trim_end),
                 debug_mode=debug_mode,
                 use_frame_based_trim=use_frame_based_trim,
             ),

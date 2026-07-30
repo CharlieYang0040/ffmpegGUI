@@ -142,8 +142,18 @@ class UXWorkflowTests(unittest.TestCase):
         self.assertNotIn('QLabel("??', source)
         self.assertNotIn('QCheckBox("??', source)
         self.assertNotIn('QPushButton("??', source)
-        self.assertIn('QLabel("소스 큐")', source)
+        self.assertIn('QPushButton("미디어 추가")', source)
+        self.assertIn('QToolButton()', source)
         self.assertIn('QCheckBox("출력 경로 자동")', source)
+
+    def test_v2_shell_removes_verbose_panel_descriptions(self):
+        source = Path("app/ui/main_window.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("빠른 변환과 프레임 단위 컷 편집", source)
+        self.assertNotIn("변환하거나 이어 붙일 파일", source)
+        self.assertNotIn("사용할 프레임 범위를 확인하세요", source)
+        self.assertIn('create_section_title("소스")', source)
+        self.assertIn('create_section_title("출력")', source)
 
     def test_timeline_component_get_in_out_points(self):
         try:
@@ -248,6 +258,38 @@ Encoders:
 
         self.assertTrue(summary.can_start)
         self.assertIn("required_encoder_available", [issue.code for issue in summary.issues])
+
+    def test_preflight_blocks_advertised_encoder_that_fails_runtime_probe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = os.path.join(temp_dir, "input.mp4")
+            output = os.path.join(temp_dir, "output.mp4")
+            Path(source).write_text("fake", encoding="utf-8")
+            caps = FFmpegEncoderCapabilities(
+                encoders={"h264_nvenc"},
+                nvenc_available=False,
+                encoder_errors={
+                    "h264_nvenc": "minimum required Nvidia driver is 610.00",
+                },
+                checked_at=1.0,
+                message="encoder advertised but initialization failed",
+            )
+            summary = build_preflight(
+                EncodingJob(
+                    media_items=[MediaItem(source, MediaType.VIDEO)],
+                    output_file=output,
+                    options=EncodingOptions({"c:v": "h264_nvenc"}),
+                ),
+                FakeSettings("ffmpeg.exe", caps),
+                get_preset("gpu_h264_review"),
+            )
+
+        self.assertFalse(summary.can_start)
+        issue = next(
+            issue
+            for issue in summary.issues
+            if issue.code == "encoder_runtime_unavailable"
+        )
+        self.assertIn("610.00", issue.message)
 
     def test_image_sequence_options_do_not_override_nvenc_with_libx264(self):
         args = build_ffmpeg_option_args(

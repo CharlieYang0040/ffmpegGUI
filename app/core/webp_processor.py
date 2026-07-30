@@ -20,6 +20,42 @@ from app.core.ffmpeg_process import decode_process_output
 # 로깅 설정
 logger = LoggingService().get_logger(__name__)
 
+
+def read_webp_frame_durations(input_file: str) -> list[int]:
+    """Read animation frame durations from WebP ANMF chunks.
+
+    Pillow versions that can decode animated WebP do not always expose the
+    per-frame ``duration`` field. The WebP container stores the duration as a
+    three-byte little-endian value at bytes 12..14 of each ANMF payload.
+    """
+    durations = []
+    try:
+        with open(input_file, "rb") as handle:
+            data = handle.read()
+        if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+            return durations
+
+        offset = 12
+        while offset + 8 <= len(data):
+            chunk_name = data[offset:offset + 4]
+            chunk_size = int.from_bytes(data[offset + 4:offset + 8], "little")
+            payload_start = offset + 8
+            payload_end = payload_start + chunk_size
+            if payload_end > len(data):
+                break
+            if chunk_name == b"ANMF" and chunk_size >= 16:
+                durations.append(
+                    int.from_bytes(
+                        data[payload_start + 12:payload_start + 15],
+                        "little",
+                    )
+                )
+            offset = payload_end + (chunk_size % 2)
+    except OSError:
+        return []
+    return durations
+
+
 class WebPProcessor:
     """WebP 파일 처리를 위한 클래스"""
     
@@ -218,6 +254,14 @@ class WebPProcessor:
                     
                     metadata['frame_durations'] = frame_durations
                     metadata['duration_ms'] = total_duration
+
+                    if total_duration <= 0:
+                        container_durations = read_webp_frame_durations(input_file)
+                        if len(container_durations) == metadata['frame_count']:
+                            frame_durations = container_durations
+                            total_duration = sum(container_durations)
+                            metadata['frame_durations'] = frame_durations
+                            metadata['duration_ms'] = total_duration
                     
                     # 평균 FPS 계산 (총 프레임 수 / 총 시간(초))
                     if total_duration > 0:

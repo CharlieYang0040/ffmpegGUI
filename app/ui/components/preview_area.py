@@ -24,6 +24,21 @@ from PIL import Image # Added for image size reading
 # 로깅 서비스 설정
 logger = LoggingService().get_logger(__name__)
 
+
+def frame_number_to_zero_based_index(frame_number: int) -> int:
+    """Convert a filename frame number to the internal zero-based index."""
+    return max(0, int(frame_number) - 1)
+
+
+def reconcile_sequence_frame(expected_index: int, received_index: int) -> Tuple[bool, int, int]:
+    """Decide whether to display a buffered frame and report skipped frames."""
+    expected_index = max(0, int(expected_index))
+    received_index = max(0, int(received_index))
+    if received_index < expected_index:
+        return False, expected_index, 0
+    return True, received_index, max(0, received_index - expected_index)
+
+
 # --- Aspect Ratio Widget ---
 class AspectRatioWidget(QWidget):
     """지정된 종횡비를 유지하는 위젯 컨테이너"""
@@ -125,8 +140,12 @@ class MediaInfoFetcher(QRunnable):
                             try:
                                 detected_frame = int(match.group(1))
                                 if detected_frame >= 0: # 0 이상이면 유효
-                                    start_frame_number = detected_frame
-                                    self.logger.debug(f"감지된 시작 프레임 번호 (0-based): {start_frame_number}")
+                                    start_frame_number = frame_number_to_zero_based_index(detected_frame)
+                                    self.logger.debug(
+                                        "감지된 시작 프레임 번호: %s, 내부 인덱스(0-based): %s",
+                                        detected_frame,
+                                        start_frame_number,
+                                    )
                                 else:
                                     self.logger.warning(f"감지된 시작 프레임 번호({detected_frame})가 음수. 기본값 0 사용.")
                             except ValueError:
@@ -320,15 +339,14 @@ class PreviewAreaComponent:
     def create_preview_area(self, top_layout):
         """미리보기 영역 생성"""
         preview_frame = QFrame()
-        preview_frame.setFrameShape(QFrame.StyledPanel)
-        preview_frame.setStyleSheet("background-color: #1a1a1a; border: 1px solid #3a3a3a;")
+        preview_frame.setObjectName("viewer-frame")
         
         preview_layout = QVBoxLayout(preview_frame)
         preview_layout.setContentsMargins(5, 5, 5, 5)
 
         # --- 16:9 비율 컨테이너 생성 ---
         self.media_container = AspectRatioWidget(aspect_ratio=16.0/9.0)
-        self.media_container.setMinimumHeight(250) # 최소 높이 설정
+        self.media_container.setMinimumHeight(300)
         media_container_layout = QVBoxLayout(self.media_container) # 컨테이너 내부 레이아웃
         media_container_layout.setContentsMargins(0, 0, 0, 0) # 여백 없음
 
@@ -369,16 +387,10 @@ class PreviewAreaComponent:
         self.media_player.errorOccurred.connect(self.on_media_error)
         # --- End Media Player Setup --- 
 
-        # 타임라인 컴포넌트 생성
+        # Playback belongs to the viewer. The edit timeline is inserted below
+        # the whole workspace by the main window.
         self.timeline = TimelineComponent(self.parent)
-        self.timeline.create_timeline_area(preview_layout)
-        
-        # TimelineWidget의 frame_changed 시그널을 on_timeline_seek_frame 슬롯에 연결
-        if self.timeline and self.timeline.timeline_widget:
-            self.timeline.timeline_widget.frame_changed.connect(self.on_timeline_seek_frame)
-            logger.debug("TimelineWidget.frame_changed 시그널 연결됨")
-        else:
-            logger.error("TimelineWidget 또는 TimelineComponent가 제대로 생성되지 않아 시그널 연결 실패")
+        self.timeline.create_playback_controls(preview_layout)
 
         top_layout.addWidget(preview_frame, 1)
     
@@ -388,6 +400,7 @@ class PreviewAreaComponent:
             file_path_raw = self.parent.list_widget.get_selected_file_path()
             if not file_path_raw:
                 self.stop_current_preview()
+                self.parent._loading_selected_media_trim = False
                 return
             
             # 경로 정규화 (백슬래시 -> 슬래시)
@@ -395,6 +408,8 @@ class PreviewAreaComponent:
             
             if self.current_media_path == file_path:
                 logger.debug(f"선택된 파일 동일 ({os.path.basename(file_path)}), 미리보기 업데이트 건너뜀")
+                if hasattr(self.parent, "apply_loaded_media_trim_to_timeline"):
+                    self.parent.apply_loaded_media_trim_to_timeline()
                 return
             
             # 다른 파일 선택 시 현재 재생/로딩 중인 것 모두 중지
@@ -424,6 +439,7 @@ class PreviewAreaComponent:
             # logger.debug(f"미디어 정보 로딩 작업 시작됨: {os.path.basename(file_path)}") # 로그 변경됨
 
         except Exception as e:
+            self.parent._loading_selected_media_trim = False
             logger.error(f"미리보기 업데이트 준비 중 오류: {str(e)}", exc_info=True)
             self._clear_preview_widgets()
             QMessageBox.critical(self.parent, "오류", f"미리보기 업데이트 준비 중 오류 발생:\n{str(e)}")
@@ -481,6 +497,8 @@ class PreviewAreaComponent:
                     self.current_media_duration_ms / 1000.0
                 )
                 self.timeline.reset_in_out_points() # 새 파일 로드 시 In/Out 초기화
+                if hasattr(self.parent, "apply_loaded_media_trim_to_timeline"):
+                    self.parent.apply_loaded_media_trim_to_timeline()
             
             # 파일 타입에 따라 미리보기 설정 분기
             file_path = self.current_media_path # 현재 경로 사용
@@ -535,6 +553,8 @@ class PreviewAreaComponent:
                  self.current_media_path = None
         
         except Exception as e:
+             if hasattr(self.parent, "_loading_selected_media_trim"):
+                 self.parent._loading_selected_media_trim = False
              # 슬롯 실행 중 발생한 예외 로깅
              logger.exception(f"on_media_info_ready 슬롯 실행 중 예외 발생 (ID: {request_id}): {e}")
              # 오류 발생 시 UI 정리 시도
@@ -565,8 +585,10 @@ class PreviewAreaComponent:
             QMessageBox.critical(self.parent, "오류", f"미디어 정보를 가져오는 중 오류 발생:\n{error_msg}")
             self._clear_preview_widgets() # 위젯 초기화
             self.current_media_path = None # 경로 초기화
+            self.parent._loading_selected_media_trim = False
         
         except Exception as e:
+            self.parent._loading_selected_media_trim = False
             # 슬롯 실행 중 발생한 예외 로깅
             logger.exception(f"on_media_info_error 슬롯 실행 중 예외 발생 (ID: {request_id}): {e}")
             # 오류 발생 시 UI 정리 시도 (중복될 수 있으나 방어적으로)
@@ -717,12 +739,25 @@ class PreviewAreaComponent:
             # 프레임 버퍼에서 다음 프레임 가져오기 (non-blocking)
             frame_index, pixmap = self.frame_buffer.get_nowait()
             
-            if frame_index != self.expected_sequence_frame_index:
-                 logger.warning(f"예상 프레임({self.expected_sequence_frame_index})과 버퍼 프레임({frame_index}) 불일치, 건너뜀")
-                 # 버퍼를 따라잡기 위해 예상 인덱스 업데이트 시도?
-                 # self.expected_sequence_frame_index = frame_index # 주의: 프레임 드롭 발생 가능
-                 # 일단은 건너뛰고 다음 타이머 호출 기다림
-                 return
+            should_display, synchronized_index, skipped_count = reconcile_sequence_frame(
+                self.expected_sequence_frame_index,
+                frame_index,
+            )
+            if not should_display:
+                logger.warning(
+                    "오래된 버퍼 프레임 폐기: expected=%s, received=%s",
+                    self.expected_sequence_frame_index,
+                    frame_index,
+                )
+                return
+            if skipped_count:
+                logger.warning(
+                    "누락/손상 프레임 %s개 건너뛰고 재생 재동기화: expected=%s, received=%s",
+                    skipped_count,
+                    self.expected_sequence_frame_index,
+                    frame_index,
+                )
+            self.expected_sequence_frame_index = synchronized_index
 
             if pixmap and not pixmap.isNull():
                 # 스케일링 기준을 media_container 크기로 변경
@@ -762,7 +797,10 @@ class PreviewAreaComponent:
                     self._stop_image_sequence_playback(reset_frame=True)
             else:
                 logger.warning(f"버퍼에서 가져온 프레임 {frame_index}가 유효하지 않음")
-                # 유효하지 않은 프레임이면 일단 건너뛰기
+                self.expected_sequence_frame_index = max(
+                    self.expected_sequence_frame_index,
+                    frame_index + 1,
+                )
 
         except queue.Empty:
             # 버퍼가 비어있음 - 로더가 따라잡지 못하는 경우

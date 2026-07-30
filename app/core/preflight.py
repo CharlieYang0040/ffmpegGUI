@@ -79,6 +79,21 @@ def _add_required_encoder_issues(
             )
         )
         return
+    encoder_error = capabilities.encoder_errors.get(required_encoder, "")
+    if encoder_error:
+        issues.append(
+            PreflightIssue(
+                severity=PreflightSeverity.ERROR,
+                code="encoder_runtime_unavailable",
+                message=(
+                    f"{required_encoder}가 FFmpeg 목록에는 있지만 실제로 초기화되지 "
+                    f"않았습니다. GPU 드라이버와 FFmpeg 호환성을 확인하세요. "
+                    f"{encoder_error}"
+                ),
+                target=required_encoder,
+            )
+        )
+        return
 
     issues.append(
         PreflightIssue(
@@ -161,8 +176,11 @@ def build_preflight(
     media_types = set()
     for index, item in enumerate(getattr(job, "media_items", []) or [], start=1):
         media_types.add(item.media_type)
-        trim = item.trim
-        if trim:
+        if item.source_range is not None and item.frame_count:
+            total_head_trim += item.source_range.source_in
+            total_tail_trim += int(item.frame_count) - item.source_range.source_out
+        elif item.trim:
+            trim = item.trim
             total_head_trim += trim.head_frames
             total_tail_trim += trim.tail_frames
         if item.media_type == MediaType.UNKNOWN:

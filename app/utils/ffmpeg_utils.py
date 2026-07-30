@@ -13,6 +13,7 @@ import os
 from app.services.logging_service import LoggingService
 
 # FFmpegManager 싱글톤 가져오기
+from app.config import APP_VERSION
 from app.core.ffmpeg_manager import FFmpegManager
 
 # 프로세서 팩토리 가져오기
@@ -25,7 +26,7 @@ from app.core.batch_processor import BatchProcessor
 logger = LoggingService().get_logger(__name__)
 
 # 현재 모듈에서 직접 노출할 상수 및 변수 정의
-__version__ = "2.0.0"
+__version__ = APP_VERSION
 
 # 버전 정보 로깅
 logger.debug(f"FFmpeg GUI 유틸리티 모듈 버전 {__version__} 로드됨")
@@ -239,9 +240,6 @@ class FFmpegUtils:
         output_file: str,
         encoding_options: Dict[str, str],
         debug_mode: bool = False,
-        trim_values: List[Tuple[int, int]] = None,
-        global_trim_start: int = 0,
-        global_trim_end: int = 0,
         progress_callback: Optional[Callable[[int], None]] = None,
         task_callback: Optional[Callable[[str], None]] = None,
         target_properties: Optional[Dict[str, str]] = None,
@@ -260,9 +258,6 @@ class FFmpegUtils:
             output_file: 출력 파일 경로
             encoding_options: 인코딩 옵션
             debug_mode: 디버그 모드 여부
-            trim_values: 각 파일별 트림 값 (시작, 끝)
-            global_trim_start: 전역 트림 시작 값
-            global_trim_end: 전역 트림 끝 값
             progress_callback: 진행률 콜백 함수
             task_callback: 작업 상태 콜백 함수
             target_properties: 출력 미디어의 속성 (해상도 등)
@@ -277,10 +272,19 @@ class FFmpegUtils:
             처리된 출력 파일 경로
         """
         return self.batch_processor.process_all_media(
-            media_files, output_file, encoding_options, debug_mode, trim_values,
-            global_trim_start, global_trim_end, progress_callback, task_callback,
-            target_properties or {}, use_custom_framerate, custom_framerate,
-            use_custom_resolution, custom_width, custom_height, use_frame_based_trim
+            media_files=media_files,
+            output_file=output_file,
+            encoding_options=encoding_options,
+            debug_mode=debug_mode,
+            progress_callback=progress_callback,
+            task_callback=task_callback,
+            target_properties=target_properties or {},
+            use_custom_framerate=use_custom_framerate,
+            custom_framerate=custom_framerate,
+            use_custom_resolution=use_custom_resolution,
+            custom_width=custom_width,
+            custom_height=custom_height,
+            use_frame_based_trim=use_frame_based_trim,
         )
 
     def process_single_media(

@@ -1,10 +1,12 @@
 import hashlib
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from app.core.ffmpeg_manager import FFmpegManager
 
@@ -58,6 +60,31 @@ class FFmpegManagerTests(unittest.TestCase):
         self.assertFalse(capabilities.nvenc_available)
         self.assertTrue(hasattr(self.manager, "_encoder_capabilities_cache"))
         self.assertTrue(hasattr(self.manager, "_encoder_capabilities_path"))
+
+    def test_encoder_capabilities_rejects_advertised_but_unusable_nvenc(self):
+        self.manager.ffmpeg_path = self._write_pair(
+            Path(self.temp_dir.name) / "installed" / "bin"
+        )
+        encoder_list = b" V....D h264_nvenc NVIDIA NVENC H.264 encoder\n"
+        driver_error = (
+            b"Driver does not support the required nvenc API version.\n"
+            b"The minimum required Nvidia driver for nvenc is 610.00 or newer.\n"
+        )
+        with patch(
+            "app.core.ffmpeg_manager.subprocess.run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0, stdout=encoder_list, stderr=b""),
+                subprocess.CompletedProcess([], 1, stdout=b"", stderr=driver_error),
+            ],
+        ) as run_mock:
+            capabilities = self.manager.get_encoder_capabilities(force_refresh=True)
+
+        probe_command = run_mock.call_args_list[1].args[0]
+        self.assertIn("color=c=black:s=256x256:r=1:d=1", probe_command)
+        self.assertIn("h264_nvenc", capabilities.encoders)
+        self.assertFalse(capabilities.nvenc_available)
+        self.assertIn("610.00", capabilities.encoder_errors["h264_nvenc"])
+        self.assertFalse(self.manager.supports_encoder("h264_nvenc"))
 
     def test_download_and_install_ffmpeg_verifies_sha_and_installs_versioned_cache(self):
         source_zip = Path(self.temp_dir.name) / "source.zip"
