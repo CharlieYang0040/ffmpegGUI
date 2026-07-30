@@ -16,6 +16,7 @@ from app.services.logging_service import LoggingService
 # FFmpegManager 싱글톤 가져오기
 from app.core.ffmpeg_manager import FFmpegManager
 from app.core.ffmpeg_process import decode_process_output
+from app.core.process_utils import run_hidden
 
 # 로깅 설정
 logger = LoggingService().get_logger(__name__)
@@ -286,7 +287,12 @@ class WebPProcessor:
                         input_file
                     ]
                     
-                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                    result = run_hidden(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                    )
                     if result.returncode == 0:
                         ffprobe_data = json.loads(decode_process_output(result.stdout))
                         

@@ -44,6 +44,8 @@ class CutTimelineWidget(QWidget):
         self._drag_origin = QPoint()
         self._drag_original_range = None
         self._preview_range = None
+        self._fit_signature = ()
+        self._fit_reference_frames = 1
         self._scaled_thumbnail_cache = {}
         self._geometry = TimelineGeometry(1, ())
         self.setMinimumHeight(118)
@@ -55,6 +57,14 @@ class CutTimelineWidget(QWidget):
 
     def set_workspace_state(self, state: WorkspaceState | None, thumbnails=None):
         self.workspace_state = state or WorkspaceState()
+        clips = self.workspace_state.edit_sequence.clips
+        signature = tuple(clip.clip_id for clip in clips)
+        current_total = sum(clip.source_frame_count for clip in clips)
+        if signature != self._fit_signature:
+            self._fit_signature = signature
+            self._fit_reference_frames = max(1, current_total)
+        else:
+            self._fit_reference_frames = max(self._fit_reference_frames, current_total, 1)
         self.selected_clip_id = self.workspace_state.selected_clip_id
         self.thumbnails = dict(thumbnails or {})
         self._scaled_thumbnail_cache.clear()
@@ -98,6 +108,36 @@ class CutTimelineWidget(QWidget):
         self.update()
         self.out_point_changed.emit(frame)
 
+    def commit_in_point(self, frame: int):
+        clip = self.workspace_state.selected_clip
+        if clip is None:
+            return
+        source_in = max(
+            0,
+            min(int(frame) - 1, clip.source_range.source_out - 1),
+        )
+        if source_in != clip.source_range.source_in:
+            self.clip_range_committed.emit(
+                clip.clip_id,
+                source_in,
+                clip.source_range.source_out,
+            )
+
+    def commit_out_point(self, frame: int):
+        clip = self.workspace_state.selected_clip
+        if clip is None:
+            return
+        source_out = max(
+            clip.source_range.source_in + 1,
+            min(int(frame), clip.source_frame_count),
+        )
+        if source_out != clip.source_range.source_out:
+            self.clip_range_committed.emit(
+                clip.clip_id,
+                clip.source_range.source_in,
+                source_out,
+            )
+
     def toggle_in_out_markers(self, show: bool):
         self.update()
 
@@ -111,7 +151,12 @@ class CutTimelineWidget(QWidget):
 
     def _rebuild_geometry(self):
         lengths = [
-            (clip.clip_id, self._range_for(clip).frame_count)
+            (
+                clip.clip_id,
+                clip.source_frame_count,
+                self._range_for(clip).source_in,
+                self._range_for(clip).source_out,
+            )
             for clip in self._clips()
         ]
         self._geometry = TimelineGeometry(
@@ -119,11 +164,26 @@ class CutTimelineWidget(QWidget):
             lengths,
             zoom=self.zoom,
             offset=self.scroll_offset,
+            reference_total_frames=self._fit_reference_frames,
         )
         self.scroll_offset = min(self.scroll_offset, self._geometry.max_offset())
 
     def _clip_by_id(self, clip_id):
         return next((clip for clip in self._clips() if clip.clip_id == clip_id), None)
+
+    def _activate_clip(self, clip, emit_signal: bool = True):
+        changed = clip.clip_id != self.selected_clip_id
+        self.selected_clip_id = clip.clip_id
+        self.frame_count = clip.source_frame_count
+        self.fps = clip.source_fps or self.fps or 30.0
+        self.in_point = clip.source_range.source_in + 1
+        self.out_point = clip.source_range.source_out
+        self.current_frame = max(
+            self.in_point,
+            min(self.current_frame, self.out_point),
+        )
+        if changed and emit_signal:
+            self.clip_selected.emit(clip.clip_id)
 
     def _timecode(self, frame: int, fps: float | None = None) -> str:
         fps = max(1.0, float(fps or self.fps or 30.0))
@@ -142,9 +202,7 @@ class CutTimelineWidget(QWidget):
         clip = self._clip_by_id(geometry.clip_id)
         if clip is None:
             return
-        if clip.clip_id != self.selected_clip_id:
-            self.selected_clip_id = clip.clip_id
-            self.clip_selected.emit(clip.clip_id)
+        self._activate_clip(clip)
         self.set_current_frame(clip.source_range.source_in + local_frame + 1)
 
     def _thumbnail_tile(self, clip_id, thumbnail):
@@ -193,7 +251,23 @@ class CutTimelineWidget(QWidget):
             if clip is None or geometry.right < 0 or geometry.x > self.width():
                 continue
             selected = clip.clip_id == self.selected_clip_id
-            rect = QRectF(geometry.x, self.TRACK_TOP, geometry.width, self.TRACK_HEIGHT)
+            envelope_rect = QRectF(
+                geometry.x,
+                self.TRACK_TOP,
+                geometry.width,
+                self.TRACK_HEIGHT,
+            )
+            rect = QRectF(
+                geometry.active_left,
+                self.TRACK_TOP,
+                geometry.active_width,
+                self.TRACK_HEIGHT,
+            )
+            envelope_path = QPainterPath()
+            envelope_path.addRoundedRect(envelope_rect, 5, 5)
+            painter.fillPath(envelope_path, QColor("#171d24"))
+            painter.setPen(QPen(QColor("#303945"), 1))
+            painter.drawPath(envelope_path)
             path = QPainterPath()
             path.addRoundedRect(rect, 5, 5)
             painter.fillPath(path, QColor("#29456f" if selected else "#252d36"))
@@ -242,6 +316,15 @@ class CutTimelineWidget(QWidget):
                     QRectF(rect.left(), rect.top(), self.HANDLE_WIDTH, rect.height()),
                     QColor("#6fa0ff"),
                 )
+                painter.fillRect(
+                    QRectF(
+                        rect.right() - self.HANDLE_WIDTH,
+                        rect.top(),
+                        self.HANDLE_WIDTH,
+                        rect.height(),
+                    ),
+                    QColor("#6fa0ff"),
+                )
                 painter.setPen(QPen(QColor("#ffffff"), 1, Qt.DashLine))
                 painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 3, 3)
 
@@ -262,10 +345,6 @@ class CutTimelineWidget(QWidget):
                 painter.setPen(QColor("#ffffff"))
                 painter.setFont(QFont("Consolas", 8, QFont.DemiBold))
                 painter.drawText(label_rect, Qt.AlignCenter, label)
-                painter.fillRect(
-                    QRectF(rect.right() - self.HANDLE_WIDTH, rect.top(), self.HANDLE_WIDTH, rect.height()),
-                    QColor("#6fa0ff"),
-                )
 
         selected_clip = self.workspace_state.selected_clip
         selected_geometry = self._geometry.clip(self.selected_clip_id or "")
@@ -309,23 +388,24 @@ class CutTimelineWidget(QWidget):
         clip = self._clip_by_id(geometry.clip_id)
         if clip is None:
             return
-        if clip.clip_id != self.selected_clip_id:
-            self.clip_selected.emit(clip.clip_id)
-            self.selected_clip_id = clip.clip_id
+        self._activate_clip(clip)
         self._drag_clip_id = clip.clip_id
         self._drag_origin = event.position().toPoint()
         self._drag_original_range = clip.source_range
         self._preview_range = clip.source_range
-        distance_left = abs(event.position().x() - geometry.x)
-        distance_right = abs(event.position().x() - geometry.right)
+        distance_left = abs(event.position().x() - geometry.active_left)
+        distance_right = abs(event.position().x() - geometry.active_right)
         if distance_left <= self.HANDLE_WIDTH + 3:
             self._drag_mode = "trim_left"
         elif distance_right <= self.HANDLE_WIDTH + 3:
             self._drag_mode = "trim_right"
         else:
             self._drag_mode = "pending_move"
-            local = self._geometry.clip_frame_at(geometry, event.position().x())
-            self.set_current_frame(clip.source_range.source_in + local + 1)
+            source_frame = self._geometry.active_source_frame_at(
+                geometry,
+                event.position().x(),
+            )
+            self.set_current_frame(source_frame + 1)
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -337,8 +417,8 @@ class CutTimelineWidget(QWidget):
             near_edge = (
                 geometry.clip_id == self.selected_clip_id
                 and (
-                    abs(event.position().x() - geometry.x) <= self.HANDLE_WIDTH + 3
-                    or abs(event.position().x() - geometry.right) <= self.HANDLE_WIDTH + 3
+                    abs(event.position().x() - geometry.active_left) <= self.HANDLE_WIDTH + 3
+                    or abs(event.position().x() - geometry.active_right) <= self.HANDLE_WIDTH + 3
                 )
             )
             self.setCursor(Qt.SizeHorCursor if near_edge else Qt.PointingHandCursor)
@@ -350,11 +430,17 @@ class CutTimelineWidget(QWidget):
         if self._drag_mode == "pending_move" and abs(delta_pixels) > 10:
             self._drag_mode = "move"
         if self._drag_mode == "trim_left":
-            delta = self._geometry.frame_delta_for_pixels(delta_pixels)
+            delta = self._geometry.frame_delta_for_pixels(
+                delta_pixels,
+                clip.clip_id,
+            )
             source_in = max(0, min(self._drag_original_range.source_out - 1, self._drag_original_range.source_in + delta))
             self._preview_range = ClipRange(source_in, self._drag_original_range.source_out)
         elif self._drag_mode == "trim_right":
-            delta = self._geometry.frame_delta_for_pixels(delta_pixels)
+            delta = self._geometry.frame_delta_for_pixels(
+                delta_pixels,
+                clip.clip_id,
+            )
             source_out = max(
                 self._drag_original_range.source_in + 1,
                 min(clip.source_frame_count, self._drag_original_range.source_out + delta),
@@ -409,22 +495,22 @@ class CutTimelineWidget(QWidget):
             return
         if event.key() in {Qt.Key_Left, Qt.Key_Right}:
             delta = -1 if event.key() == Qt.Key_Left else 1
-            self.set_current_frame(self.current_frame + delta)
+            self.set_current_frame(
+                max(self.in_point, min(self.out_point, self.current_frame + delta))
+            )
             event.accept()
             return
         if event.key() == Qt.Key_Home:
             first = self._clips()[0] if self._clips() else None
             if first is not None:
-                self.selected_clip_id = first.clip_id
-                self.clip_selected.emit(first.clip_id)
+                self._activate_clip(first)
                 self.set_current_frame(first.source_range.source_in + 1)
             event.accept()
             return
         if event.key() == Qt.Key_End:
             last = self._clips()[-1] if self._clips() else None
             if last is not None:
-                self.selected_clip_id = last.clip_id
-                self.clip_selected.emit(last.clip_id)
+                self._activate_clip(last)
                 self.set_current_frame(last.source_range.source_out)
             event.accept()
             return

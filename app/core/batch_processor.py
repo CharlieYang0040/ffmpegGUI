@@ -460,8 +460,12 @@ class BatchProcessor:
             elif len(temp_files) == 1:
                 if task_callback:
                     task_callback("단일 파일 마무리 중...")
-                shutil.copy2(temp_files[0], output_file)
-                self.logger.info(f"단일 파일 복사 완료: {temp_files[0]} -> {output_file}")
+                self.media_merger.finalize_media_file(
+                    temp_files[0],
+                    output_file,
+                    cancel_token=cancel_token,
+                )
+                self.logger.info(f"단일 파일 컨테이너 확정 완료: {temp_files[0]} -> {output_file}")
 
                 if progress_callback:
                     self._emit_progress(100, progress_callback)

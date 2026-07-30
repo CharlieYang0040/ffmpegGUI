@@ -27,6 +27,7 @@ from app.core.ffmpeg_manager import FFmpegManager
 # ffmpeg_core에서 필요한 함수 가져오기
 from app.core.ffmpeg_core import apply_filters, create_temp_file_list, get_video_duration
 from app.core.ffmpeg_process import communicate_process, decode_process_output
+from app.core.process_utils import popen_hidden, probe_media_json
 
 # 로거 설정
 logger = LoggingService().get_logger(__name__)
@@ -43,6 +44,61 @@ class MediaMerger:
         """
         self.ffmpeg_manager = ffmpeg_manager or FFmpegManager()
         self.logger = LoggingService().get_logger(__name__)
+
+    def finalize_media_file(
+        self,
+        input_file: str,
+        output_file: str,
+        *,
+        cancel_token=None,
+    ) -> str:
+        """Finalize one encoded file using the container implied by output_file."""
+        source_extension = os.path.splitext(input_file)[1].lower()
+        output_extension = os.path.splitext(output_file)[1].lower()
+        output_dir = os.path.dirname(os.path.abspath(output_file))
+        os.makedirs(output_dir, exist_ok=True)
+
+        handle, staged_output = tempfile.mkstemp(
+            prefix=".ffmpeggui-final-",
+            suffix=output_extension or source_extension,
+            dir=output_dir,
+        )
+        os.close(handle)
+        os.remove(staged_output)
+        try:
+            if source_extension == output_extension:
+                shutil.copy2(input_file, staged_output)
+            else:
+                ffmpeg_path = self.ffmpeg_manager.get_ffmpeg_path()
+                if not ffmpeg_path:
+                    raise ValueError("FFmpeg 경로가 설정되지 않았습니다.")
+                process = popen_hidden(
+                    [
+                        ffmpeg_path,
+                        "-y",
+                        "-i",
+                        input_file,
+                        "-map",
+                        "0",
+                        "-c",
+                        "copy",
+                        staged_output,
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                returncode, _, stderr_output = communicate_process(process, cancel_token)
+                if returncode != 0:
+                    raise RuntimeError(
+                        "출력 컨테이너 변환에 실패했습니다: "
+                        + (stderr_output or "알 수 없는 FFmpeg 오류")
+                    )
+            os.replace(staged_output, output_file)
+            self.logger.info("최종 컨테이너 확정 완료: %s -> %s", input_file, output_file)
+            return output_file
+        finally:
+            if os.path.exists(staged_output):
+                os.remove(staged_output)
 
     def concat_media_files(
         self,
@@ -81,17 +137,15 @@ class MediaMerger:
                 raise ValueError("병합할 파일이 없습니다.")
 
             if len(input_files) == 1:
-                self.logger.info("병합할 파일이 하나뿐이므로 파일을 복사합니다.")
-                try:
-                    # 파일이 하나면 그냥 복사
-                    import shutil as file_copy_module  # 지역 변수로 다시 임포트
-                    file_copy_module.copy2(input_files[0], output_file)
-                    if progress_callback:
-                        progress_callback(100)  # 완료
-                    return output_file
-                except Exception as copy_error:
-                    self.logger.error(f"파일 복사 중 오류 발생: {copy_error}")
-                    raise
+                self.logger.info("단일 파일의 최종 출력 컨테이너를 확정합니다.")
+                result = self.finalize_media_file(
+                    input_files[0],
+                    output_file,
+                    cancel_token=cancel_token,
+                )
+                if progress_callback:
+                    progress_callback(100)
+                return result
 
             self.logger.info(f"{len(input_files)}개 미디어 파일 병합 시작")
 
@@ -496,7 +550,10 @@ class MediaMerger:
                 # 각 입력 파일의 오디오 스트림 확인
                 for i, input_file in enumerate(input_files):
                     try:
-                        probe = ffmpeg.probe(input_file, cmd=ffmpeg_path)
+                        probe = probe_media_json(
+                            self.ffmpeg_manager.get_ffprobe_path(),
+                            input_file,
+                        )
                         audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
                         if not audio_streams:
                             self.logger.warning(f"파일에 오디오 스트림이 없습니다: {input_file}")
@@ -588,7 +645,10 @@ class MediaMerger:
                     has_audio_simple = True
                     for input_file in input_files:
                         try:
-                            probe = ffmpeg.probe(input_file, cmd=ffmpeg_path)
+                            probe = probe_media_json(
+                                self.ffmpeg_manager.get_ffprobe_path(),
+                                input_file,
+                            )
                             audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
                             if not audio_streams:
                                 has_audio_simple = False

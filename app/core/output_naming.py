@@ -1,6 +1,7 @@
 """Output path helpers shared by drag/drop UI and tests."""
 
 import os
+import re
 
 from app.utils.utils import format_drag_to_output, normalize_path_separator
 
@@ -33,3 +34,25 @@ def build_auto_output_path(
         output_name = os.path.splitext(os.path.basename(current_output_path or ""))[0] or "output"
 
     return normalize_path_separator(os.path.join(output_dir, f"{output_name}{extension}"))
+
+
+def next_available_output_path(path: str) -> str:
+    """Return a non-existing sibling path with a three-digit suffix."""
+    directory, filename = os.path.split(os.path.abspath(path))
+    stem, extension = os.path.splitext(filename)
+    match = re.match(r"^(.*)_(\d{3,})$", stem)
+    if match:
+        base_stem = match.group(1)
+        number = int(match.group(2)) + 1
+    else:
+        base_stem = stem
+        number = 1
+
+    while True:
+        candidate = os.path.join(
+            directory,
+            f"{base_stem}_{number:03d}{extension}",
+        )
+        if not os.path.exists(candidate):
+            return candidate
+        number += 1

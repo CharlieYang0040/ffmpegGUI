@@ -11,17 +11,39 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtMultimedia import QVideoFrame
+    from PySide6.QtWidgets import QApplication, QLabel
     from app.core.image_sequence_loader import ImageSequenceLoaderThread
     from app.ui.widgets.cut_timeline_widget import CutTimelineWidget
-    from app.core.models import ClipRange
+    from app.core.models import (
+        ClipRange,
+        EditClip,
+        EditSequence,
+        MediaType,
+        WorkspaceState,
+    )
     from app.ui.components.preview_area import (
+        PreviewAreaComponent,
         frame_number_to_zero_based_index,
         reconcile_sequence_frame,
     )
+    from app.ui.components.timeline import TimelineComponent
     from app.ui.main_window import FFmpegGui
+    from app.ui.commands.commands import (
+        ClearListCommand,
+        DuplicateClipCommand,
+        RemoveItemsCommand,
+        ReorderItemsCommand,
+        ResetClipRangesCommand,
+        SplitClipCommand,
+        UpdateClipRangeCommand,
+    )
     from app.ui.widgets.drag_drop_list_widget import DragDropListWidget
-    from app.ui.widgets.list_widget_item import ThumbnailLoader, load_media_metadata
+    from app.ui.widgets.list_widget_item import (
+        MediaMetadataLoader,
+        ThumbnailLoader,
+        load_media_metadata,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised only without Qt installed
     QApplication = None
     Qt = None
@@ -48,6 +70,83 @@ class UIRegressionTests(unittest.TestCase):
                 break
         self.assertIsNotNone(restored)
         self.assertEqual(restored.get_trim_values(), (12, 5))
+
+    def test_video_sink_frame_is_painted_into_preview_widget(self):
+        component = PreviewAreaComponent.__new__(PreviewAreaComponent)
+        component.is_video_mode = True
+        component.media_player = None
+        component.video_widget = QLabel()
+        component.video_widget.resize(320, 180)
+        component._last_video_pixmap = None
+        image = QImage(160, 90, QImage.Format_RGB32)
+        image.fill(Qt.red)
+
+        component.on_video_frame_changed(QVideoFrame(image))
+
+        self.assertIsNotNone(component._last_video_pixmap)
+        self.assertIsNotNone(component.video_widget.pixmap())
+        self.assertFalse(component.video_widget.pixmap().isNull())
+
+    def test_playback_driven_frame_update_refreshes_timecode(self):
+        class TimelineWidgetStub:
+            fps = 30.0
+            current_frame = 1
+
+            def set_current_frame(self, frame, emit_signal):
+                self.current_frame = frame
+
+        component = TimelineComponent.__new__(TimelineComponent)
+        component.timeline_widget = TimelineWidgetStub()
+        component.current_timecode_label = QLabel("00:00:00:00")
+
+        component.set_current_frame(31, emit_signal=False)
+
+        self.assertEqual(component.current_timecode_label.text(), "00:00:01:00")
+
+    def test_preview_resize_does_not_treat_loading_video_as_sequence(self):
+        component = PreviewAreaComponent.__new__(PreviewAreaComponent)
+        component.media_info_loading = True
+        component.is_video_mode = False
+        component.image_preview_label = QLabel("미디어 정보 로딩 중...")
+        component.image_preview_label.show()
+        component.current_media_path = "C:/media/video.mp4"
+        component.expected_sequence_frame_index = 0
+        displayed = []
+        component._display_sequence_frame = displayed.append
+
+        component.update_preview_label()
+
+        self.assertEqual(displayed, [])
+
+    def test_preview_marker_reset_does_not_change_edit_clip_range(self):
+        clip = EditClip(
+            clip_id="clip-a",
+            source_path="a.mp4",
+            source_range=ClipRange(10, 110),
+            source_frame_count=180,
+            media_type=MediaType.VIDEO,
+            source_fps=30.0,
+        )
+        timeline = CutTimelineWidget()
+        timeline.set_workspace_state(
+            WorkspaceState(EditSequence((clip,)), selected_clip_id="clip-a")
+        )
+        committed = []
+        timeline.clip_range_committed.connect(
+            lambda *values: committed.append(values)
+        )
+        component = TimelineComponent.__new__(TimelineComponent)
+        component.timeline_widget = timeline
+
+        component.reset_in_out_points()
+
+        self.assertEqual(committed, [])
+        self.assertEqual(
+            timeline.workspace_state.selected_clip.source_range,
+            ClipRange(10, 110),
+        )
+        self.assertEqual((timeline.in_point, timeline.out_point), (1, 180))
+        timeline.close()
 
     def test_thumbnail_loader_reads_still_image(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -83,6 +182,158 @@ class UIRegressionTests(unittest.TestCase):
 
         self.assertEqual(events[:2], ["timeline", "inspector"])
 
+    def test_timeline_range_command_preserves_existing_media_widget(self):
+        refreshes = []
+        list_widget = DragDropListWidget()
+        list_widget.main_window = SimpleNamespace(
+            refresh_job_inspector=lambda: refreshes.append("refresh")
+        )
+        list_widget.add_items(["C:/media/a.mp4"])
+        item = list_widget.item(0)
+        item_widget = list_widget.itemWidget(item)
+        item_widget.total_frames = 120
+        item_widget.source_range = ClipRange(0, 120)
+        original_loader = item_widget.loader
+        original_thumbnail_loader = item_widget.thumbnail_loader
+        refreshes.clear()
+
+        command = UpdateClipRangeCommand(
+            list_widget,
+            item_widget.clip_id,
+            ClipRange(0, 120),
+            ClipRange(18, 94),
+        )
+
+        self.assertTrue(command.execute())
+        self.assertIs(list_widget.itemWidget(list_widget.item(0)), item_widget)
+        self.assertIs(item_widget.loader, original_loader)
+        self.assertIs(item_widget.thumbnail_loader, original_thumbnail_loader)
+        self.assertEqual(item_widget.get_clip_range(), ClipRange(18, 94))
+        self.assertTrue(command.undo())
+        self.assertIs(list_widget.itemWidget(list_widget.item(0)), item_widget)
+        self.assertEqual(item_widget.get_clip_range(), ClipRange(0, 120))
+        self.assertGreaterEqual(len(refreshes), 2)
+
+    def test_split_and_duplicate_reuse_loaded_media_data(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media_path = Path(temp_dir) / "clip.mp4"
+            media_path.write_bytes(b"placeholder")
+            with patch.object(MediaMetadataLoader, "start"), patch.object(
+                ThumbnailLoader,
+                "start",
+            ):
+                list_widget = DragDropListWidget()
+                list_widget.add_items([str(media_path)])
+                original_item = list_widget.item(0)
+                original_widget = list_widget.itemWidget(original_item)
+                original_widget.total_frames = 120
+                original_widget.fps = 30.0
+                original_widget.source_range = ClipRange(0, 120)
+
+                duplicate = DuplicateClipCommand(list_widget, 0, "duplicate")
+                self.assertTrue(duplicate.execute())
+                duplicate_widget = list_widget.itemWidget(list_widget.item(1))
+                self.assertEqual(duplicate_widget.total_frames, 120)
+                self.assertIsNone(duplicate_widget.loader)
+                self.assertIsNone(duplicate_widget.thumbnail_loader)
+                self.assertTrue(duplicate.undo())
+                self.assertIs(list_widget.itemWidget(list_widget.item(0)), original_widget)
+                self.assertTrue(duplicate.execute())
+                self.assertIs(list_widget.itemWidget(list_widget.item(1)), duplicate_widget)
+                self.assertTrue(duplicate.undo())
+
+                split = SplitClipCommand(
+                    list_widget,
+                    0,
+                    45,
+                    "left",
+                    "right",
+                )
+                self.assertTrue(split.execute())
+                left_widget = list_widget.itemWidget(list_widget.item(0))
+                right_widget = list_widget.itemWidget(list_widget.item(1))
+                self.assertIs(left_widget, original_widget)
+                self.assertEqual(left_widget.get_clip_range(), ClipRange(0, 45))
+                self.assertEqual(right_widget.get_clip_range(), ClipRange(45, 120))
+                self.assertIsNone(right_widget.loader)
+                self.assertIsNone(right_widget.thumbnail_loader)
+                self.assertTrue(split.undo())
+                self.assertIs(list_widget.itemWidget(list_widget.item(0)), original_widget)
+                self.assertEqual(original_widget.get_clip_range(), ClipRange(0, 120))
+                self.assertTrue(split.execute())
+                self.assertIs(list_widget.itemWidget(list_widget.item(1)), right_widget)
+                self.assertTrue(split.undo())
+
+    def test_reorder_preserves_widgets_and_is_undoable(self):
+        list_widget = DragDropListWidget()
+        list_widget.add_items(["C:/media/a.mp4", "C:/media/a.mp4"])
+        widgets = [
+            list_widget.itemWidget(list_widget.item(index))
+            for index in range(2)
+        ]
+        old_order = list_widget.get_all_item_states()
+        new_order = list(reversed(old_order))
+        command = ReorderItemsCommand(list_widget, old_order, new_order)
+
+        self.assertTrue(command.execute())
+        self.assertIs(list_widget.itemWidget(list_widget.item(0)), widgets[1])
+        self.assertIs(list_widget.itemWidget(list_widget.item(1)), widgets[0])
+        self.assertTrue(command.undo())
+        self.assertIs(list_widget.itemWidget(list_widget.item(0)), widgets[0])
+        self.assertIs(list_widget.itemWidget(list_widget.item(1)), widgets[1])
+        self.assertTrue(command.execute())
+        self.assertIs(list_widget.itemWidget(list_widget.item(0)), widgets[1])
+
+    def test_remove_and_clear_undo_restore_same_widgets(self):
+        list_widget = DragDropListWidget()
+        list_widget.add_items(["C:/media/a.mp4", "C:/media/b.mp4"])
+        widgets = [
+            list_widget.itemWidget(list_widget.item(index))
+            for index in range(2)
+        ]
+        remove = RemoveItemsCommand(list_widget, [list_widget.item(0)])
+
+        self.assertTrue(remove.execute())
+        self.assertEqual(list_widget.count(), 1)
+        self.assertTrue(remove.undo())
+        self.assertIs(list_widget.itemWidget(list_widget.item(0)), widgets[0])
+        self.assertTrue(remove.execute())
+        self.assertTrue(remove.undo())
+
+        clear = ClearListCommand(list_widget)
+        self.assertTrue(clear.execute())
+        self.assertEqual(list_widget.count(), 0)
+        self.assertTrue(clear.undo())
+        self.assertIs(list_widget.itemWidget(list_widget.item(0)), widgets[0])
+        self.assertIs(list_widget.itemWidget(list_widget.item(1)), widgets[1])
+        self.assertTrue(clear.execute())
+        self.assertTrue(clear.undo())
+
+    def test_reset_ranges_preserves_widgets_and_undoes_atomically(self):
+        list_widget = DragDropListWidget()
+        list_widget.add_items(["C:/media/a.mp4", "C:/media/b.mp4"])
+        widgets = [
+            list_widget.itemWidget(list_widget.item(index))
+            for index in range(2)
+        ]
+        for widget, source_range in zip(
+            widgets,
+            (ClipRange(10, 90), ClipRange(5, 70)),
+        ):
+            widget.total_frames = 120
+            widget.source_range = source_range
+        command = ResetClipRangesCommand(list_widget)
+
+        self.assertTrue(command.execute())
+        self.assertEqual(widgets[0].get_clip_range(), ClipRange(0, 120))
+        self.assertEqual(widgets[1].get_clip_range(), ClipRange(0, 120))
+        self.assertTrue(command.undo())
+        self.assertEqual(widgets[0].get_clip_range(), ClipRange(10, 90))
+        self.assertEqual(widgets[1].get_clip_range(), ClipRange(5, 70))
+        self.assertIs(list_widget.itemWidget(list_widget.item(0)), widgets[0])
+        self.assertTrue(command.execute())
+        self.assertEqual(widgets[0].get_clip_range(), ClipRange(0, 120))
+
     def test_timeline_trim_apply_allows_in_point_after_previous_out(self):
         timeline = CutTimelineWidget()
         timeline.set_video_info(100, 24.0, 100 / 24.0)
@@ -102,38 +353,11 @@ class UIRegressionTests(unittest.TestCase):
         window = SimpleNamespace(
             preview_area=SimpleNamespace(timeline=SimpleNamespace(timeline_widget=timeline)),
             list_widget=FakeListWidget(),
-            _syncing_timeline_trim=False,
         )
 
         FFmpegGui.apply_selected_item_trim_to_timeline(window)
 
         self.assertEqual((timeline.in_point, timeline.out_point), (81, 100))
-        self.assertFalse(window._syncing_timeline_trim)
-
-    def test_timeline_reset_does_not_overwrite_trim_while_media_is_loading(self):
-        calls = []
-        timeline = SimpleNamespace(frame_count=120, in_point=1, out_point=120)
-        item = SimpleNamespace(isSelected=lambda: True)
-        item_widget = SimpleNamespace(
-            set_trim_values=lambda start, end: calls.append((start, end))
-        )
-        list_widget = SimpleNamespace(
-            currentItem=lambda: item,
-            itemWidget=lambda _item: item_widget,
-        )
-        window = SimpleNamespace(
-            preview_area=SimpleNamespace(
-                timeline=SimpleNamespace(timeline_widget=timeline)
-            ),
-            list_widget=list_widget,
-            _syncing_timeline_trim=False,
-            _loading_selected_media_trim=True,
-            refresh_job_inspector=lambda: calls.append("refreshed"),
-        )
-
-        FFmpegGui.sync_current_item_trim_from_timeline(window)
-
-        self.assertEqual(calls, [])
 
     def test_loaded_media_applies_saved_trim_after_reset(self):
         calls = []

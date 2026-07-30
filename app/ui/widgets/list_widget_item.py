@@ -112,7 +112,7 @@ class ThumbnailLoader(QThread):
 
 
 class ListWidgetItem(QWidget):
-    def __init__(self, file_path, parent=None):
+    def __init__(self, file_path, parent=None, load_media=True):
         super().__init__(parent)
         self.clip_id = uuid.uuid4().hex
         self.file_path = file_path
@@ -129,7 +129,7 @@ class ListWidgetItem(QWidget):
         # 백그라운드 미디어 분석 실행
         self.loader = None
         self.thumbnail_loader = None
-        if file_exists:
+        if file_exists and load_media:
             from app.utils.utils import get_debug_mode
             self.loader = MediaMetadataLoader(self.file_path, get_debug_mode())
             self.loader.loaded.connect(self.on_metadata_loaded)
@@ -137,6 +137,22 @@ class ListWidgetItem(QWidget):
             self.thumbnail_loader = ThumbnailLoader(self.file_path, self)
             self.thumbnail_loader.loaded.connect(self.on_thumbnail_loaded)
             self.thumbnail_loader.start()
+
+    def clone_for_edit(self, clip_id: str, source_range: ClipRange):
+        """Create another edit clip while reusing already loaded media data."""
+        clone = ListWidgetItem(self.file_path, load_media=False)
+        clone.clip_id = str(clip_id)
+        clone.total_frames = self.total_frames
+        clone.fps = self.fps
+        clone.source_range = source_range
+        clone._pending_trim = FrameTrim()
+        pixmap = self.thumbnail_label.pixmap()
+        if pixmap is not None and not pixmap.isNull():
+            clone.thumbnail_label.setPixmap(pixmap.copy())
+        elif self.thumbnail_loader is not None and self.thumbnail_loader.isRunning():
+            self.thumbnail_loader.loaded.connect(clone.on_thumbnail_loaded)
+        clone.update_labels()
+        return clone
 
     def init_ui(self):
         layout = QHBoxLayout()
