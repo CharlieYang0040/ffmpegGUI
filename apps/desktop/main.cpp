@@ -187,6 +187,14 @@ int main(int argc, char* argv[]) {
             audioClip.value("audioFadeOutNs").toLongLong() != 300'000'000) {
             return EXIT_FAILURE;
         }
+        controller.seek(700'000'000);
+        controller.addCaptionAtPlayhead();
+        if (controller.captions().size() != 1) return EXIT_FAILURE;
+        controller.updateSelectedCaption(QStringLiteral("회귀 테스트 자막"), 900);
+        if (controller.captions().front().toMap().value("text").toString() !=
+            QStringLiteral("회귀 테스트 자막")) {
+            return EXIT_FAILURE;
+        }
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);
@@ -200,6 +208,9 @@ int main(int argc, char* argv[]) {
                loadedAudio.value("audioGain").toDouble() == 1.25 &&
                loadedAudio.value("audioFadeInNs").toLongLong() == 200'000'000 &&
                loadedAudio.value("audioFadeOutNs").toLongLong() == 300'000'000 &&
+               controller.captions().size() == 1 &&
+               controller.captions().front().toMap().value("text").toString() ==
+                   QStringLiteral("회귀 테스트 자막") &&
                expectedClipCount == importedClipCount + 4
             ? EXIT_SUCCESS
             : EXIT_FAILURE;
@@ -211,6 +222,9 @@ int main(int argc, char* argv[]) {
         controller.setSelectedClipVolumePercent(80);
         controller.setSelectedClipFadeInMs(150);
         controller.setSelectedClipFadeOutMs(250);
+        controller.seek(500'000'000);
+        controller.addCaptionAtPlayhead();
+        controller.updateSelectedCaption(QStringLiteral("출력 자막"), 1200);
         QEventLoop audioPreviewRefreshLoop;
         QTimer::singleShot(100, &audioPreviewRefreshLoop, &QEventLoop::quit);
         audioPreviewRefreshLoop.exec();
@@ -265,6 +279,9 @@ int main(int argc, char* argv[]) {
         controller.setSelectedClipVolumePercent(75);
         controller.setSelectedClipFadeInMs(200);
         controller.setSelectedClipFadeOutMs(300);
+        controller.seek(500'000'000);
+        controller.addCaptionAtPlayhead();
+        controller.updateSelectedCaption(QStringLiteral("미리보기 자막"), 1200);
         QTimer::singleShot(150, &controller, &EditorController::togglePlayback);
         QTimer::singleShot(5000, &application, [&application, &controller] {
             if (controller.playheadNs() < 500'000'000) application.exit(10);

@@ -226,6 +226,7 @@ EditorController::~EditorController() {
         export_process_.waitForFinished(3'000);
     }
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
+    if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
 }
 
 std::uint64_t EditorController::videoFramesReceived() const noexcept {
@@ -301,6 +302,19 @@ QVariantList EditorController::mediaAssets() const {
     return result;
 }
 
+QVariantList EditorController::captions() const {
+    QVariantList result;
+    result.reserve(static_cast<qsizetype>(timeline_.captions().size()));
+    for (const auto& caption : timeline_.captions()) {
+        result.push_back(QVariantMap{
+            {"id", QString::fromStdString(caption.id)},
+            {"text", QString::fromUtf8(caption.text)},
+            {"timelineInNs", static_cast<qint64>(caption.timeline_in)},
+            {"durationNs", static_cast<qint64>(caption.duration)}});
+    }
+    return result;
+}
+
 qint64 EditorController::durationNs() const noexcept {
     return static_cast<qint64>(timeline_.duration());
 }
@@ -337,6 +351,20 @@ int EditorController::selectedClipFadeOutMs() const noexcept {
         }
     }
     return 0;
+}
+
+QString EditorController::selectedCaptionText() const {
+    const auto id = selected_caption_id_.toStdString();
+    const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
+    return found == timeline_.captions().end() ? QString{} : QString::fromUtf8(found->text);
+}
+
+int EditorController::selectedCaptionDurationMs() const noexcept {
+    const auto id = selected_caption_id_.toStdString();
+    const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
+    return found == timeline_.captions().end()
+        ? 0
+        : static_cast<int>(found->duration / 1'000'000);
 }
 
 void EditorController::attachVideoItem(QObject* item) {
@@ -786,6 +814,72 @@ void EditorController::setSelectedClipFadeOutMs(int milliseconds) {
     }
 }
 
+void EditorController::addCaptionAtPlayhead() {
+    if (durationNs() <= 0 || playhead_ns_ >= durationNs()) return;
+    try {
+        std::string id;
+        do {
+            id = "caption-" + std::to_string(++generated_caption_id_);
+        } while (std::ranges::any_of(
+            timeline_.captions(), [&id](const auto& caption) { return caption.id == id; }));
+        const auto start = timeline_.nearest_frame_time(playhead_ns_).value_or(playhead_ns_);
+        const auto duration = std::min<ffgui::TimeNs>(2'000'000'000, durationNs() - start);
+        timeline_.add_caption(ffgui::CaptionCue{id, "새 자막", start, duration});
+        selected_caption_id_ = QString::fromStdString(id);
+        publishTimeline();
+        emit captionSelectionChanged();
+        setStatus("현재 위치에 자막을 추가했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::selectCaption(const QString& captionId) {
+    const auto id = captionId.toStdString();
+    if (std::ranges::none_of(
+            timeline_.captions(), [&id](const auto& caption) { return caption.id == id; })) {
+        return;
+    }
+    selected_caption_id_ = captionId;
+    emit captionSelectionChanged();
+}
+
+void EditorController::updateSelectedCaption(const QString& text, int durationMs) {
+    const auto id = selected_caption_id_.toStdString();
+    const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
+    if (found == timeline_.captions().end()) return;
+    try {
+        auto replacement = *found;
+        const auto cleaned = text.trimmed();
+        if (cleaned.isEmpty()) throw std::invalid_argument("자막 내용은 비워둘 수 없습니다");
+        replacement.text = cleaned.toUtf8().toStdString();
+        const auto available = durationNs() - replacement.timeline_in;
+        replacement.duration = std::clamp<ffgui::TimeNs>(
+            static_cast<ffgui::TimeNs>(durationMs) * 1'000'000,
+            std::min<ffgui::TimeNs>(100'000'000, available),
+            available);
+        timeline_.update_caption(std::move(replacement));
+        publishTimeline();
+        emit captionSelectionChanged();
+        setStatus("자막을 수정했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::deleteSelectedCaption() {
+    if (selected_caption_id_.isEmpty()) return;
+    try {
+        timeline_.erase_caption(selected_caption_id_.toStdString());
+        selected_caption_id_.clear();
+        publishTimeline();
+        emit captionSelectionChanged();
+        setStatus("자막을 삭제했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
 void EditorController::duplicateSelectedClip() {
     if (selected_clip_ids_.isEmpty()) return;
     try {
@@ -877,11 +971,20 @@ void EditorController::saveProject(const QString& path) {
                 {"audioFadeInNs", timeString(clip.audio.fade_in)},
                 {"audioFadeOutNs", timeString(clip.audio.fade_out)}});
         }
+        QJsonArray captions;
+        for (const auto& caption : timeline_.captions()) {
+            captions.push_back(QJsonObject{
+                {"id", QString::fromStdString(caption.id)},
+                {"text", QString::fromUtf8(caption.text)},
+                {"timelineInNs", timeString(caption.timeline_in)},
+                {"durationNs", timeString(caption.duration)}});
+        }
         const QJsonDocument document(QJsonObject{
             {"format", "ffmpegGUI-next"},
             {"version", 1},
             {"assets", assets},
-            {"clips", clips}});
+            {"clips", clips},
+            {"captions", captions}});
 
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly) || file.write(document.toJson()) < 0 || !file.commit()) {
@@ -955,6 +1058,14 @@ void EditorController::loadProject(const QString& path) {
                         ? parseTime(object.value("audioFadeInNs"), "audioFadeInNs") : 0,
                     object.contains("audioFadeOutNs")
                         ? parseTime(object.value("audioFadeOutNs"), "audioFadeOutNs") : 0}});
+        }
+        for (const auto value : root.value("captions").toArray()) {
+            const auto object = value.toObject();
+            loaded.add_caption(ffgui::CaptionCue{
+                object.value("id").toString().toStdString(),
+                object.value("text").toString().toUtf8().toStdString(),
+                parseTime(object.value("timelineInNs"), "timelineInNs"),
+                parseTime(object.value("durationNs"), "captionDurationNs")});
         }
         loaded.clear_history();
         timeline_ = std::move(loaded);
@@ -1041,6 +1152,10 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             span.clip.audio.fade_in,
             span.clip.audio.fade_out});
     }
+    for (const auto& caption : timeline_.captions()) {
+        request.captions.push_back(ffgui::ExportCaptionInput{
+            caption.text, caption.timeline_in, caption.duration});
+    }
     const auto exportCache = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
         .filePath("export-jobs");
     QDir().mkpath(exportCache);
@@ -1048,6 +1163,10 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
         .arg(QCoreApplication::applicationPid())
         .arg(QDateTime::currentMSecsSinceEpoch()));
     request.concat_script_path = std::filesystem::path(export_concat_path_.toStdWString());
+    export_subtitle_path_ = QDir(exportCache).filePath(QStringLiteral("%1-%2.ass")
+        .arg(QCoreApplication::applicationPid())
+        .arg(QDateTime::currentMSecsSinceEpoch()));
+    request.subtitle_script_path = std::filesystem::path(export_subtitle_path_.toStdWString());
     export_request_ = std::move(request);
     last_export_matched_preview_ = true;
     export_cpu_fallback_ = false;
@@ -1075,6 +1194,14 @@ void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
             if (!script.open(QIODevice::WriteOnly) || script.write(contents) != contents.size() ||
                 !script.commit()) {
                 throw std::runtime_error("stream-copy concat script could not be written");
+            }
+        }
+        if (!plan.subtitle_script.empty()) {
+            QSaveFile script(export_subtitle_path_);
+            const auto contents = QByteArray::fromStdString(plan.subtitle_script);
+            if (!script.open(QIODevice::WriteOnly) || script.write(contents) != contents.size() ||
+                !script.commit()) {
+                throw std::runtime_error("subtitle ASS script could not be written");
             }
         }
         QStringList arguments;
@@ -1126,7 +1253,9 @@ void EditorController::finishExport(bool success) {
         }
     }
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
+    if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
     export_concat_path_.clear();
+    export_subtitle_path_.clear();
     export_stream_copy_active_ = false;
     exporting_ = false;
     emit exportProgressChanged();
@@ -1143,7 +1272,7 @@ bool EditorController::applyPreviewTimeline(bool restorePosition) {
     }
     preview_update_timer_.stop();
     try {
-        player_->set_timeline(preview_snapshot_);
+        player_->set_timeline(preview_snapshot_, timeline_.captions());
         preview_applied_generation_ = preview_generation_;
         ++preview_rebuild_count_;
         if (restorePosition && playhead_ns_ > 0 && playhead_ns_ < durationNs()) {
@@ -1189,6 +1318,14 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     emit playheadChanged();
     if (previousIn != in_point_ns_ || previousOut != out_point_ns_) emit rangeChanged();
     emit selectedClipChanged();
+    if (!selected_caption_id_.isEmpty()) {
+        const auto selected = selected_caption_id_.toStdString();
+        if (std::ranges::none_of(timeline_.captions(),
+                [&selected](const auto& caption) { return caption.id == selected; })) {
+            selected_caption_id_.clear();
+        }
+    }
+    emit captionSelectionChanged();
     emit historyChanged();
 #ifdef FFGUI_HAS_GES
     preview_update_timer_.start();

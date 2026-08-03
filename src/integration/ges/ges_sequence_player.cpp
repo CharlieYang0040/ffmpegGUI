@@ -135,9 +135,15 @@ GesSequencePlayer::~GesSequencePlayer() {
 }
 
 void GesSequencePlayer::set_timeline(std::vector<TimelineSpan> timeline) {
+    set_timeline(std::move(timeline), {});
+}
+
+void GesSequencePlayer::set_timeline(
+    std::vector<TimelineSpan> timeline,
+    std::vector<CaptionCue> captions) {
     {
         std::scoped_lock lock(mutex_);
-        rebuild_pipeline_locked(timeline);
+        rebuild_pipeline_locked(timeline, captions);
     }
     position_ns_.store(0);
     state_.store(PlaybackState::stopped);
@@ -380,7 +386,9 @@ GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_d
     return GST_FLOW_OK;
 }
 
-void GesSequencePlayer::rebuild_pipeline_locked(const std::vector<TimelineSpan>& spans) {
+void GesSequencePlayer::rebuild_pipeline_locked(
+    const std::vector<TimelineSpan>& spans,
+    const std::vector<CaptionCue>& captions) {
     destroy_pipeline_locked();
     if (spans.empty()) {
         duration_ns_.store(0);
@@ -403,6 +411,15 @@ void GesSequencePlayer::rebuild_pipeline_locked(const std::vector<TimelineSpan>&
         gst_object_unref(layer);
         gst_object_unref(new_timeline);
         throw std::runtime_error("failed to add GES layer");
+    }
+    GESLayer* captionLayer = nullptr;
+    if (!captions.empty()) {
+        captionLayer = ges_layer_new();
+        if (captionLayer == nullptr || !ges_timeline_add_layer(new_timeline, captionLayer)) {
+            if (captionLayer != nullptr) gst_object_unref(captionLayer);
+            gst_object_unref(new_timeline);
+            throw std::runtime_error("failed to add GES caption layer");
+        }
     }
 
     try {
@@ -430,6 +447,26 @@ void GesSequencePlayer::rebuild_pipeline_locked(const std::vector<TimelineSpan>&
             if (!configured || !ges_layer_add_clip(layer, GES_CLIP(uri_clip))) {
                 gst_object_unref(uri_clip);
                 throw std::runtime_error("failed to configure GES clip");
+            }
+        }
+
+        for (const auto& caption : captions) {
+            auto* overlay = ges_text_overlay_clip_new();
+            if (overlay == nullptr) {
+                throw std::runtime_error("failed to create GES caption overlay");
+            }
+            ges_text_overlay_clip_set_text(overlay, caption.text.c_str());
+            ges_text_overlay_clip_set_font_desc(overlay, "Malgun Gothic Bold 30");
+            ges_text_overlay_clip_set_halign(overlay, GES_TEXT_HALIGN_CENTER);
+            ges_text_overlay_clip_set_valign(overlay, GES_TEXT_VALIGN_BOTTOM);
+            ges_text_overlay_clip_set_color(overlay, 0xffffffffU);
+            auto* element = GES_TIMELINE_ELEMENT(overlay);
+            const bool configured =
+                ges_timeline_element_set_start(element, caption.timeline_in) &&
+                ges_timeline_element_set_duration(element, caption.duration);
+            if (!configured || !ges_layer_add_clip(captionLayer, GES_CLIP(overlay))) {
+                gst_object_unref(overlay);
+                throw std::runtime_error("failed to configure GES caption overlay");
             }
         }
 

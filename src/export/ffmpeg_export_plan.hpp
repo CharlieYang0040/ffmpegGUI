@@ -31,12 +31,20 @@ struct ExportClipInput final {
     TimeNs audio_fade_out{};
 };
 
+struct ExportCaptionInput final {
+    std::string text;
+    TimeNs timeline_in{};
+    TimeNs duration{};
+};
+
 struct ExportRequest final {
     std::vector<ExportClipInput> clips;
     std::filesystem::path output_path;
     ExportVideoEncoder video_encoder{ExportVideoEncoder::h264_nvenc};
     bool prefer_stream_copy{true};
     std::filesystem::path concat_script_path;
+    std::vector<ExportCaptionInput> captions;
+    std::filesystem::path subtitle_script_path;
 };
 
 struct FfmpegExportPlan final {
@@ -44,6 +52,7 @@ struct FfmpegExportPlan final {
     TimeNs duration{};
     ExportMode mode{ExportMode::transcode};
     std::string concat_script;
+    std::string subtitle_script;
 };
 
 [[nodiscard]] FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request);

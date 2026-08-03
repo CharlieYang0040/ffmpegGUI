@@ -403,6 +403,36 @@ void test_clip_audio_edits_are_atomic_and_follow_split_edges() {
         "unsafe audio gain must be rejected");
 }
 
+void test_caption_edits_and_ripple_mapping_share_undo_state() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"a", "asset-a", 0, seconds(3)});
+    timeline.append_clip(Clip{"b", "asset-b", 0, seconds(3)});
+    timeline.clear_history();
+    timeline.add_caption(ffgui::CaptionCue{"cap-a", "left", 500'000'000, seconds(1)});
+    timeline.add_caption(ffgui::CaptionCue{"cap-b", "cross", 2'500'000'000, seconds(2)});
+    timeline.add_caption(ffgui::CaptionCue{"cap-c", "after", seconds(5), 500'000'000});
+    timeline.clear_history();
+
+    timeline.erase_range(seconds(1), seconds(3), "unused");
+    require(timeline.captions().size() == 3, "partial ripple overlaps must preserve cue remnants");
+    require(timeline.captions()[0] == ffgui::CaptionCue{"cap-a", "left", 500'000'000, 500'000'000},
+            "left-overlap cue must trim at ripple start");
+    require(timeline.captions()[1] == ffgui::CaptionCue{"cap-b", "cross", seconds(1), 1'500'000'000},
+            "right-overlap cue must move to ripple start");
+    require(timeline.captions()[2].timeline_in == seconds(3),
+            "later cues must shift by removed duration");
+    require(timeline.undo(), "clip and caption ripple must undo together");
+    require(timeline.duration() == seconds(6) && timeline.captions()[2].timeline_in == seconds(5),
+            "undo must restore both sequence and caption coordinates");
+
+    timeline.insert_clip(0, Clip{"insert", "asset-a", seconds(3), seconds(1)});
+    require(timeline.captions()[0].timeline_in == 1'500'000'000 &&
+            timeline.captions()[2].timeline_in == seconds(6),
+            "inserted time must shift cues at and after the edit");
+    require(timeline.undo() && timeline.captions()[0].timeline_in == 500'000'000,
+            "insert ripple must be one undo step");
+}
+
 void test_ffprobe_timestamp_parser_preserves_vfr() {
     require(ffgui::parse_ffprobe_seconds("12.345678901") == 12'345'678'901, "exact decimal ns");
     const auto pts = ffgui::parse_ffprobe_frame_pts(
@@ -474,6 +504,28 @@ void test_ffmpeg_export_plan_applies_clip_audio_controls() {
             "muted clips must render silent audio");
 }
 
+void test_ffmpeg_export_plan_burns_timeline_captions() {
+    auto request = ffgui::ExportRequest{
+        {{std::filesystem::path{"A.mp4"}, 0, seconds(4), true,
+          seconds(4), {0, seconds(4)}}},
+        std::filesystem::path{"result.mp4"},
+        ffgui::ExportVideoEncoder::libx264};
+    request.concat_script_path = std::filesystem::path{"job.ffconcat"};
+    request.captions = {{"첫 줄\nsecond", 500'000'000, 1'250'000'000}};
+    request.subtitle_script_path = std::filesystem::path{"D:/cache/job.ass"};
+    const auto plan = ffgui::compile_ffmpeg_export(request);
+    require(plan.mode == ffgui::ExportMode::transcode,
+            "burned captions must disable stream copy");
+    std::string arguments;
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(arguments.contains("ass=filename='D\\:/cache/job.ass'"),
+            "caption ASS file must be attached to the video graph");
+    require(plan.subtitle_script.contains("Dialogue: 0,0:00:00.50,0:00:01.75"),
+            "caption timestamps must retain centisecond ASS precision");
+    require(plan.subtitle_script.contains("첫 줄\\Nsecond"),
+            "caption text and line breaks must reach the ASS script");
+}
+
 void test_ffmpeg_export_plan_rejects_invalid_requests() {
     require_throws<std::invalid_argument>(
         [] { static_cast<void>(ffgui::compile_ffmpeg_export(ffgui::ExportRequest{})); },
@@ -536,10 +588,12 @@ int main() {
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},
         {"clip_audio_edits_are_atomic_and_follow_split_edges", test_clip_audio_edits_are_atomic_and_follow_split_edges},
+        {"caption_edits_and_ripple_mapping_share_undo_state", test_caption_edits_and_ripple_mapping_share_undo_state},
         {"ffprobe_timestamp_parser_preserves_vfr", test_ffprobe_timestamp_parser_preserves_vfr},
         {"ffprobe_frame_timeline_preserves_keyframes", test_ffprobe_frame_timeline_preserves_keyframes},
         {"ffmpeg_export_plan_preserves_clip_ranges_and_audio", test_ffmpeg_export_plan_preserves_clip_ranges_and_audio},
         {"ffmpeg_export_plan_applies_clip_audio_controls", test_ffmpeg_export_plan_applies_clip_audio_controls},
+        {"ffmpeg_export_plan_burns_timeline_captions", test_ffmpeg_export_plan_burns_timeline_captions},
         {"ffmpeg_export_plan_rejects_invalid_requests", test_ffmpeg_export_plan_rejects_invalid_requests},
         {"ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts", test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts},
     };

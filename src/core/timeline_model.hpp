@@ -48,6 +48,16 @@ struct MappedPosition final {
     std::optional<std::size_t> source_frame;
 };
 
+struct CaptionCue final {
+    std::string id;
+    std::string text;
+    TimeNs timeline_in{};
+    TimeNs duration{};
+
+    bool operator==(const CaptionCue&) const = default;
+    [[nodiscard]] TimeNs timeline_out() const { return checked_add(timeline_in, duration); }
+};
+
 class TimelineModel final {
 public:
     void add_asset(MediaAsset asset);
@@ -76,6 +86,9 @@ public:
         TimeNs timeline_out,
         std::string right_remainder_id);
     void set_clips_audio(const std::vector<std::string>& clip_ids, ClipAudio audio);
+    void add_caption(CaptionCue caption);
+    void update_caption(CaptionCue caption);
+    void erase_caption(const std::string& caption_id);
     void split_at(
         TimeNs timeline_position,
         std::string left_clip_id,
@@ -87,6 +100,7 @@ public:
     void clear_history() noexcept;
 
     [[nodiscard]] const std::vector<Clip>& clips() const noexcept { return clips_; }
+    [[nodiscard]] const std::vector<CaptionCue>& captions() const noexcept { return captions_; }
     [[nodiscard]] std::vector<TimelineSpan> snapshot() const;
     [[nodiscard]] TimeNs duration() const;
     [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
@@ -99,14 +113,26 @@ public:
         TimeNs source_time) const;
 
 private:
+    struct EditState final {
+        std::vector<Clip> clips;
+        std::vector<CaptionCue> captions;
+    };
+
     [[nodiscard]] std::size_t index_of(const std::string& clip_id) const;
+    [[nodiscard]] std::size_t caption_index_of(const std::string& caption_id) const;
     void validate_clip(const Clip& clip, std::optional<std::size_t> replacing = std::nullopt) const;
+    void validate_caption(
+        const CaptionCue& caption,
+        std::optional<std::size_t> replacing = std::nullopt) const;
+    void ripple_captions_for_insert(TimeNs timeline_position, TimeNs inserted_duration);
+    void ripple_captions_for_delete(TimeNs timeline_in, TimeNs timeline_out);
     void record_edit();
 
     std::unordered_map<std::string, MediaAsset> assets_;
     std::vector<Clip> clips_;
-    std::vector<std::vector<Clip>> undo_stack_;
-    std::vector<std::vector<Clip>> redo_stack_;
+    std::vector<CaptionCue> captions_;
+    std::vector<EditState> undo_stack_;
+    std::vector<EditState> redo_stack_;
     std::uint64_t revision_{};
 };
 

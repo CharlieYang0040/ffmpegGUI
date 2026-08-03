@@ -9,7 +9,8 @@
 ```text
 TimelineModel
   ├─ MediaAsset: 경로, 길이, 실제 프레임 PTS
-  └─ Clip: asset, source-in, duration, gain/mute/fades
+  ├─ Clip: asset, source-in, duration, gain/mute/fades
+  └─ CaptionCue: sequence-in, duration, UTF-8 text
           ↓ snapshot
       TimelineSpan[]
        ├─ Qt timeline view
@@ -53,6 +54,10 @@ TimelineModel
   변경은 하나의 편집 리비전이며, 분할 시 새 내부 컷에는 페이드를 만들지 않고 원래
   클립의 바깥쪽 페이드만 좌우 조각에 보존한다. 트림으로 두 페이드의 합이 클립보다
   길어지면 재생과 출력 모두 같은 비율로 축소해 클립 경계 안에 맞춘다.
+- 자막은 원본 클립 시간이 아닌 시퀀스 나노초 범위에 놓인다. 리플 삭제에 완전히 포함된
+  자막은 제거하고, 경계에 걸친 자막은 남은 부분으로 자르며, 뒤 자막은 삭제 길이만큼
+  당긴다. 시간 삽입은 해당 위치 이후 자막을 밀어낸다. 클립과 자막을 하나의 편집 상태로
+  저장하므로 Undo/Redo에서 영상만 돌아가 자막이 어긋나는 중간 상태가 생기지 않는다.
 
 ## 스레드 경계
 
@@ -122,6 +127,9 @@ Qt 아이템까지 전달되는 것은 확인했지만 Scene Graph의 반복 tex
 재시도한다. 취소·실패 시 불완전 출력은 삭제하고 기존 파일은 자동으로 덮어쓰지 않는다.
 클립 gain·음소거·페이드는 GES `volume` 제어 곡선과 FFmpeg `volume`/`afade` 필터로
 각각 컴파일한다. 오디오 효과가 하나라도 있으면 stream-copy 조건에서 제외한다.
+자막은 GES 상위 오버레이 레이어의 `GESTextOverlayClip`으로 미리보고, 출력 시 UTF-8
+ASS 스크립트로 컴파일해 FFmpeg `ass` 필터로 영상에 번인한다. 자막이 있는 출력은
+화면 합성이 필요하므로 stream-copy를 사용하지 않는다.
 
 같은 원본 파일에서 나온 모든 컷의 시작과 끝이 실제 영상 키프레임 PTS 또는 원본
 끝에 정확히 맞으면 concat demuxer와 `-c copy`로 재인코딩 없이 remux한다. 서로 다른

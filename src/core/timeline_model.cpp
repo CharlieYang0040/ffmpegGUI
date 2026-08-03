@@ -31,7 +31,12 @@ void TimelineModel::insert_clip(std::size_t index, Clip clip) {
         throw std::out_of_range("clip insertion index is outside the timeline");
     }
     validate_clip(clip);
+    TimeNs insertionTime = 0;
+    for (std::size_t candidate = 0; candidate < index; ++candidate) {
+        insertionTime = checked_add(insertionTime, clips_[candidate].duration);
+    }
     record_edit();
+    ripple_captions_for_insert(insertionTime, clip.duration);
     clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), std::move(clip));
 }
 
@@ -47,7 +52,14 @@ void TimelineModel::insert_clips(std::size_t index, std::vector<Clip> clips) {
             throw std::invalid_argument("duplicate clip id in insertion batch: " + clip.id);
         }
     }
+    TimeNs insertionTime = 0;
+    for (std::size_t candidate = 0; candidate < index; ++candidate) {
+        insertionTime = checked_add(insertionTime, clips_[candidate].duration);
+    }
+    TimeNs insertedDuration = 0;
+    for (const auto& clip : clips) insertedDuration = checked_add(insertedDuration, clip.duration);
     record_edit();
+    ripple_captions_for_insert(insertionTime, insertedDuration);
     clips_.insert(
         clips_.begin() + static_cast<std::ptrdiff_t>(index),
         std::make_move_iterator(clips.begin()),
@@ -70,6 +82,7 @@ void TimelineModel::insert_clip_at(
         const auto clipEnd = checked_add(cursor, clips_[index].duration);
         if (timeline_position == cursor) {
             record_edit();
+            ripple_captions_for_insert(timeline_position, clip.duration);
             clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), std::move(clip));
             return;
         }
@@ -103,6 +116,7 @@ void TimelineModel::insert_clip_at(
             validate_clip(left, index);
             validate_clip(right, index);
             record_edit();
+            ripple_captions_for_insert(timeline_position, clip.duration);
             clips_[index] = std::move(left);
             clips_.insert(
                 clips_.begin() + static_cast<std::ptrdiff_t>(index + 1), std::move(clip));
@@ -114,6 +128,7 @@ void TimelineModel::insert_clip_at(
     }
 
     record_edit();
+    ripple_captions_for_insert(timeline_position, clip.duration);
     clips_.push_back(std::move(clip));
 }
 
@@ -127,7 +142,18 @@ void TimelineModel::trim_clip(const std::string& clip_id, TimeNs source_in, Time
         replacement.duration == clips_[index].duration) {
         return;
     }
+    TimeNs clipStart = 0;
+    for (std::size_t candidate = 0; candidate < index; ++candidate) {
+        clipStart = checked_add(clipStart, clips_[candidate].duration);
+    }
+    const auto oldDuration = clips_[index].duration;
     record_edit();
+    if (range_duration < oldDuration) {
+        ripple_captions_for_delete(
+            checked_add(clipStart, range_duration), checked_add(clipStart, oldDuration));
+    } else if (range_duration > oldDuration) {
+        ripple_captions_for_insert(checked_add(clipStart, oldDuration), range_duration - oldDuration);
+    }
     clips_[index] = std::move(replacement);
 }
 
@@ -198,7 +224,12 @@ void TimelineModel::move_clips(
 
 void TimelineModel::erase_clip(const std::string& clip_id) {
     const auto index = index_of(clip_id);
+    TimeNs timelineIn = 0;
+    for (std::size_t candidate = 0; candidate < index; ++candidate) {
+        timelineIn = checked_add(timelineIn, clips_[candidate].duration);
+    }
     record_edit();
+    ripple_captions_for_delete(timelineIn, checked_add(timelineIn, clips_[index].duration));
     clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(index));
 }
 
@@ -208,7 +239,17 @@ void TimelineModel::erase_clips(const std::vector<std::string>& clip_ids) {
     for (const auto& id : uniqueIds) {
         static_cast<void>(index_of(id));
     }
+    std::vector<std::pair<TimeNs, TimeNs>> ranges;
+    TimeNs cursor = 0;
+    for (const auto& clip : clips_) {
+        const auto end = checked_add(cursor, clip.duration);
+        if (uniqueIds.contains(clip.id)) ranges.emplace_back(cursor, end);
+        cursor = end;
+    }
     record_edit();
+    for (auto iterator = ranges.rbegin(); iterator != ranges.rend(); ++iterator) {
+        ripple_captions_for_delete(iterator->first, iterator->second);
+    }
     std::erase_if(clips_, [&uniqueIds](const Clip& clip) {
         return uniqueIds.contains(clip.id);
     });
@@ -269,7 +310,30 @@ void TimelineModel::erase_range(
         }
     }
     record_edit();
+    ripple_captions_for_delete(timeline_in, timeline_out);
     clips_ = std::move(candidate);
+}
+
+void TimelineModel::add_caption(CaptionCue caption) {
+    validate_caption(caption);
+    record_edit();
+    captions_.push_back(std::move(caption));
+    std::ranges::sort(captions_, {}, &CaptionCue::timeline_in);
+}
+
+void TimelineModel::update_caption(CaptionCue caption) {
+    const auto index = caption_index_of(caption.id);
+    validate_caption(caption, index);
+    if (captions_[index] == caption) return;
+    record_edit();
+    captions_[index] = std::move(caption);
+    std::ranges::sort(captions_, {}, &CaptionCue::timeline_in);
+}
+
+void TimelineModel::erase_caption(const std::string& caption_id) {
+    const auto index = caption_index_of(caption_id);
+    record_edit();
+    captions_.erase(captions_.begin() + static_cast<std::ptrdiff_t>(index));
 }
 
 void TimelineModel::set_clips_audio(
@@ -334,8 +398,9 @@ bool TimelineModel::undo() {
     if (undo_stack_.empty()) {
         return false;
     }
-    redo_stack_.push_back(std::move(clips_));
-    clips_ = std::move(undo_stack_.back());
+    redo_stack_.push_back(EditState{std::move(clips_), std::move(captions_)});
+    clips_ = std::move(undo_stack_.back().clips);
+    captions_ = std::move(undo_stack_.back().captions);
     undo_stack_.pop_back();
     ++revision_;
     return true;
@@ -345,8 +410,9 @@ bool TimelineModel::redo() {
     if (redo_stack_.empty()) {
         return false;
     }
-    undo_stack_.push_back(std::move(clips_));
-    clips_ = std::move(redo_stack_.back());
+    undo_stack_.push_back(EditState{std::move(clips_), std::move(captions_)});
+    clips_ = std::move(redo_stack_.back().clips);
+    captions_ = std::move(redo_stack_.back().captions);
     redo_stack_.pop_back();
     ++revision_;
     return true;
@@ -358,7 +424,7 @@ void TimelineModel::clear_history() noexcept {
 }
 
 void TimelineModel::record_edit() {
-    undo_stack_.push_back(clips_);
+    undo_stack_.push_back(EditState{clips_, captions_});
     redo_stack_.clear();
     ++revision_;
 }
@@ -503,6 +569,66 @@ std::size_t TimelineModel::index_of(const std::string& clip_id) const {
         throw std::invalid_argument("unknown clip id: " + clip_id);
     }
     return static_cast<std::size_t>(std::distance(clips_.begin(), found));
+}
+
+std::size_t TimelineModel::caption_index_of(const std::string& caption_id) const {
+    const auto found = std::ranges::find(captions_, caption_id, &CaptionCue::id);
+    if (found == captions_.end()) {
+        throw std::invalid_argument("unknown caption id: " + caption_id);
+    }
+    return static_cast<std::size_t>(std::distance(captions_.begin(), found));
+}
+
+void TimelineModel::validate_caption(
+    const CaptionCue& caption,
+    std::optional<std::size_t> replacing) const {
+    if (caption.id.empty() || caption.text.empty() || caption.timeline_in < 0 ||
+        caption.duration <= 0 || caption.timeline_out() > duration()) {
+        throw std::invalid_argument("caption is outside the timeline or empty");
+    }
+    for (std::size_t index = 0; index < captions_.size(); ++index) {
+        if ((!replacing.has_value() || replacing.value() != index) &&
+            captions_[index].id == caption.id) {
+            throw std::invalid_argument("duplicate caption id: " + caption.id);
+        }
+    }
+}
+
+void TimelineModel::ripple_captions_for_insert(
+    TimeNs timeline_position,
+    TimeNs inserted_duration) {
+    if (inserted_duration <= 0) return;
+    for (auto& caption : captions_) {
+        if (caption.timeline_in >= timeline_position) {
+            caption.timeline_in = checked_add(caption.timeline_in, inserted_duration);
+        }
+    }
+}
+
+void TimelineModel::ripple_captions_for_delete(TimeNs timeline_in, TimeNs timeline_out) {
+    const auto removed = timeline_out - timeline_in;
+    std::vector<CaptionCue> transformed;
+    transformed.reserve(captions_.size());
+    for (auto caption : captions_) {
+        const auto captionOut = caption.timeline_out();
+        if (captionOut <= timeline_in) {
+            transformed.push_back(std::move(caption));
+        } else if (caption.timeline_in >= timeline_out) {
+            caption.timeline_in -= removed;
+            transformed.push_back(std::move(caption));
+        } else if (caption.timeline_in < timeline_in && captionOut > timeline_out) {
+            caption.duration -= removed;
+            transformed.push_back(std::move(caption));
+        } else if (caption.timeline_in < timeline_in) {
+            caption.duration = timeline_in - caption.timeline_in;
+            if (caption.duration > 0) transformed.push_back(std::move(caption));
+        } else if (captionOut > timeline_out) {
+            caption.timeline_in = timeline_in;
+            caption.duration = captionOut - timeline_out;
+            if (caption.duration > 0) transformed.push_back(std::move(caption));
+        }
+    }
+    captions_ = std::move(transformed);
 }
 
 void TimelineModel::validate_clip(const Clip& clip, std::optional<std::size_t> replacing) const {

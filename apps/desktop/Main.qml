@@ -46,6 +46,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.duplicateSelectedClip() }
     Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.deleteSelectedClip() }
     Shortcut { sequence: "M"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted) }
+    Shortcut { sequence: "Ctrl+Alt+T"; enabled: EditorController.durationNs > 0; onActivated: EditorController.addCaptionAtPlayhead() }
 
     FileDialog {
         id: mediaDialog
@@ -352,6 +353,61 @@ ApplicationWindow {
                         highlighted: EditorController.selectedClipMuted
                         onClicked: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted)
                     }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
+                        color: "#303844"
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { text: "자막"; font.bold: true }
+                        Item { Layout.fillWidth: true }
+                        Button {
+                            text: "+"
+                            implicitWidth: 34
+                            enabled: EditorController.durationNs > 0
+                            onClicked: EditorController.addCaptionAtPlayhead()
+                        }
+                    }
+                    TextField {
+                        id: captionTextField
+                        Layout.fillWidth: true
+                        visible: EditorController.selectedCaptionId.length > 0
+                        placeholderText: "자막 내용"
+                        text: EditorController.selectedCaptionText
+                        onAccepted: EditorController.updateSelectedCaption(
+                            text, captionDuration.value)
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: EditorController.selectedCaptionId.length > 0
+                        Label { text: "길이"; color: "#b4bdc8" }
+                        SpinBox {
+                            id: captionDuration
+                            Layout.fillWidth: true
+                            from: 100
+                            to: 60000
+                            stepSize: 100
+                            editable: true
+                            value: EditorController.selectedCaptionDurationMs
+                            textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                            valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: EditorController.selectedCaptionId.length > 0
+                        Button {
+                            Layout.fillWidth: true
+                            text: "자막 적용"
+                            onClicked: EditorController.updateSelectedCaption(
+                                captionTextField.text, captionDuration.value)
+                        }
+                        Button {
+                            text: "삭제"
+                            onClicked: EditorController.deleteSelectedCaption()
+                        }
+                    }
                     ProgressBar {
                         Layout.fillWidth: true
                         visible: EditorController.exporting
@@ -517,6 +573,42 @@ ApplicationWindow {
                             EditorController.trimClip(clipId, sourceIn, duration)
                         onMoveCommitted: (clipIds, insertionIndex) =>
                             EditorController.moveClips(clipIds, insertionIndex)
+                    }
+
+                    Repeater {
+                        model: EditorController.captions
+                        delegate: Rectangle {
+                            id: captionBar
+                            required property var modelData
+                            readonly property real contentWidth: Math.max(1, timelineLayer.width - 24)
+                            x: 12 + (modelData.timelineInNs - timeline.viewportStartNs)
+                               / Math.max(1, timeline.viewportDurationNs) * contentWidth
+                            y: timelineLayer.height - 31
+                            width: Math.max(4, modelData.durationNs
+                                / Math.max(1, timeline.viewportDurationNs) * contentWidth)
+                            height: 24
+                            z: 4
+                            radius: 3
+                            visible: modelData.timelineInNs + modelData.durationNs > timeline.viewportStartNs
+                                     && modelData.timelineInNs < timeline.viewportStartNs + timeline.viewportDurationNs
+                            color: modelData.id === EditorController.selectedCaptionId
+                                   ? "#b780ff" : "#7952a8"
+                            border.color: "#d8bcff"
+                            clip: true
+
+                            Label {
+                                anchors.fill: parent
+                                anchors.leftMargin: 6
+                                anchors.rightMargin: 6
+                                text: captionBar.modelData.text
+                                elide: Text.ElideRight
+                                verticalAlignment: Text.AlignVCenter
+                                font.pixelSize: 11
+                            }
+                            TapHandler {
+                                onTapped: EditorController.selectCaption(captionBar.modelData.id)
+                            }
+                        }
                     }
 
                     DropArea {

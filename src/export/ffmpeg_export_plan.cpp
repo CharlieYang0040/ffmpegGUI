@@ -44,7 +44,7 @@ std::pair<TimeNs, TimeNs> normalized_fades(const ExportClipInput& clip) {
 
 bool can_stream_copy(const ExportRequest& request) {
     if (!request.prefer_stream_copy || request.concat_script_path.empty() ||
-        request.clips.empty()) {
+        request.clips.empty() || !request.captions.empty()) {
         return false;
     }
     const auto& source = request.clips.front().source_path;
@@ -64,6 +64,40 @@ std::string concat_path(const std::filesystem::path& path) {
     for (const auto character : value) {
         if (character == '\'') escaped += "'\\''";
         else escaped += character;
+    }
+    return escaped;
+}
+
+std::string filter_path(const std::filesystem::path& path) {
+    auto value = path_string(path);
+    std::replace(value.begin(), value.end(), '\\', '/');
+    std::string escaped;
+    for (const auto character : value) {
+        if (character == ':' || character == '\'' || character == ',' ||
+            character == '[' || character == ']') escaped += '\\';
+        escaped += character;
+    }
+    return escaped;
+}
+
+std::string ass_time(TimeNs value) {
+    const auto centiseconds = value / 10'000'000;
+    std::ostringstream stream;
+    stream << centiseconds / 360'000 << ':' << std::setw(2) << std::setfill('0')
+           << (centiseconds / 6'000) % 60 << ':' << std::setw(2)
+           << (centiseconds / 100) % 60 << '.' << std::setw(2) << centiseconds % 100;
+    return stream.str();
+}
+
+std::string ass_text(const std::string& text) {
+    std::string escaped;
+    for (const auto character : text) {
+        if (character == '\n') {
+            escaped += "\\N";
+        } else if (character != '\r') {
+            if (character == '\\' || character == '{' || character == '}') escaped += '\\';
+            escaped += character;
+        }
     }
     return escaped;
 }
@@ -89,6 +123,12 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
             throw std::invalid_argument("export clip has invalid audio settings");
         }
         plan.duration = checked_add(plan.duration, clip.duration);
+    }
+    for (const auto& caption : request.captions) {
+        if (caption.text.empty() || caption.timeline_in < 0 || caption.duration <= 0 ||
+            checked_add(caption.timeline_in, caption.duration) > plan.duration) {
+            throw std::invalid_argument("export caption is outside the timeline or empty");
+        }
     }
     if (can_stream_copy(request)) {
         plan.mode = ExportMode::stream_copy;
@@ -138,8 +178,31 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         filter += "[a" + suffix + "];";
         concatInputs += "[v" + suffix + "][a" + suffix + "]";
     }
-    filter += concatInputs + "concat=n=" + std::to_string(request.clips.size()) +
-              ":v=1:a=1[vout][aout]";
+    filter += concatInputs + "concat=n=" + std::to_string(request.clips.size()) + ":v=1:a=1";
+    if (request.captions.empty()) {
+        filter += "[vout][aout]";
+    } else {
+        if (request.subtitle_script_path.empty()) {
+            throw std::invalid_argument("caption export requires an ASS script path");
+        }
+        filter += "[vbase][aout];[vbase]ass=filename='" +
+                  filter_path(request.subtitle_script_path) + "'[vout]";
+        plan.subtitle_script =
+            "[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n"
+            "ScaledBorderAndShadow: yes\n\n[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+            "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
+            "MarginR, MarginV, Encoding\n"
+            "Style: Default,Malgun Gothic,36,&H00FFFFFF,&H000000FF,&H00101010,"
+            "&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,40,40,42,1\n\n[Events]\n"
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
+        for (const auto& caption : request.captions) {
+            plan.subtitle_script += "Dialogue: 0," + ass_time(caption.timeline_in) + ',' +
+                ass_time(checked_add(caption.timeline_in, caption.duration)) +
+                ",Default,,0,0,0,," + ass_text(caption.text) + '\n';
+        }
+    }
     plan.arguments.insert(
         plan.arguments.end(),
         {"-filter_complex", std::move(filter), "-map", "[vout]", "-map", "[aout]"});

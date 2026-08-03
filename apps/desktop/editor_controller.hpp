@@ -30,6 +30,7 @@ class EditorController final : public QObject {
     QML_SINGLETON
     Q_PROPERTY(QVariantList clips READ clips NOTIFY timelineChanged)
     Q_PROPERTY(QVariantList mediaAssets READ mediaAssets NOTIFY timelineChanged)
+    Q_PROPERTY(QVariantList captions READ captions NOTIFY timelineChanged)
     Q_PROPERTY(qint64 durationNs READ durationNs NOTIFY timelineChanged)
     Q_PROPERTY(qint64 playheadNs READ playheadNs NOTIFY playheadChanged)
     Q_PROPERTY(qint64 inPointNs READ inPointNs NOTIFY rangeChanged)
@@ -42,6 +43,9 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool selectedClipMuted READ selectedClipMuted NOTIFY selectedClipChanged)
     Q_PROPERTY(int selectedClipFadeInMs READ selectedClipFadeInMs NOTIFY selectedClipChanged)
     Q_PROPERTY(int selectedClipFadeOutMs READ selectedClipFadeOutMs NOTIFY selectedClipChanged)
+    Q_PROPERTY(QString selectedCaptionId READ selectedCaptionId NOTIFY captionSelectionChanged)
+    Q_PROPERTY(QString selectedCaptionText READ selectedCaptionText NOTIFY captionSelectionChanged)
+    Q_PROPERTY(int selectedCaptionDurationMs READ selectedCaptionDurationMs NOTIFY captionSelectionChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
@@ -56,6 +60,7 @@ public:
 
     [[nodiscard]] QVariantList clips() const;
     [[nodiscard]] QVariantList mediaAssets() const;
+    [[nodiscard]] QVariantList captions() const;
     [[nodiscard]] qint64 durationNs() const noexcept;
     [[nodiscard]] qint64 playheadNs() const noexcept { return playhead_ns_; }
     [[nodiscard]] qint64 inPointNs() const noexcept { return in_point_ns_; }
@@ -68,6 +73,9 @@ public:
     [[nodiscard]] bool selectedClipMuted() const noexcept;
     [[nodiscard]] int selectedClipFadeInMs() const noexcept;
     [[nodiscard]] int selectedClipFadeOutMs() const noexcept;
+    [[nodiscard]] QString selectedCaptionId() const { return selected_caption_id_; }
+    [[nodiscard]] QString selectedCaptionText() const;
+    [[nodiscard]] int selectedCaptionDurationMs() const noexcept;
     [[nodiscard]] bool canUndo() const noexcept { return timeline_.can_undo(); }
     [[nodiscard]] bool canRedo() const noexcept { return timeline_.can_redo(); }
     [[nodiscard]] bool importing() const noexcept { return importing_; }
@@ -119,6 +127,10 @@ public slots:
     void setSelectedClipMuted(bool muted);
     void setSelectedClipFadeInMs(int milliseconds);
     void setSelectedClipFadeOutMs(int milliseconds);
+    void addCaptionAtPlayhead();
+    void selectCaption(const QString& captionId);
+    void updateSelectedCaption(const QString& text, int durationMs);
+    void deleteSelectedCaption();
     void undo();
     void redo();
     void saveProject(const QString& path);
@@ -139,6 +151,7 @@ signals:
     void playingChanged();
     void statusChanged();
     void selectedClipChanged();
+    void captionSelectionChanged();
     void historyChanged();
     void importingChanged();
     void mediaImportFinished(bool success);
@@ -179,6 +192,8 @@ private:
     QString selection_anchor_id_;
     std::uint64_t generated_clip_id_{};
     std::uint64_t generated_asset_id_{};
+    std::uint64_t generated_caption_id_{};
+    QString selected_caption_id_;
     QObject* video_item_{};
     QWindow* video_window_{};
     bool use_d3d_scene_graph_{};
@@ -198,6 +213,7 @@ private:
     qreal export_progress_{};
     ffgui::TimeNs export_duration_ns_{};
     QString export_concat_path_;
+    QString export_subtitle_path_;
     static EditorController* singleton_instance_;
 #ifdef FFGUI_HAS_GES
     std::unique_ptr<ffgui::GesSequencePlayer> player_;

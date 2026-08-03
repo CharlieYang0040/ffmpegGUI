@@ -47,6 +47,9 @@ public:
     GesSequencePlayer& operator=(const GesSequencePlayer&) = delete;
 
     void set_timeline(std::vector<TimelineSpan> timeline) override;
+    void set_timeline(
+        std::vector<TimelineSpan> timeline,
+        std::vector<CaptionCue> captions);
     void seek(TimeNs timeline_position) override;
     void play() override;
     void pause() override;
@@ -68,7 +71,9 @@ public:
     }
 
 private:
-    void rebuild_pipeline_locked(const std::vector<TimelineSpan>& timeline);
+    void rebuild_pipeline_locked(
+        const std::vector<TimelineSpan>& timeline,
+        const std::vector<CaptionCue>& captions);
     void destroy_pipeline_locked() noexcept;
     void notify_state(PlaybackState state_value);
     void monitor(std::stop_token stop_token);

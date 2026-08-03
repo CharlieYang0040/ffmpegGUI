@@ -38,7 +38,7 @@ $roundtrip = Start-Process -FilePath $application `
 if ($roundtrip.ExitCode -ne 0) {
     throw "project save/load roundtrip failed"
 }
-Write-Output "Project roundtrip passed: frame edits, group/range edits, clip audio controls and undo saved without duration drift"
+Write-Output "Project roundtrip passed: frame/group/range edits, audio controls and timeline captions survived save/load"
 
 $savedProject = Get-Content -LiteralPath $roundtripProject -Raw | ConvertFrom-Json
 foreach ($asset in $savedProject.assets) {
@@ -69,7 +69,7 @@ $streams = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
 if ($streams -notcontains "video" -or $streams -notcontains "audio") {
     throw "exported timeline must contain both video and audio streams"
 }
-Write-Output "Timeline export passed: clip gain/fades reached the NVENC/CPU pipeline and produced a $exportDuration second MP4"
+Write-Output "Timeline export passed: clip audio and burned captions produced a $exportDuration second MP4"
 
 if (-not (Test-Path -LiteralPath $copySource -PathType Leaf)) {
     & (Join-Path $root ".tools\ffmpeg\bin\ffmpeg.exe") -hide_banner -loglevel error -y `
@@ -93,6 +93,7 @@ $copyData.clips = @(
     [pscustomobject]@{ id = "copy-a"; assetId = $assetId; sourceInNs = "0"; durationNs = "1000000000" },
     [pscustomobject]@{ id = "copy-b"; assetId = $assetId; sourceInNs = "2000000000"; durationNs = $copyTailDuration }
 )
+$copyData.captions = @()
 [IO.File]::WriteAllText(
     $copyProject,
     ($copyData | ConvertTo-Json -Depth 8),
