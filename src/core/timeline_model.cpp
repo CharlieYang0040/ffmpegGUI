@@ -1,0 +1,199 @@
+#include "core/timeline_model.hpp"
+
+#include <algorithm>
+#include <stdexcept>
+#include <utility>
+
+namespace ffgui {
+
+void TimelineModel::add_asset(MediaAsset asset_value) {
+    const auto id = asset_value.id();
+    const auto [iterator, inserted] = assets_.emplace(id, std::move(asset_value));
+    static_cast<void>(iterator);
+    if (!inserted) {
+        throw std::invalid_argument("duplicate asset id: " + id);
+    }
+}
+
+const MediaAsset* TimelineModel::asset(const std::string& asset_id) const noexcept {
+    const auto found = assets_.find(asset_id);
+    return found == assets_.end() ? nullptr : &found->second;
+}
+
+void TimelineModel::append_clip(Clip clip) {
+    insert_clip(clips_.size(), std::move(clip));
+}
+
+void TimelineModel::insert_clip(std::size_t index, Clip clip) {
+    if (index > clips_.size()) {
+        throw std::out_of_range("clip insertion index is outside the timeline");
+    }
+    validate_clip(clip);
+    clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), std::move(clip));
+}
+
+void TimelineModel::trim_clip(const std::string& clip_id, TimeNs source_in, TimeNs range_duration) {
+    const auto index = index_of(clip_id);
+    Clip replacement = clips_[index];
+    replacement.source_in = source_in;
+    replacement.duration = range_duration;
+    validate_clip(replacement, index);
+    clips_[index] = std::move(replacement);
+}
+
+void TimelineModel::move_clip(const std::string& clip_id, std::size_t insertion_index) {
+    const auto old_index = index_of(clip_id);
+    if (insertion_index >= clips_.size()) {
+        if (insertion_index != clips_.size() - 1) {
+            throw std::out_of_range("clip move index is outside the remaining timeline");
+        }
+    }
+
+    Clip moving = std::move(clips_[old_index]);
+    clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(old_index));
+    if (insertion_index > clips_.size()) {
+        throw std::out_of_range("clip move index is outside the remaining timeline");
+    }
+    clips_.insert(
+        clips_.begin() + static_cast<std::ptrdiff_t>(insertion_index),
+        std::move(moving));
+}
+
+void TimelineModel::erase_clip(const std::string& clip_id) {
+    const auto index = index_of(clip_id);
+    clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(index));
+}
+
+void TimelineModel::split_at(
+    TimeNs timeline_position,
+    std::string left_clip_id,
+    std::string right_clip_id) {
+    if (left_clip_id.empty() || right_clip_id.empty() || left_clip_id == right_clip_id) {
+        throw std::invalid_argument("split clip ids must be distinct and non-empty");
+    }
+    const auto mapped = locate(timeline_position);
+    if (!mapped.has_value()) {
+        throw std::out_of_range("split position is outside the timeline");
+    }
+    const auto index = index_of(mapped->clip_id);
+    const Clip original = clips_[index];
+    if (mapped->clip_time <= 0 || mapped->clip_time >= original.duration) {
+        throw std::invalid_argument("split position must be inside a clip");
+    }
+
+    Clip left{std::move(left_clip_id), original.asset_id, original.source_in, mapped->clip_time};
+    Clip right{
+        std::move(right_clip_id),
+        original.asset_id,
+        checked_add(original.source_in, mapped->clip_time),
+        original.duration - mapped->clip_time};
+
+    clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(index));
+    try {
+        validate_clip(left);
+        clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), left);
+        validate_clip(right);
+        clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index + 1), right);
+    } catch (...) {
+        if (index < clips_.size() && clips_[index].id == left.id) {
+            clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(index));
+        }
+        clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), original);
+        throw;
+    }
+}
+
+std::vector<TimelineSpan> TimelineModel::snapshot() const {
+    std::vector<TimelineSpan> spans;
+    spans.reserve(clips_.size());
+    TimeNs cursor = 0;
+    for (const auto& clip : clips_) {
+        const auto end = checked_add(cursor, clip.duration);
+        spans.push_back(TimelineSpan{clip, cursor, end});
+        cursor = end;
+    }
+    return spans;
+}
+
+TimeNs TimelineModel::duration() const {
+    TimeNs total = 0;
+    for (const auto& clip : clips_) {
+        total = checked_add(total, clip.duration);
+    }
+    return total;
+}
+
+std::optional<MappedPosition> TimelineModel::locate(TimeNs timeline_position) const {
+    if (timeline_position < 0) {
+        return std::nullopt;
+    }
+    TimeNs cursor = 0;
+    for (const auto& clip : clips_) {
+        const auto end = checked_add(cursor, clip.duration);
+        if (timeline_position < end) {
+            const auto local = timeline_position - cursor;
+            const auto source = checked_add(clip.source_in, local);
+            const auto* source_asset = asset(clip.asset_id);
+            return MappedPosition{
+                clip.id,
+                clip.asset_id,
+                timeline_position,
+                local,
+                source,
+                source_asset ? source_asset->frame_at_or_before(source) : std::nullopt};
+        }
+        cursor = end;
+    }
+    return std::nullopt;
+}
+
+std::optional<TimeNs> TimelineModel::timeline_time_for_source(
+    const std::string& clip_id,
+    TimeNs source_time) const {
+    TimeNs cursor = 0;
+    for (const auto& clip : clips_) {
+        if (clip.id == clip_id) {
+            if (source_time < clip.source_in || source_time >= clip.source_out()) {
+                return std::nullopt;
+            }
+            return checked_add(cursor, source_time - clip.source_in);
+        }
+        cursor = checked_add(cursor, clip.duration);
+    }
+    return std::nullopt;
+}
+
+std::size_t TimelineModel::index_of(const std::string& clip_id) const {
+    const auto found = std::find_if(
+        clips_.begin(), clips_.end(), [&clip_id](const Clip& clip) { return clip.id == clip_id; });
+    if (found == clips_.end()) {
+        throw std::invalid_argument("unknown clip id: " + clip_id);
+    }
+    return static_cast<std::size_t>(std::distance(clips_.begin(), found));
+}
+
+void TimelineModel::validate_clip(const Clip& clip, std::optional<std::size_t> replacing) const {
+    if (clip.id.empty()) {
+        throw std::invalid_argument("clip id must not be empty");
+    }
+    if (clip.asset_id.empty()) {
+        throw std::invalid_argument("clip asset id must not be empty");
+    }
+    const auto* source_asset = asset(clip.asset_id);
+    if (source_asset == nullptr) {
+        throw std::invalid_argument("unknown asset id: " + clip.asset_id);
+    }
+    if (!source_asset->contains_range(clip.source_in, clip.duration)) {
+        throw std::invalid_argument("clip source range is outside the asset");
+    }
+    for (std::size_t index = 0; index < clips_.size(); ++index) {
+        if (replacing.has_value() && index == replacing.value()) {
+            continue;
+        }
+        if (clips_[index].id == clip.id) {
+            throw std::invalid_argument("duplicate clip id: " + clip.id);
+        }
+    }
+}
+
+}  // namespace ffgui
