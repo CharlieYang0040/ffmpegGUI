@@ -30,14 +30,15 @@ bool is_boundary(const ExportClipInput& clip, TimeNs value) {
 }
 
 std::pair<TimeNs, TimeNs> normalized_fades(const ExportClipInput& clip) {
-    auto fadeIn = std::min(clip.audio_fade_in, clip.duration);
-    auto fadeOut = std::min(clip.audio_fade_out, clip.duration);
+    const auto timelineDuration = clip.timeline_duration();
+    auto fadeIn = std::min(clip.audio_fade_in, timelineDuration);
+    auto fadeOut = std::min(clip.audio_fade_out, timelineDuration);
     const auto total = checked_add(fadeIn, fadeOut);
-    if (total > clip.duration) {
-        const auto ratio = static_cast<long double>(clip.duration) /
+    if (total > timelineDuration) {
+        const auto ratio = static_cast<long double>(timelineDuration) /
                            static_cast<long double>(total);
         fadeIn = static_cast<TimeNs>(static_cast<long double>(fadeIn) * ratio);
-        fadeOut = clip.duration - fadeIn;
+        fadeOut = timelineDuration - fadeIn;
     }
     return {fadeIn, fadeOut};
 }
@@ -52,6 +53,7 @@ bool can_stream_copy(const ExportRequest& request) {
         return clip.source_path == source && clip.asset_duration > 0 &&
                clip.audio_gain == 1.0 && !clip.audio_muted &&
                clip.audio_fade_in == 0 && clip.audio_fade_out == 0 &&
+               clip.playback_rate == 1.0 &&
                is_boundary(clip, clip.source_in) &&
                is_boundary(clip, checked_add(clip.source_in, clip.duration));
     });
@@ -102,6 +104,26 @@ std::string ass_text(const std::string& text) {
     return escaped;
 }
 
+std::string decimal(double value) {
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(6) << value;
+    return stream.str();
+}
+
+std::string atempo_chain(double rate) {
+    std::string chain;
+    while (rate < 0.5) {
+        chain += ",atempo=0.500000";
+        rate /= 0.5;
+    }
+    while (rate > 2.0) {
+        chain += ",atempo=2.000000";
+        rate /= 2.0;
+    }
+    if (std::abs(rate - 1.0) > 0.0000005) chain += ",atempo=" + decimal(rate);
+    return chain;
+}
+
 }  // namespace
 
 FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
@@ -122,7 +144,11 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
             clip.audio_gain > 4.0 || clip.audio_fade_in < 0 || clip.audio_fade_out < 0) {
             throw std::invalid_argument("export clip has invalid audio settings");
         }
-        plan.duration = checked_add(plan.duration, clip.duration);
+        if (!std::isfinite(clip.playback_rate) || clip.playback_rate < 0.25 ||
+            clip.playback_rate > 4.0 || clip.timeline_duration() <= 0) {
+            throw std::invalid_argument("export clip has invalid playback rate");
+        }
+        plan.duration = checked_add(plan.duration, clip.timeline_duration());
     }
     for (const auto& caption : request.captions) {
         if (caption.text.empty() || caption.timeline_in < 0 || caption.duration <= 0 ||
@@ -156,14 +182,16 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
              "-i", path_string(clip.source_path)});
 
         const auto suffix = std::to_string(index);
-        filter += "[" + suffix + ":v:0]setpts=PTS-STARTPTS[v" + suffix + "];";
+        filter += "[" + suffix + ":v:0]setpts=(PTS-STARTPTS)/" +
+                  decimal(clip.playback_rate) + "[v" + suffix + "];";
         if (clip.has_audio) {
             filter += "[" + suffix + ":a:0]aresample=48000:async=1:first_pts=0,"
                       "apad=whole_dur=" + seconds(clip.duration) +
                       ",atrim=duration=" + seconds(clip.duration) +
-                      ",asetpts=PTS-STARTPTS";
+                      ",asetpts=PTS-STARTPTS" + atempo_chain(clip.playback_rate);
         } else {
-            filter += "anullsrc=r=48000:cl=stereo:d=" + seconds(clip.duration);
+            filter += "anullsrc=r=48000:cl=stereo:d=" + seconds(clip.duration) +
+                      atempo_chain(clip.playback_rate);
         }
         const auto gain = clip.audio_muted ? 0.0 : clip.audio_gain;
         filter += ",volume=" + std::to_string(gain);
@@ -172,7 +200,7 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
             filter += ",afade=t=in:st=0:d=" + seconds(fadeIn);
         }
         if (fadeOut > 0) {
-            filter += ",afade=t=out:st=" + seconds(clip.duration - fadeOut) +
+            filter += ",afade=t=out:st=" + seconds(clip.timeline_duration() - fadeOut) +
                       ":d=" + seconds(fadeOut);
         }
         filter += "[a" + suffix + "];";

@@ -404,6 +404,41 @@ void test_clip_audio_edits_are_atomic_and_follow_split_edges() {
         "unsafe audio gain must be rejected");
 }
 
+void test_playback_rate_maps_source_sequence_frames_and_captions() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{
+        "fast", "asset-a", seconds(1), seconds(6), ffgui::ClipAudio{}, 2.0});
+    timeline.append_clip(Clip{"tail", "asset-b", 0, seconds(4)});
+    require(timeline.duration() == seconds(7),
+            "2x source range must occupy half its source duration on the sequence");
+    const auto mapped = timeline.locate(seconds(1));
+    require(mapped.has_value() && mapped->clip_time == seconds(1) &&
+            mapped->source_offset == seconds(2) && mapped->source_time == seconds(3),
+            "sequence time must scale into the source range");
+    require(timeline.timeline_time_for_source("fast", seconds(5)) == seconds(2),
+            "source time must scale back into sequence coordinates");
+    require(timeline.next_frame_time(0) == 500'000'000 &&
+            timeline.next_frame_time(500'000'000) == 1'500'000'000,
+            "VFR frame steps must be compressed by playback rate");
+
+    timeline.add_caption(ffgui::CaptionCue{"after", "after", seconds(5), seconds(1)});
+    timeline.clear_history();
+    timeline.set_clips_playback_rate({"fast"}, 1.0);
+    require(timeline.duration() == seconds(10) &&
+            timeline.captions().front().timeline_in == seconds(8),
+            "slowing a clip must push later captions by the inserted sequence time");
+    require(timeline.undo() && timeline.duration() == seconds(7) &&
+            timeline.captions().front().timeline_in == seconds(5),
+            "speed and caption ripple must undo as one edit");
+
+    timeline.split_at(1'500'000'000, "left", "right");
+    require(timeline.clips()[0].duration == seconds(3) &&
+            timeline.clips()[1].source_in == seconds(4) &&
+            timeline.clips()[0].playback_rate == 2.0 &&
+            timeline.clips()[1].playback_rate == 2.0,
+            "speed-aware split must preserve source boundary and rate");
+}
+
 void test_caption_edits_and_ripple_mapping_share_undo_state() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"a", "asset-a", 0, seconds(3)});
@@ -557,6 +592,32 @@ void test_ffmpeg_export_plan_burns_timeline_captions() {
             "caption text and line breaks must reach the ASS script");
 }
 
+void test_ffmpeg_export_plan_applies_video_and_audio_speed() {
+    auto request = ffgui::ExportRequest{
+        {{std::filesystem::path{"A.mp4"}, 0, seconds(4), true,
+          seconds(4), {0, seconds(4)}, 1.0, false, 0, 0, 2.0}},
+        std::filesystem::path{"result.mp4"},
+        ffgui::ExportVideoEncoder::libx264};
+    request.concat_script_path = std::filesystem::path{"job.ffconcat"};
+    const auto fast = ffgui::compile_ffmpeg_export(request);
+    require(fast.duration == seconds(2) && fast.mode == ffgui::ExportMode::transcode,
+            "2x speed must halve output duration and disable stream copy");
+    std::string arguments;
+    for (const auto& argument : fast.arguments) arguments += argument + '\n';
+    require(arguments.contains("setpts=(PTS-STARTPTS)/2.000000"),
+            "video speed must be compiled into setpts");
+    require(arguments.contains("atempo=2.000000"),
+            "audio speed must be compiled into atempo");
+
+    request.clips[0].playback_rate = 0.25;
+    const auto slow = ffgui::compile_ffmpeg_export(request);
+    std::string slowArguments;
+    for (const auto& argument : slow.arguments) slowArguments += argument + '\n';
+    require(slow.duration == seconds(16) &&
+            slowArguments.contains("atempo=0.500000,atempo=0.500000"),
+            "0.25x speed must expand duration and chain valid atempo stages");
+}
+
 void test_ffmpeg_export_plan_rejects_invalid_requests() {
     require_throws<std::invalid_argument>(
         [] { static_cast<void>(ffgui::compile_ffmpeg_export(ffgui::ExportRequest{})); },
@@ -619,6 +680,7 @@ int main() {
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},
         {"clip_audio_edits_are_atomic_and_follow_split_edges", test_clip_audio_edits_are_atomic_and_follow_split_edges},
+        {"playback_rate_maps_source_sequence_frames_and_captions", test_playback_rate_maps_source_sequence_frames_and_captions},
         {"caption_edits_and_ripple_mapping_share_undo_state", test_caption_edits_and_ripple_mapping_share_undo_state},
         {"srt_utf8_multiline_parse_and_serialize_roundtrip", test_srt_utf8_multiline_parse_and_serialize_roundtrip},
         {"ffprobe_timestamp_parser_preserves_vfr", test_ffprobe_timestamp_parser_preserves_vfr},
@@ -626,6 +688,7 @@ int main() {
         {"ffmpeg_export_plan_preserves_clip_ranges_and_audio", test_ffmpeg_export_plan_preserves_clip_ranges_and_audio},
         {"ffmpeg_export_plan_applies_clip_audio_controls", test_ffmpeg_export_plan_applies_clip_audio_controls},
         {"ffmpeg_export_plan_burns_timeline_captions", test_ffmpeg_export_plan_burns_timeline_captions},
+        {"ffmpeg_export_plan_applies_video_and_audio_speed", test_ffmpeg_export_plan_applies_video_and_audio_speed},
         {"ffmpeg_export_plan_rejects_invalid_requests", test_ffmpeg_export_plan_rejects_invalid_requests},
         {"ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts", test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts},
     };

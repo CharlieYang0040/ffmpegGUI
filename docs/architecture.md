@@ -9,7 +9,7 @@
 ```text
 TimelineModel
   ├─ MediaAsset: 경로, 길이, 실제 프레임 PTS
-  ├─ Clip: asset, source-in, duration, gain/mute/fades
+  ├─ Clip: asset, source-in, source-duration, playback-rate, gain/mute/fades
   └─ CaptionCue: sequence-in, duration, UTF-8 text
           ↓ snapshot
       TimelineSpan[]
@@ -23,7 +23,7 @@ TimelineModel
 - 모든 내부 시간은 부호 있는 64비트 나노초 정수다.
 - 구간은 `[in, out)` 반열림 범위다.
 - 미디어 프레임 PTS는 원본의 첫 표시 프레임을 0으로 정규화한다.
-- 타임라인 길이는 활성 클립 길이의 합이다.
+- 타임라인 길이는 각 클립의 `source-duration / playback-rate` 합이다.
 - 단일 트랙은 항상 마그네틱하다. 일반 클립 사이에 암묵적 gap을 저장하지 않는다.
 - 화면 프레임 번호와 타임코드는 프로젝트 표시 FPS에서 파생하며 저장 좌표로
   사용하지 않는다.
@@ -54,6 +54,10 @@ TimelineModel
   변경은 하나의 편집 리비전이며, 분할 시 새 내부 컷에는 페이드를 만들지 않고 원래
   클립의 바깥쪽 페이드만 좌우 조각에 보존한다. 트림으로 두 페이드의 합이 클립보다
   길어지면 재생과 출력 모두 같은 비율로 축소해 클립 경계 안에 맞춘다.
+- 재생 속도는 0.25~4.0 배율로 저장한다. 클립의 원본 범위는 바꾸지 않고 원본 오프셋과
+  시퀀스 오프셋을 배율로 양방향 변환한다. 트림·분할·VFR 프레임 이동은 이 변환을 거쳐
+  항상 원본 프레임 경계에 확정되며, 여러 선택 샷의 속도 변경과 뒤 자막 리플 이동은
+  하나의 undo 단계다.
 - 자막은 원본 클립 시간이 아닌 시퀀스 나노초 범위에 놓인다. 리플 삭제에 완전히 포함된
   자막은 제거하고, 경계에 걸친 자막은 남은 부분으로 자르며, 뒤 자막은 삭제 길이만큼
   당긴다. 시간 삽입은 해당 위치 이후 자막을 밀어낸다. 클립과 자막을 하나의 편집 상태로
@@ -133,6 +137,9 @@ Qt 아이템까지 전달되는 것은 확인했지만 Scene Graph의 반복 tex
 재시도한다. 취소·실패 시 불완전 출력은 삭제하고 기존 파일은 자동으로 덮어쓰지 않는다.
 클립 gain·음소거·페이드는 GES `volume` 제어 곡선과 FFmpeg `volume`/`afade` 필터로
 각각 컴파일한다. 오디오 효과가 하나라도 있으면 stream-copy 조건에서 제외한다.
+클립 속도는 GES `pitch tempo` 효과로 미리보고, FFmpeg에서는 영상 `setpts`와 오디오
+`atempo` 체인으로 컴파일한다. 0.25배처럼 단일 `atempo` 범위를 벗어나는 값은 여러
+필터로 나누며 속도 변경이 있는 출력은 stream-copy 조건에서 제외한다.
 자막은 GES 상위 오버레이 레이어의 `GESTextOverlayClip`으로 미리보고, 출력 시 UTF-8
 ASS 스크립트로 컴파일해 FFmpeg `ass` 필터로 영상에 번인한다. 자막이 있는 출력은
 화면 합성이 필요하므로 stream-copy를 사용하지 않는다.

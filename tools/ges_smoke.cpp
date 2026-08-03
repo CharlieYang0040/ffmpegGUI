@@ -58,14 +58,15 @@ int main(int argc, char* argv[]) {
         timeline.add_asset(MediaAsset{"asset-a", first, milliseconds(2000)});
         timeline.add_asset(MediaAsset{"asset-b", second, milliseconds(2000)});
         timeline.add_asset(MediaAsset{"asset-c", third, milliseconds(2300)});
-        timeline.append_clip(Clip{"shot-a", "asset-a", milliseconds(200), milliseconds(650)});
+        timeline.append_clip(Clip{
+            "shot-a", "asset-a", milliseconds(200), milliseconds(650), {}, 2.0});
         timeline.append_clip(Clip{"shot-b", "asset-b", milliseconds(350), milliseconds(700)});
         timeline.append_clip(Clip{"shot-vfr", "asset-c", milliseconds(300), milliseconds(900)});
         timeline.append_clip(Clip{"shot-c", "asset-a", milliseconds(1000), milliseconds(500)});
 
         GesSequencePlayer player;
         player.set_timeline(timeline.snapshot());
-        if (player.duration() != milliseconds(2750)) {
+        if (player.duration() != milliseconds(2425)) {
             throw std::runtime_error("GES sequence duration does not match TimelineModel");
         }
 
@@ -81,7 +82,7 @@ int main(int argc, char* argv[]) {
         player.stop();
         player.reset_audio_continuity_metrics();
         player.play();
-        wait_for_position(player, milliseconds(2650), std::chrono::seconds(12));
+        wait_for_position(player, milliseconds(2325), std::chrono::seconds(12));
         player.stop();
 
         const auto audio = player.audio_continuity_metrics();
@@ -94,7 +95,7 @@ int main(int argc, char* argv[]) {
                 std::to_string(audio.maximum_positive_gap) + " ns");
         }
 
-        std::cout << "GES continuous playback passed: 4 shots including VFR, "
+        std::cout << "GES continuous playback passed: 4 shots including VFR and 2x speed, "
                   << player.duration() / 1'000'000 << " ms; "
                   << audio.buffer_count << " audio buffers, max gap "
                   << audio.maximum_positive_gap << " ns\n";

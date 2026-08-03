@@ -3,6 +3,7 @@
 #include "core/time.hpp"
 
 #include <filesystem>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,12 @@ struct ExportClipInput final {
     bool audio_muted{};
     TimeNs audio_fade_in{};
     TimeNs audio_fade_out{};
+    double playback_rate{1.0};
+
+    [[nodiscard]] TimeNs timeline_duration() const {
+        return static_cast<TimeNs>(std::llround(
+            static_cast<long double>(duration) / static_cast<long double>(playback_rate)));
+    }
 };
 
 struct ExportCaptionInput final {

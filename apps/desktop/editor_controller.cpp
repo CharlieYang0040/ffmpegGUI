@@ -248,7 +248,9 @@ QVariantList EditorController::clips() const {
         value.insert("name", QString::fromStdWString(span.source_path.stem().wstring()));
         value.insert("timelineInNs", static_cast<qint64>(span.timeline_in));
         value.insert("sourceInNs", static_cast<qint64>(span.clip.source_in));
-        value.insert("durationNs", static_cast<qint64>(span.clip.duration));
+        value.insert("durationNs", static_cast<qint64>(span.timeline_out - span.timeline_in));
+        value.insert("sourceDurationNs", static_cast<qint64>(span.clip.duration));
+        value.insert("playbackRate", span.clip.playback_rate);
         value.insert("audioGain", span.clip.audio.gain);
         value.insert("audioMuted", span.clip.audio.muted);
         value.insert("audioFadeInNs", static_cast<qint64>(span.clip.audio.fade_in));
@@ -352,6 +354,15 @@ int EditorController::selectedClipFadeOutMs() const noexcept {
         }
     }
     return 0;
+}
+
+int EditorController::selectedClipSpeedPercent() const noexcept {
+    for (const auto& clip : timeline_.clips()) {
+        if (clip.id == selected_clip_id_.toStdString()) {
+            return static_cast<int>(std::lround(clip.playback_rate * 100.0));
+        }
+    }
+    return 100;
 }
 
 QString EditorController::selectedCaptionText() const {
@@ -815,6 +826,20 @@ void EditorController::setSelectedClipFadeOutMs(int milliseconds) {
     }
 }
 
+void EditorController::setSelectedClipSpeedPercent(int percent) {
+    if (selected_clip_ids_.isEmpty()) return;
+    try {
+        std::vector<std::string> ids;
+        for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
+        const auto clamped = std::clamp(percent, 25, 400);
+        timeline_.set_clips_playback_rate(ids, static_cast<double>(clamped) / 100.0);
+        publishTimeline();
+        setStatus(QStringLiteral("선택 클립 속도 · %1%").arg(clamped));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
 void EditorController::addCaptionAtPlayhead() {
     if (durationNs() <= 0 || playhead_ns_ >= durationNs()) return;
     try {
@@ -1073,7 +1098,8 @@ void EditorController::saveProject(const QString& path) {
                 {"audioGain", clip.audio.gain},
                 {"audioMuted", clip.audio.muted},
                 {"audioFadeInNs", timeString(clip.audio.fade_in)},
-                {"audioFadeOutNs", timeString(clip.audio.fade_out)}});
+                {"audioFadeOutNs", timeString(clip.audio.fade_out)},
+                {"playbackRate", clip.playback_rate}});
         }
         QJsonArray captions;
         for (const auto& caption : timeline_.captions()) {
@@ -1161,7 +1187,9 @@ void EditorController::loadProject(const QString& path) {
                     object.contains("audioFadeInNs")
                         ? parseTime(object.value("audioFadeInNs"), "audioFadeInNs") : 0,
                     object.contains("audioFadeOutNs")
-                        ? parseTime(object.value("audioFadeOutNs"), "audioFadeOutNs") : 0}});
+                        ? parseTime(object.value("audioFadeOutNs"), "audioFadeOutNs") : 0},
+                object.contains("playbackRate")
+                    ? object.value("playbackRate").toDouble() : 1.0});
         }
         for (const auto value : root.value("captions").toArray()) {
             const auto object = value.toObject();
@@ -1254,7 +1282,8 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             span.clip.audio.gain,
             span.clip.audio.muted,
             span.clip.audio.fade_in,
-            span.clip.audio.fade_out});
+            span.clip.audio.fade_out,
+            span.clip.playback_rate});
     }
     for (const auto& caption : timeline_.captions()) {
         request.captions.push_back(ffgui::ExportCaptionInput{

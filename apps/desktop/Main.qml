@@ -342,6 +342,18 @@ ApplicationWindow {
                             valueFromText: function(text) { return parseInt(text) || 0 }
                             onValueModified: EditorController.setSelectedClipVolumePercent(value)
                         }
+                        Label { text: "재생 속도"; color: "#b4bdc8" }
+                        SpinBox {
+                            Layout.fillWidth: true
+                            from: 25
+                            to: 400
+                            stepSize: 5
+                            editable: true
+                            value: EditorController.selectedClipSpeedPercent
+                            textFromValue: function(value) { return value + "%" }
+                            valueFromText: function(text) { return parseInt(text) || 100 }
+                            onValueModified: EditorController.setSelectedClipSpeedPercent(value)
+                        }
                         Label { text: "페이드 인"; color: "#b4bdc8" }
                         SpinBox {
                             Layout.fillWidth: true
@@ -586,9 +598,20 @@ ApplicationWindow {
                                     atlas.sourceSize.width * clipThumbnail.modelData.sourceInNs
                                         / Math.max(1, clipThumbnail.modelData.assetDurationNs),
                                     0,
-                                    atlas.sourceSize.width * clipThumbnail.modelData.durationNs
+                                    atlas.sourceSize.width * clipThumbnail.modelData.sourceDurationNs
                                         / Math.max(1, clipThumbnail.modelData.assetDurationNs),
                                     atlas.sourceSize.height)
+                            }
+                            Label {
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.margins: 5
+                                visible: Math.abs(clipThumbnail.modelData.playbackRate - 1.0) > 0.001
+                                text: Math.round(clipThumbnail.modelData.playbackRate * 100) + "%"
+                                color: "white"
+                                font.bold: true
+                                font.pixelSize: 11
+                                background: Rectangle { color: "#a0000000"; radius: 3 }
                             }
                         }
                     }

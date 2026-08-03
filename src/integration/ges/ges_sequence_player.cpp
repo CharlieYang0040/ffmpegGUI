@@ -14,33 +14,36 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
 namespace ffgui {
 namespace {
 
-std::pair<TimeNs, TimeNs> normalized_fades(const Clip& clip) {
-    auto fadeIn = std::min(clip.audio.fade_in, clip.duration);
-    auto fadeOut = std::min(clip.audio.fade_out, clip.duration);
+std::pair<TimeNs, TimeNs> normalized_fades(const Clip& clip, TimeNs timeline_duration) {
+    auto fadeIn = std::min(clip.audio.fade_in, timeline_duration);
+    auto fadeOut = std::min(clip.audio.fade_out, timeline_duration);
     const auto total = checked_add(fadeIn, fadeOut);
-    if (total > clip.duration) {
-        const auto ratio = static_cast<long double>(clip.duration) /
+    if (total > timeline_duration) {
+        const auto ratio = static_cast<long double>(timeline_duration) /
                            static_cast<long double>(total);
         fadeIn = static_cast<TimeNs>(static_cast<long double>(fadeIn) * ratio);
-        fadeOut = clip.duration - fadeIn;
+        fadeOut = timeline_duration - fadeIn;
     }
     return {fadeIn, fadeOut};
 }
 
-void add_audio_effect(GESUriClip* uri_clip, const Clip& clip) {
+void add_audio_effect(GESUriClip* uri_clip, const Clip& clip, TimeNs timeline_duration) {
     auto* effect = ges_effect_new("volume");
     if (effect == nullptr) {
         throw std::runtime_error("failed to create clip volume effect");
     }
     const auto gain = clip.audio.muted ? 0.0 : clip.audio.gain;
-    const auto [fadeIn, fadeOut] = normalized_fades(clip);
+    const auto [fadeIn, fadeOut] = normalized_fades(clip, timeline_duration);
     GValue value = G_VALUE_INIT;
     g_value_init(&value, G_TYPE_DOUBLE);
     g_value_set_double(&value, gain);
@@ -71,10 +74,10 @@ void add_audio_effect(GESUriClip* uri_clip, const Clip& clip) {
             pointsSet = setPoint(0, gain);
         }
         if (fadeOut > 0) {
-            pointsSet = pointsSet &&
-                setPoint(clip.duration - fadeOut, gain) && setPoint(clip.duration, 0.0);
+            pointsSet = pointsSet && setPoint(timeline_duration - fadeOut, gain) &&
+                setPoint(timeline_duration, 0.0);
         } else {
-            pointsSet = pointsSet && setPoint(clip.duration, gain);
+            pointsSet = pointsSet && setPoint(timeline_duration, gain);
         }
         const auto bound = pointsSet && ges_track_element_set_control_source(
             GES_TRACK_ELEMENT(effect), GST_CONTROL_SOURCE(source), "volume", "direct-absolute");
@@ -87,6 +90,18 @@ void add_audio_effect(GESUriClip* uri_clip, const Clip& clip) {
     if (!ges_container_add(GES_CONTAINER(uri_clip), GES_TIMELINE_ELEMENT(effect))) {
         gst_object_unref(effect);
         throw std::runtime_error("failed to attach clip audio effect");
+    }
+}
+
+void add_speed_effect(GESUriClip* uri_clip, double playback_rate) {
+    if (std::abs(playback_rate - 1.0) < 0.0000005) return;
+    std::ostringstream description;
+    description << "pitch tempo=" << std::fixed << std::setprecision(6) << playback_rate;
+    auto* effect = ges_effect_new(description.str().c_str());
+    if (effect == nullptr ||
+        !ges_container_add(GES_CONTAINER(uri_clip), GES_TIMELINE_ELEMENT(effect))) {
+        if (effect != nullptr) gst_object_unref(effect);
+        throw std::runtime_error("failed to attach clip playback-rate effect");
     }
 }
 
@@ -437,12 +452,14 @@ void GesSequencePlayer::rebuild_pipeline_locked(
             }
 
             auto* element = GES_TIMELINE_ELEMENT(uri_clip);
+            const auto timelineDuration = span.timeline_out - span.timeline_in;
             const bool configured =
                 ges_timeline_element_set_start(element, span.timeline_in) &&
                 ges_timeline_element_set_inpoint(element, span.clip.source_in) &&
-                ges_timeline_element_set_duration(element, span.clip.duration);
+                ges_timeline_element_set_duration(element, timelineDuration);
+            if (configured) add_speed_effect(uri_clip, span.clip.playback_rate);
             if (configured && span.clip.audio != ClipAudio{}) {
-                add_audio_effect(uri_clip, span.clip);
+                add_audio_effect(uri_clip, span.clip, timelineDuration);
             }
             if (!configured || !ges_layer_add_clip(layer, GES_CLIP(uri_clip))) {
                 gst_object_unref(uri_clip);

@@ -43,6 +43,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool selectedClipMuted READ selectedClipMuted NOTIFY selectedClipChanged)
     Q_PROPERTY(int selectedClipFadeInMs READ selectedClipFadeInMs NOTIFY selectedClipChanged)
     Q_PROPERTY(int selectedClipFadeOutMs READ selectedClipFadeOutMs NOTIFY selectedClipChanged)
+    Q_PROPERTY(int selectedClipSpeedPercent READ selectedClipSpeedPercent NOTIFY selectedClipChanged)
     Q_PROPERTY(QString selectedCaptionId READ selectedCaptionId NOTIFY captionSelectionChanged)
     Q_PROPERTY(QString selectedCaptionText READ selectedCaptionText NOTIFY captionSelectionChanged)
     Q_PROPERTY(int selectedCaptionDurationMs READ selectedCaptionDurationMs NOTIFY captionSelectionChanged)
@@ -73,6 +74,7 @@ public:
     [[nodiscard]] bool selectedClipMuted() const noexcept;
     [[nodiscard]] int selectedClipFadeInMs() const noexcept;
     [[nodiscard]] int selectedClipFadeOutMs() const noexcept;
+    [[nodiscard]] int selectedClipSpeedPercent() const noexcept;
     [[nodiscard]] QString selectedCaptionId() const { return selected_caption_id_; }
     [[nodiscard]] QString selectedCaptionText() const;
     [[nodiscard]] int selectedCaptionDurationMs() const noexcept;
@@ -127,6 +129,7 @@ public slots:
     void setSelectedClipMuted(bool muted);
     void setSelectedClipFadeInMs(int milliseconds);
     void setSelectedClipFadeOutMs(int milliseconds);
+    void setSelectedClipSpeedPercent(int percent);
     void addCaptionAtPlayhead();
     void selectCaption(const QString& captionId);
     void updateSelectedCaption(const QString& text, int durationMs);

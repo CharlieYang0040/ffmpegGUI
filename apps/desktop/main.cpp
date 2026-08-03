@@ -12,6 +12,8 @@
 #include <QUrl>
 #include <qqml.h>
 
+#include <cmath>
+
 namespace {
 
 void configureBundledGStreamer() {
@@ -222,6 +224,17 @@ int main(int argc, char* argv[]) {
                 QStringLiteral("회귀 테스트 자막")) {
             return EXIT_FAILURE;
         }
+        controller.selectClip(audioClipId);
+        const auto beforeSpeedDuration = controller.durationNs();
+        controller.setSelectedClipSpeedPercent(150);
+        if (controller.durationNs() >= beforeSpeedDuration ||
+            std::abs(controller.clips().front().toMap().value("playbackRate").toDouble() - 1.5) >
+                0.0001) {
+            return EXIT_FAILURE;
+        }
+        controller.undo();
+        if (controller.durationNs() != beforeSpeedDuration) return EXIT_FAILURE;
+        controller.redo();
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);
@@ -235,6 +248,7 @@ int main(int argc, char* argv[]) {
                loadedAudio.value("audioGain").toDouble() == 1.25 &&
                loadedAudio.value("audioFadeInNs").toLongLong() == 200'000'000 &&
                loadedAudio.value("audioFadeOutNs").toLongLong() == 300'000'000 &&
+               std::abs(loadedAudio.value("playbackRate").toDouble() - 1.5) < 0.0001 &&
                controller.captions().size() == 1 &&
                controller.captions().front().toMap().value("text").toString() ==
                    QStringLiteral("회귀 테스트 자막") &&
@@ -306,6 +320,7 @@ int main(int argc, char* argv[]) {
         controller.setSelectedClipVolumePercent(75);
         controller.setSelectedClipFadeInMs(200);
         controller.setSelectedClipFadeOutMs(300);
+        controller.setSelectedClipSpeedPercent(150);
         controller.seek(500'000'000);
         controller.addCaptionAtPlayhead();
         controller.updateSelectedCaption(QStringLiteral("미리보기 자막"), 1200);

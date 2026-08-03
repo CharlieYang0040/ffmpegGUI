@@ -244,6 +244,7 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             const auto clipStart = clip.value("timelineInNs").toLongLong();
             const auto clipDuration = clip.value("durationNs").toLongLong();
             const auto sourceIn = clip.value("sourceInNs").toLongLong();
+            const auto playbackRate = clip.value("playbackRate", 1.0).toDouble();
             const auto visibleStart = std::max(clipStart, viewStart);
             const auto visibleEnd = std::min(clipStart + clipDuration, viewEnd);
             if (waveform.isEmpty() || assetDuration <= 0 || visibleStart >= visibleEnd) {
@@ -259,7 +260,8 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                     static_cast<qreal>(sampleCount - 1);
                 const auto timelineTime = visibleStart + static_cast<qint64>(
                     ratio * static_cast<qreal>(visibleEnd - visibleStart));
-                const auto sourceTime = sourceIn + timelineTime - clipStart;
+                const auto sourceTime = sourceIn + static_cast<qint64>(std::llround(
+                    static_cast<double>(timelineTime - clipStart) * playbackRate));
                 const auto waveformIndex = std::clamp(
                     static_cast<int>(static_cast<qreal>(sourceTime) /
                         static_cast<qreal>(assetDuration) * waveform.size()),
@@ -395,14 +397,20 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
             const auto clip = clips_[drag_clip_index_].toMap();
             const auto sourceIn = clip.value("sourceInNs").toLongLong();
             const auto duration = clip.value("durationNs").toLongLong();
+            const auto sourceDuration = clip.value(
+                "sourceDurationNs", clip.value("durationNs")).toLongLong();
             const auto assetDuration = clip.value("assetDurationNs").toLongLong();
+            const auto playbackRate = clip.value("playbackRate", 1.0).toDouble();
             if (drag_mode_ == DragMode::trim_left) {
                 drag_delta_ns_ = std::clamp<qint64>(
-                    drag_delta_ns_, -sourceIn, duration - kMinimumClipDuration);
+                    drag_delta_ns_,
+                    -static_cast<qint64>(std::llround(sourceIn / playbackRate)),
+                    duration - kMinimumClipDuration);
             } else if (drag_mode_ == DragMode::trim_right) {
                 drag_delta_ns_ = std::clamp<qint64>(
                     drag_delta_ns_, -(duration - kMinimumClipDuration),
-                    assetDuration - sourceIn - duration);
+                    static_cast<qint64>(std::llround(
+                        (assetDuration - sourceIn - sourceDuration) / playbackRate)));
             } else {
                 move_target_index_ = insertionIndexAt(event->position().x());
             }
@@ -420,11 +428,15 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
         const auto clip = clips_[drag_clip_index_].toMap();
         const auto clipId = clip.value("id").toString();
         const auto sourceIn = clip.value("sourceInNs").toLongLong();
-        const auto duration = clip.value("durationNs").toLongLong();
+        const auto sourceDuration = clip.value(
+            "sourceDurationNs", clip.value("durationNs")).toLongLong();
+        const auto playbackRate = clip.value("playbackRate", 1.0).toDouble();
+        const auto sourceDelta = static_cast<qint64>(std::llround(
+            static_cast<double>(drag_delta_ns_) * playbackRate));
         if (drag_mode_ == DragMode::trim_left && drag_delta_ns_ != 0) {
-            emit trimCommitted(clipId, sourceIn + drag_delta_ns_, duration - drag_delta_ns_);
+            emit trimCommitted(clipId, sourceIn + sourceDelta, sourceDuration - sourceDelta);
         } else if (drag_mode_ == DragMode::trim_right && drag_delta_ns_ != 0) {
-            emit trimCommitted(clipId, sourceIn, duration + drag_delta_ns_);
+            emit trimCommitted(clipId, sourceIn, sourceDuration + sourceDelta);
         } else if (drag_mode_ == DragMode::move && drag_delta_ns_ != 0 &&
                    move_target_index_ >= 0) {
             const auto movingIds = selected_clip_ids_.contains(clipId)
@@ -494,12 +506,20 @@ QVariantList TimelineView::previewClips() const {
         }
     } else if (drag_mode_ == DragMode::trim_left || drag_mode_ == DragMode::trim_right) {
         auto clip = result[drag_clip_index_].toMap();
+        const auto playbackRate = clip.value("playbackRate", 1.0).toDouble();
+        const auto sourceDelta = static_cast<qint64>(std::llround(
+            static_cast<double>(drag_delta_ns_) * playbackRate));
+        auto sourceDuration = clip.value(
+            "sourceDurationNs", clip.value("durationNs")).toLongLong();
         if (drag_mode_ == DragMode::trim_left) {
-            clip.insert("sourceInNs", clip.value("sourceInNs").toLongLong() + drag_delta_ns_);
-            clip.insert("durationNs", clip.value("durationNs").toLongLong() - drag_delta_ns_);
+            clip.insert("sourceInNs", clip.value("sourceInNs").toLongLong() + sourceDelta);
+            sourceDuration -= sourceDelta;
         } else {
-            clip.insert("durationNs", clip.value("durationNs").toLongLong() + drag_delta_ns_);
+            sourceDuration += sourceDelta;
         }
+        clip.insert("sourceDurationNs", sourceDuration);
+        clip.insert("durationNs", static_cast<qint64>(std::llround(
+            static_cast<double>(sourceDuration) / playbackRate)));
         result[drag_clip_index_] = clip;
     }
     qint64 cursor = 0;

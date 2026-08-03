@@ -26,10 +26,25 @@ struct Clip final {
     TimeNs source_in{};
     TimeNs duration{};
     ClipAudio audio{};
+    double playback_rate{1.0};
 
     bool operator==(const Clip&) const = default;
 
     [[nodiscard]] TimeNs source_out() const { return checked_add(source_in, duration); }
+    [[nodiscard]] TimeNs timeline_duration() const {
+        return static_cast<TimeNs>(std::llround(
+            static_cast<long double>(duration) / static_cast<long double>(playback_rate)));
+    }
+    [[nodiscard]] TimeNs source_offset_for_timeline(TimeNs timeline_offset) const {
+        return static_cast<TimeNs>(std::llround(
+            static_cast<long double>(timeline_offset) *
+            static_cast<long double>(playback_rate)));
+    }
+    [[nodiscard]] TimeNs timeline_offset_for_source(TimeNs source_offset) const {
+        return static_cast<TimeNs>(std::llround(
+            static_cast<long double>(source_offset) /
+            static_cast<long double>(playback_rate)));
+    }
 };
 
 struct TimelineSpan final {
@@ -44,6 +59,7 @@ struct MappedPosition final {
     std::string asset_id;
     TimeNs timeline_time{};
     TimeNs clip_time{};
+    TimeNs source_offset{};
     TimeNs source_time{};
     std::optional<std::size_t> source_frame;
 };
@@ -86,6 +102,9 @@ public:
         TimeNs timeline_out,
         std::string right_remainder_id);
     void set_clips_audio(const std::vector<std::string>& clip_ids, ClipAudio audio);
+    void set_clips_playback_rate(
+        const std::vector<std::string>& clip_ids,
+        double playback_rate);
     void add_caption(CaptionCue caption);
     void add_captions(std::vector<CaptionCue> captions);
     void update_caption(CaptionCue caption);
