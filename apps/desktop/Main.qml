@@ -22,8 +22,8 @@ ApplicationWindow {
     palette.buttonText: "#e8edf2"
     palette.highlight: "#5b8cff"
 
-    Shortcut { sequence: StandardKey.Undo; enabled: EditorController.canUndo; onActivated: EditorController.undo() }
-    Shortcut { sequence: StandardKey.Redo; enabled: EditorController.canRedo; onActivated: EditorController.redo() }
+    Shortcut { sequences: [StandardKey.Undo]; enabled: EditorController.canUndo; onActivated: EditorController.undo() }
+    Shortcut { sequences: [StandardKey.Redo]; enabled: EditorController.canRedo; onActivated: EditorController.redo() }
 
     FileDialog {
         id: mediaDialog
@@ -152,20 +152,74 @@ ApplicationWindow {
                     }
                 }
 
-                TimelineView {
-                    id: timeline
+                Item {
+                    id: timelineLayer
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    durationNs: EditorController.durationNs
-                    playheadNs: EditorController.playheadNs
-                    clips: EditorController.clips
-                    selectedClipId: EditorController.selectedClipId
-                    onSeekRequested: position => EditorController.seek(position)
-                    onClipSelected: clipId => EditorController.selectClip(clipId)
-                    onTrimCommitted: (clipId, sourceIn, duration) =>
-                        EditorController.trimClip(clipId, sourceIn, duration)
-                    onMoveCommitted: (clipId, insertionIndex) =>
-                        EditorController.moveClip(clipId, insertionIndex)
+                    clip: true
+
+                    Rectangle {
+                        anchors.fill: parent
+                        color: "#11161c"
+                    }
+
+                    Repeater {
+                        model: EditorController.clips
+
+                        delegate: Item {
+                            required property var modelData
+                            readonly property real contentWidth: Math.max(1, timelineLayer.width - 24)
+                            readonly property real timelineStart: modelData.timelineInNs
+                            readonly property real timelineEnd: timelineStart + modelData.durationNs
+                            readonly property bool intersectsViewport:
+                                timelineEnd > timeline.viewportStartNs
+                                && timelineStart < timeline.viewportStartNs + timeline.viewportDurationNs
+
+                            x: 12 + (timelineStart - timeline.viewportStartNs)
+                               / Math.max(1, timeline.viewportDurationNs) * contentWidth
+                            y: 30
+                            width: modelData.durationNs
+                                   / Math.max(1, timeline.viewportDurationNs) * contentWidth
+                            height: Math.max(1, timelineLayer.height - 44)
+                            visible: modelData.thumbnailAtlas.length > 0 && intersectsViewport
+                            clip: true
+
+                            Image {
+                                id: atlas
+                                anchors.fill: parent
+                                source: modelData.thumbnailAtlas.length > 0
+                                    ? "file:///" + modelData.thumbnailAtlas.replace(/\\/g, "/")
+                                    : ""
+                                fillMode: Image.Stretch
+                                asynchronous: true
+                                cache: true
+                                smooth: true
+                                opacity: 0.9
+                                sourceClipRect: Qt.rect(
+                                    atlas.sourceSize.width * modelData.sourceInNs
+                                        / Math.max(1, modelData.assetDurationNs),
+                                    0,
+                                    atlas.sourceSize.width * modelData.durationNs
+                                        / Math.max(1, modelData.assetDurationNs),
+                                    atlas.sourceSize.height)
+                            }
+                        }
+                    }
+
+                    TimelineView {
+                        id: timeline
+                        anchors.fill: parent
+                        durationNs: EditorController.durationNs
+                        playheadNs: EditorController.playheadNs
+                        clips: EditorController.clips
+                        selectedClipId: EditorController.selectedClipId
+                        onSeekRequested: position => EditorController.seek(position)
+                        onClipSelected: clipId => EditorController.selectClip(clipId)
+                        onTrimCommitted: (clipId, sourceIn, duration) =>
+                            EditorController.trimClip(clipId, sourceIn, duration)
+                        onMoveCommitted: (clipId, insertionIndex) =>
+                            EditorController.moveClip(clipId, insertionIndex)
+                    }
                 }
             }
         }

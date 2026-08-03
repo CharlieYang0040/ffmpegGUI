@@ -6,9 +6,14 @@
 
 namespace ffgui {
 
+struct AnalyzedMedia final {
+    MediaAsset asset;
+    QString thumbnail_atlas;
+};
+
 [[nodiscard]] QString locate_ffprobe();
 [[nodiscard]] QString locate_ffmpeg();
-[[nodiscard]] MediaAsset analyze_media(
+[[nodiscard]] AnalyzedMedia analyze_media(
     const QString& ffprobe_path,
     const QString& ffmpeg_path,
     const QString& media_path,

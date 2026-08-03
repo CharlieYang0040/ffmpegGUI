@@ -14,6 +14,8 @@ class TimelineView : public QQuickItem {
     Q_PROPERTY(qint64 playheadNs READ playheadNs WRITE setPlayheadNs NOTIFY playheadNsChanged)
     Q_PROPERTY(QString selectedClipId READ selectedClipId WRITE setSelectedClipId NOTIFY selectedClipIdChanged)
     Q_PROPERTY(qreal zoomLevel READ zoomLevel WRITE setZoomLevel NOTIFY zoomLevelChanged)
+    Q_PROPERTY(qint64 viewportStartNs READ viewportStartNs NOTIFY viewportChanged)
+    Q_PROPERTY(qint64 viewportDurationNs READ visibleDurationNs NOTIFY viewportChanged)
 
 public:
     explicit TimelineView(QQuickItem* parent = nullptr);
@@ -32,6 +34,8 @@ public:
 
     [[nodiscard]] qreal zoomLevel() const noexcept { return zoom_level_; }
     void setZoomLevel(qreal zoom);
+    [[nodiscard]] qint64 viewportStartNs() const noexcept { return viewport_start_ns_; }
+    [[nodiscard]] qint64 visibleDurationNs() const;
 
 signals:
     void clipsChanged();
@@ -39,6 +43,7 @@ signals:
     void playheadNsChanged();
     void selectedClipIdChanged();
     void zoomLevelChanged();
+    void viewportChanged();
     void seekRequested(qint64 timelineTime);
     void clipSelected(QString clipId);
     void trimCommitted(QString clipId, qint64 sourceIn, qint64 duration);
@@ -55,7 +60,6 @@ private:
     void seekAt(qreal x);
     [[nodiscard]] QVariantList previewClips() const;
     [[nodiscard]] int clipIndexAt(qreal x) const;
-    [[nodiscard]] qint64 visibleDurationNs() const;
     [[nodiscard]] qint64 timeAt(qreal x) const;
     void clampViewport();
 

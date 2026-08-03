@@ -8,6 +8,7 @@
 
 #include <QObject>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QStringList>
 #include <QVariantList>
 #include <QWindow>
@@ -85,6 +86,7 @@ private:
     struct PendingImport final {
         ffgui::MediaAsset asset;
         std::string clip_id;
+        QString thumbnail_atlas;
     };
 
     void publishTimeline(bool resetPlayhead = false);
@@ -100,6 +102,7 @@ private:
     QWindow* video_window_{};
     bool importing_{};
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
+    QHash<QString, QString> thumbnail_atlases_;
     static EditorController* singleton_instance_;
 #ifdef FFGUI_HAS_GES
     std::unique_ptr<ffgui::GesSequencePlayer> player_;

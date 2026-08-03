@@ -28,11 +28,22 @@ $env:GST_REGISTRY = Join-Path $root ".tools\gst-registry.bin"
 $env:GIO_MODULE_DIR = Join-Path $root ".tools\empty-gio-modules"
 $env:GST_PLUGIN_FEATURE_RANK = "avdec_h264:MAX,nvh264dec:NONE,d3d12h264dec:NONE,mfh264dec:NONE"
 
-& $application --project-roundtrip $roundtripProject $clipA $clipB $clipVfr
-if ($LASTEXITCODE -ne 0) {
+$roundtrip = Start-Process -FilePath $application `
+    -ArgumentList @("--project-roundtrip", $roundtripProject, $clipA, $clipB, $clipVfr) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($roundtrip.ExitCode -ne 0) {
     throw "project save/load roundtrip failed"
 }
 Write-Output "Project roundtrip passed: media timeline saved and loaded without duration drift"
+
+$savedProject = Get-Content -LiteralPath $roundtripProject -Raw | ConvertFrom-Json
+foreach ($asset in $savedProject.assets) {
+    if ([string]::IsNullOrWhiteSpace($asset.thumbnailAtlas) -or
+        -not (Test-Path -LiteralPath $asset.thumbnailAtlas -PathType Leaf)) {
+        throw "thumbnail atlas was not generated for $($asset.id)"
+    }
+}
+Write-Output "Thumbnail atlas passed: all imported media have cached timeline images"
 
 $process = Start-Process -FilePath $application `
     -ArgumentList @($clipA, $clipB, $clipVfr) `

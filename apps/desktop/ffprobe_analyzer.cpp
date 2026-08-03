@@ -4,9 +4,12 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QCryptographicHash>
+#include <QStandardPaths>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -102,6 +105,34 @@ std::vector<float> build_peaks(const QByteArray& pcm) {
     return peaks;
 }
 
+QString build_thumbnail_atlas(const QString& ffmpeg, const QString& media, TimeNs duration) {
+    const QFileInfo info(media);
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(info.canonicalFilePath().toUtf8());
+    hash.addData(QByteArray::number(info.size()));
+    hash.addData(QByteArray::number(info.lastModified().toMSecsSinceEpoch()));
+    const auto cacheDir = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+        .filePath("thumbnails");
+    QDir().mkpath(cacheDir);
+    const auto target = QDir(cacheDir).filePath(QString::fromLatin1(hash.result().toHex()) + ".png");
+    if (QFileInfo(target).isFile()) return target;
+    const auto temporary = target + ".partial.png";
+    const auto seconds = static_cast<double>(duration) / static_cast<double>(kNanosecondsPerSecond);
+    const auto interval = std::max(0.04, seconds / 12.0);
+    const auto filter = QString("fps=1/%1,scale=160:90:force_original_aspect_ratio=decrease,"
+                                "pad=160:90:(ow-iw)/2:(oh-ih)/2,tile=12x1")
+                            .arg(interval, 0, 'f', 6);
+    try {
+        run_tool(ffmpeg, {"-v", "error", "-y", "-i", media, "-vf", filter,
+                          "-frames:v", "1", temporary});
+        QFile::remove(target);
+        if (QFile::rename(temporary, target)) return target;
+    } catch (...) {
+    }
+    QFile::remove(temporary);
+    return {};
+}
+
 std::string to_utf8(const QString& value) {
     const auto bytes = value.toUtf8();
     return {bytes.constData(), static_cast<std::size_t>(bytes.size())};
@@ -117,7 +148,7 @@ QString locate_ffmpeg() {
     return locate_tool("ffmpeg", "FFGUI_FFMPEG");
 }
 
-MediaAsset analyze_media(
+AnalyzedMedia analyze_media(
     const QString& ffprobe_path,
     const QString& ffmpeg_path,
     const QString& media_path,
@@ -140,12 +171,11 @@ MediaAsset analyze_media(
         true);
     auto audioPeaks = build_peaks(audioPcm);
     duration = std::max(duration, estimated_media_end(framePts));
-    return MediaAsset{
-        std::move(asset_id),
-        std::filesystem::path(absolutePath.toStdWString()),
-        duration,
-        std::move(framePts),
-        std::move(audioPeaks)};
+    auto atlas = build_thumbnail_atlas(ffmpeg_path, absolutePath, duration);
+    return AnalyzedMedia{
+        MediaAsset{std::move(asset_id), std::filesystem::path(absolutePath.toStdWString()),
+                   duration, std::move(framePts), std::move(audioPeaks)},
+        std::move(atlas)};
 }
 
 }  // namespace ffgui

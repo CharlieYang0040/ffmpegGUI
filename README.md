@@ -49,8 +49,9 @@ ctest --preset windows-debug
 QML 모듈과 필요한 GStreamer 런타임을 함께 포함합니다.
 
 `run_ges_smoke.ps1`은 CFR MP4, CFR MKV, VFR MKV를 생성해 트림된 4개 샷을 하나의
-타임라인으로 연속 재생합니다. `run_desktop_smoke.ps1`은 같은 파일로 네이티브 창과
-D3D11 출력 초기화를 검사합니다. 기본 FFmpeg는 SHA-256 검증 후 `.tools/ffmpeg`에
+타임라인으로 연속 재생합니다. `run_desktop_smoke.ps1`은 같은 파일로 네이티브 창,
+D3D11 출력 초기화, 프로젝트 왕복과 타임라인 썸네일 캐시 생성을 검사합니다. 기본
+FFmpeg는 SHA-256 검증 후 `.tools/ffmpeg`에
 설치된 8.1.2이며 `-FFmpegPath`로 바꿀 수 있습니다.
 
 ## 디렉터리
@@ -63,5 +64,6 @@ D3D11 출력 초기화를 검사합니다. 기본 FFmpeg는 SHA-256 검증 후 `
 - `tools`: GES 미디어 스모크와 대규모 타임라인 측정 도구
 
 미디어를 추가하면 번쩍이는 터미널 창 없이 FFprobe가 백그라운드에서 실제 영상
-프레임 PTS를 읽습니다. 분석이 끝나기 전에는 타임라인에 임시 길이를 넣지 않습니다.
+프레임 PTS를 읽고, FFmpeg가 파형과 12프레임 썸네일 아틀라스를 캐시합니다. 분석이
+끝나기 전에는 타임라인에 임시 길이를 넣지 않습니다.
 - `docs`: 아키텍처와 단계별 완료 기준

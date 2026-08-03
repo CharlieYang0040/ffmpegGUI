@@ -60,6 +60,7 @@ void TimelineView::setDurationNs(qint64 duration) {
     emit durationNsChanged();
     emit playheadNsChanged();
     clampViewport();
+    emit viewportChanged();
     update();
 }
 
@@ -71,6 +72,7 @@ void TimelineView::setZoomLevel(qreal zoom) {
     zoom_level_ = zoom;
     clampViewport();
     emit zoomLevelChanged();
+    emit viewportChanged();
     update();
 }
 
@@ -96,7 +98,6 @@ void TimelineView::setSelectedClipId(QString clipId) {
 QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     delete oldNode;
     auto* root = new QSGNode();
-    root->appendChildNode(new QSGSimpleRectNode(boundingRect(), QColor("#11161c")));
 
     const qreal contentWidth = std::max<qreal>(1.0, width() - kHorizontalPadding * 2.0);
     const qreal trackHeight = std::max<qreal>(1.0, height() - kTrackTop - kTrackBottomPadding);
@@ -141,6 +142,7 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             if (clip.value("id").toString() == selected_clip_id_) {
                 color = color.lighter(125);
             }
+            color.setAlpha(145);
             const auto x1 = left + 1.0;
             const auto x2 = std::max(x1 + 1.0, right - 1.0);
             const auto y1 = kTrackTop;
@@ -369,6 +371,7 @@ void TimelineView::wheelEvent(QWheelEvent* event) {
         viewport_start_ns_ -= static_cast<qint64>(steps * visibleDurationNs() * 0.12);
     }
     clampViewport();
+    emit viewportChanged();
     update();
     event->accept();
 }

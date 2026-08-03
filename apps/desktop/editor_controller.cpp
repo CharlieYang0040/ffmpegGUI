@@ -59,7 +59,11 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 auto imported = import_watcher_.result();
                 for (auto& item : imported) {
                     const auto assetId = item.asset.id();
+                    const auto assetKey = QString::fromStdString(assetId);
                     const auto duration = item.asset.duration();
+                    if (!item.thumbnail_atlas.isEmpty()) {
+                        thumbnail_atlases_.insert(assetKey, std::move(item.thumbnail_atlas));
+                    }
                     timeline_.add_asset(std::move(item.asset));
                     timeline_.append_clip(ffgui::Clip{
                         std::move(item.clip_id), assetId, 0, duration});
@@ -128,6 +132,9 @@ QVariantList EditorController::clips() const {
         value.insert("durationNs", static_cast<qint64>(span.clip.duration));
         const auto* asset = timeline_.asset(span.clip.asset_id);
         value.insert("assetDurationNs", static_cast<qint64>(asset ? asset->duration() : 0));
+        value.insert(
+            "thumbnailAtlas",
+            thumbnail_atlases_.value(QString::fromStdString(span.clip.asset_id)));
         QVariantList waveform;
         if (asset != nullptr) {
             waveform.reserve(static_cast<qsizetype>(asset->audio_peaks().size()));
@@ -196,10 +203,12 @@ void EditorController::loadFiles(const QStringList& paths) {
                 result.reserve(requests.size());
                 for (auto& request : requests) {
                     const auto clipId = std::move(request.clip_id);
+                    auto analyzed = ffgui::analyze_media(
+                        ffprobe, ffmpeg, request.path, std::move(request.asset_id));
                     result.push_back(PendingImport{
-                        ffgui::analyze_media(
-                            ffprobe, ffmpeg, request.path, std::move(request.asset_id)),
-                        clipId});
+                        std::move(analyzed.asset),
+                        clipId,
+                        std::move(analyzed.thumbnail_atlas)});
                 }
                 return result;
             }));
@@ -359,7 +368,8 @@ void EditorController::saveProject(const QString& path) {
                 {"path", QString::fromStdWString(asset.path().wstring())},
                 {"durationNs", timeString(asset.duration())},
                 {"framePtsNs", framePts},
-                {"audioPeaks", audioPeaks}});
+                {"audioPeaks", audioPeaks},
+                {"thumbnailAtlas", thumbnail_atlases_.value(QString::fromStdString(id))}});
         }
 
         QJsonArray clips;
@@ -406,8 +416,10 @@ void EditorController::loadProject(const QString& path) {
         }
 
         ffgui::TimelineModel loaded;
+        QHash<QString, QString> loadedAtlases;
         for (const auto value : root.value("assets").toArray()) {
             const auto object = value.toObject();
+            const auto assetId = object.value("id").toString();
             std::vector<ffgui::TimeNs> framePts;
             for (const auto pts : object.value("framePtsNs").toArray()) {
                 framePts.push_back(parseTime(pts, "framePtsNs"));
@@ -417,11 +429,15 @@ void EditorController::loadProject(const QString& path) {
                 audioPeaks.push_back(static_cast<float>(peak.toDouble()));
             }
             loaded.add_asset(ffgui::MediaAsset{
-                object.value("id").toString().toStdString(),
+                assetId.toStdString(),
                 std::filesystem::path(object.value("path").toString().toStdWString()),
                 parseTime(object.value("durationNs"), "durationNs"),
                 std::move(framePts),
                 std::move(audioPeaks)});
+            const auto atlas = object.value("thumbnailAtlas").toString();
+            if (QFileInfo(atlas).isFile()) {
+                loadedAtlases.insert(assetId, atlas);
+            }
         }
         for (const auto value : root.value("clips").toArray()) {
             const auto object = value.toObject();
@@ -433,6 +449,7 @@ void EditorController::loadProject(const QString& path) {
         }
         loaded.clear_history();
         timeline_ = std::move(loaded);
+        thumbnail_atlases_ = std::move(loadedAtlases);
         selected_clip_id_ = timeline_.clips().empty()
             ? QString{}
             : QString::fromStdString(timeline_.clips().front().id);
