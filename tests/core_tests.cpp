@@ -376,6 +376,33 @@ void test_timeline_revision_changes_only_after_successful_edits() {
     require(timeline.revision() == edited + 3, "redo must publish a distinct revision");
 }
 
+void test_clip_audio_edits_are_atomic_and_follow_split_edges() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"a", "asset-a", 0, seconds(4)});
+    timeline.append_clip(Clip{"b", "asset-b", 0, seconds(3)});
+    timeline.clear_history();
+
+    const ffgui::ClipAudio audio{1.25, true, seconds(1), seconds(2)};
+    timeline.set_clips_audio({"a", "b"}, audio);
+    require(timeline.clips()[0].audio == audio && timeline.clips()[1].audio == audio,
+            "one audio edit must update the full selection");
+    require(timeline.undo(), "selected audio edit must be one undo step");
+    require(timeline.clips()[0].audio == ffgui::ClipAudio{},
+            "audio undo must restore defaults");
+    timeline.redo();
+
+    timeline.split_at(seconds(2), "left", "right");
+    require(timeline.clips()[0].audio.fade_in == seconds(1) &&
+            timeline.clips()[0].audio.fade_out == 0,
+            "left split must preserve only the original outer fade");
+    require(timeline.clips()[1].audio.fade_in == 0 &&
+            timeline.clips()[1].audio.fade_out == seconds(2),
+            "right split must preserve only the original outer fade");
+    require_throws<std::invalid_argument>(
+        [&] { timeline.set_clips_audio({"left"}, ffgui::ClipAudio{5.0, false, 0, 0}); },
+        "unsafe audio gain must be rejected");
+}
+
 void test_ffprobe_timestamp_parser_preserves_vfr() {
     require(ffgui::parse_ffprobe_seconds("12.345678901") == 12'345'678'901, "exact decimal ns");
     const auto pts = ffgui::parse_ffprobe_frame_pts(
@@ -418,6 +445,33 @@ void test_ffmpeg_export_plan_preserves_clip_ranges_and_audio() {
             "silent clips must receive matching audio");
     require(joined.contains("concat=n=2:v=1:a=1"), "all clips must share one concat graph");
     require(joined.contains("h264_nvenc"), "requested GPU encoder must be selected");
+}
+
+void test_ffmpeg_export_plan_applies_clip_audio_controls() {
+    auto request = ffgui::ExportRequest{
+        {{std::filesystem::path{"A.mp4"}, 0, seconds(4), true,
+          seconds(4), {0, seconds(4)}, 1.5, false, seconds(1), seconds(2)}},
+        std::filesystem::path{"result.mp4"},
+        ffgui::ExportVideoEncoder::libx264};
+    request.prefer_stream_copy = true;
+    request.concat_script_path = std::filesystem::path{"job.ffconcat"};
+    const auto plan = ffgui::compile_ffmpeg_export(request);
+    require(plan.mode == ffgui::ExportMode::transcode,
+            "audio controls must prevent unsafe stream copy");
+    std::string joined;
+    for (const auto& argument : plan.arguments) joined += argument + '\n';
+    require(joined.contains("volume=1.500000"), "clip gain must reach the audio graph");
+    require(joined.contains("afade=t=in:st=0:d=1.000000000"),
+            "fade in must start at the clip edge");
+    require(joined.contains("afade=t=out:st=2.000000000:d=2.000000000"),
+            "fade out must end at the clip edge");
+
+    request.clips[0].audio_muted = true;
+    const auto muted = ffgui::compile_ffmpeg_export(request);
+    std::string mutedArguments;
+    for (const auto& argument : muted.arguments) mutedArguments += argument + '\n';
+    require(mutedArguments.contains("volume=0.000000"),
+            "muted clips must render silent audio");
 }
 
 void test_ffmpeg_export_plan_rejects_invalid_requests() {
@@ -481,9 +535,11 @@ int main() {
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},
+        {"clip_audio_edits_are_atomic_and_follow_split_edges", test_clip_audio_edits_are_atomic_and_follow_split_edges},
         {"ffprobe_timestamp_parser_preserves_vfr", test_ffprobe_timestamp_parser_preserves_vfr},
         {"ffprobe_frame_timeline_preserves_keyframes", test_ffprobe_frame_timeline_preserves_keyframes},
         {"ffmpeg_export_plan_preserves_clip_ranges_and_audio", test_ffmpeg_export_plan_preserves_clip_ranges_and_audio},
+        {"ffmpeg_export_plan_applies_clip_audio_controls", test_ffmpeg_export_plan_applies_clip_audio_controls},
         {"ffmpeg_export_plan_rejects_invalid_requests", test_ffmpeg_export_plan_rejects_invalid_requests},
         {"ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts", test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts},
     };

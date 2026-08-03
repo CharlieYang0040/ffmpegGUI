@@ -9,7 +9,7 @@
 ```text
 TimelineModel
   ├─ MediaAsset: 경로, 길이, 실제 프레임 PTS
-  └─ Clip: asset, source-in, duration
+  └─ Clip: asset, source-in, duration, gain/mute/fades
           ↓ snapshot
       TimelineSpan[]
        ├─ Qt timeline view
@@ -49,6 +49,10 @@ TimelineModel
   리플 삭제는 범위 안의 샷을 제거하고 양 끝 샷의 남은 원본 범위만 보존한다. 한 샷
   내부 범위라면 오른쪽 조각에 새 ID를 부여하며, 전체 변경은 원자적으로 검증한 뒤
   Undo 한 단계로 기록한다.
+- 클립 오디오 설정은 선형 gain, 음소거, 나노초 페이드 인·아웃으로 저장한다. 다중 선택
+  변경은 하나의 편집 리비전이며, 분할 시 새 내부 컷에는 페이드를 만들지 않고 원래
+  클립의 바깥쪽 페이드만 좌우 조각에 보존한다. 트림으로 두 페이드의 합이 클립보다
+  길어지면 재생과 출력 모두 같은 비율로 축소해 클립 경계 안에 맞춘다.
 
 ## 스레드 경계
 
@@ -116,6 +120,8 @@ Qt 아이템까지 전달되는 것은 확인했지만 Scene Graph의 반복 tex
 하나의 필터 그래프에서 연결하며, 오디오가 없거나 짧은 샷은 정확한 샷 길이만큼
 무음으로 보완한다. 실행기는 H.264 NVENC를 먼저 사용하고 실패하면 libx264로 한 번
 재시도한다. 취소·실패 시 불완전 출력은 삭제하고 기존 파일은 자동으로 덮어쓰지 않는다.
+클립 gain·음소거·페이드는 GES `volume` 제어 곡선과 FFmpeg `volume`/`afade` 필터로
+각각 컴파일한다. 오디오 효과가 하나라도 있으면 stream-copy 조건에서 제외한다.
 
 같은 원본 파일에서 나온 모든 컷의 시작과 끝이 실제 영상 키프레임 PTS 또는 원본
 끝에 정확히 맞으면 concat demuxer와 `-c copy`로 재인코딩 없이 remux한다. 서로 다른

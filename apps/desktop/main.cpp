@@ -176,6 +176,17 @@ int main(int argc, char* argv[]) {
         if (controller.durationNs() >= beforeRangeDeleteDuration) return EXIT_FAILURE;
         controller.undo();
         if (controller.durationNs() != beforeRangeDeleteDuration) return EXIT_FAILURE;
+        const auto audioClipId = controller.clips().front().toMap().value("id").toString();
+        controller.selectClip(audioClipId);
+        controller.setSelectedClipVolumePercent(125);
+        controller.setSelectedClipFadeInMs(200);
+        controller.setSelectedClipFadeOutMs(300);
+        const auto audioClip = controller.clips().front().toMap();
+        if (audioClip.value("audioGain").toDouble() != 1.25 ||
+            audioClip.value("audioFadeInNs").toLongLong() != 200'000'000 ||
+            audioClip.value("audioFadeOutNs").toLongLong() != 300'000'000) {
+            return EXIT_FAILURE;
+        }
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);
@@ -183,13 +194,26 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         controller.loadProject(roundtripProject);
+        const auto loadedAudio = controller.clips().front().toMap();
         return controller.durationNs() == expectedDuration && expectedDuration > 0 &&
                controller.clips().size() == expectedClipCount &&
+               loadedAudio.value("audioGain").toDouble() == 1.25 &&
+               loadedAudio.value("audioFadeInNs").toLongLong() == 200'000'000 &&
+               loadedAudio.value("audioFadeOutNs").toLongLong() == 300'000'000 &&
                expectedClipCount == importedClipCount + 4
             ? EXIT_SUCCESS
             : EXIT_FAILURE;
     }
     if (!exportSmokeOutput.isEmpty()) {
+        const auto exportClips = controller.clips();
+        if (exportClips.isEmpty()) return EXIT_FAILURE;
+        controller.selectClip(exportClips.front().toMap().value("id").toString());
+        controller.setSelectedClipVolumePercent(80);
+        controller.setSelectedClipFadeInMs(150);
+        controller.setSelectedClipFadeOutMs(250);
+        QEventLoop audioPreviewRefreshLoop;
+        QTimer::singleShot(100, &audioPreviewRefreshLoop, &QEventLoop::quit);
+        audioPreviewRefreshLoop.exec();
         bool exportSucceeded = false;
         QEventLoop exportLoop;
         QTimer exportTimeout;
@@ -235,7 +259,13 @@ int main(int argc, char* argv[]) {
             : EXIT_FAILURE;
     }
     if (playbackSmoke) {
-        QTimer::singleShot(100, &controller, &EditorController::togglePlayback);
+        const auto playbackClips = controller.clips();
+        if (playbackClips.isEmpty()) return EXIT_FAILURE;
+        controller.selectClip(playbackClips.front().toMap().value("id").toString());
+        controller.setSelectedClipVolumePercent(75);
+        controller.setSelectedClipFadeInMs(200);
+        controller.setSelectedClipFadeOutMs(300);
+        QTimer::singleShot(150, &controller, &EditorController::togglePlayback);
         QTimer::singleShot(5000, &application, [&application, &controller] {
             if (controller.playheadNs() < 500'000'000) application.exit(10);
             else if (controller.gpuSceneGraphPreview() && controller.videoFramesReceived() < 10) application.exit(11);

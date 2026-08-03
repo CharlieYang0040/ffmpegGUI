@@ -4,6 +4,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+#include <cmath>
 
 namespace ffgui {
 namespace {
@@ -28,6 +29,19 @@ bool is_boundary(const ExportClipInput& clip, TimeNs value) {
            std::binary_search(clip.keyframe_pts.begin(), clip.keyframe_pts.end(), value);
 }
 
+std::pair<TimeNs, TimeNs> normalized_fades(const ExportClipInput& clip) {
+    auto fadeIn = std::min(clip.audio_fade_in, clip.duration);
+    auto fadeOut = std::min(clip.audio_fade_out, clip.duration);
+    const auto total = checked_add(fadeIn, fadeOut);
+    if (total > clip.duration) {
+        const auto ratio = static_cast<long double>(clip.duration) /
+                           static_cast<long double>(total);
+        fadeIn = static_cast<TimeNs>(static_cast<long double>(fadeIn) * ratio);
+        fadeOut = clip.duration - fadeIn;
+    }
+    return {fadeIn, fadeOut};
+}
+
 bool can_stream_copy(const ExportRequest& request) {
     if (!request.prefer_stream_copy || request.concat_script_path.empty() ||
         request.clips.empty()) {
@@ -36,6 +50,8 @@ bool can_stream_copy(const ExportRequest& request) {
     const auto& source = request.clips.front().source_path;
     return std::all_of(request.clips.begin(), request.clips.end(), [&](const auto& clip) {
         return clip.source_path == source && clip.asset_duration > 0 &&
+               clip.audio_gain == 1.0 && !clip.audio_muted &&
+               clip.audio_fade_in == 0 && clip.audio_fade_out == 0 &&
                is_boundary(clip, clip.source_in) &&
                is_boundary(clip, checked_add(clip.source_in, clip.duration));
     });
@@ -67,6 +83,10 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
     for (const auto& clip : request.clips) {
         if (clip.source_path.empty() || clip.duration <= 0 || clip.source_in < 0) {
             throw std::invalid_argument("export clip has an invalid source range");
+        }
+        if (!std::isfinite(clip.audio_gain) || clip.audio_gain < 0.0 ||
+            clip.audio_gain > 4.0 || clip.audio_fade_in < 0 || clip.audio_fade_out < 0) {
+            throw std::invalid_argument("export clip has invalid audio settings");
         }
         plan.duration = checked_add(plan.duration, clip.duration);
     }
@@ -101,11 +121,21 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
             filter += "[" + suffix + ":a:0]aresample=48000:async=1:first_pts=0,"
                       "apad=whole_dur=" + seconds(clip.duration) +
                       ",atrim=duration=" + seconds(clip.duration) +
-                      ",asetpts=PTS-STARTPTS[a" + suffix + "];";
+                      ",asetpts=PTS-STARTPTS";
         } else {
-            filter += "anullsrc=r=48000:cl=stereo:d=" + seconds(clip.duration) +
-                      "[a" + suffix + "];";
+            filter += "anullsrc=r=48000:cl=stereo:d=" + seconds(clip.duration);
         }
+        const auto gain = clip.audio_muted ? 0.0 : clip.audio_gain;
+        filter += ",volume=" + std::to_string(gain);
+        const auto [fadeIn, fadeOut] = normalized_fades(clip);
+        if (fadeIn > 0) {
+            filter += ",afade=t=in:st=0:d=" + seconds(fadeIn);
+        }
+        if (fadeOut > 0) {
+            filter += ",afade=t=out:st=" + seconds(clip.duration - fadeOut) +
+                      ":d=" + seconds(fadeOut);
+        }
+        filter += "[a" + suffix + "];";
         concatInputs += "[v" + suffix + "][a" + suffix + "]";
     }
     filter += concatInputs + "concat=n=" + std::to_string(request.clips.size()) +

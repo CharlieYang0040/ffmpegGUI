@@ -38,6 +38,10 @@ class EditorController final : public QObject {
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString selectedClipId READ selectedClipId NOTIFY selectedClipChanged)
     Q_PROPERTY(QStringList selectedClipIds READ selectedClipIds NOTIFY selectedClipChanged)
+    Q_PROPERTY(int selectedClipVolumePercent READ selectedClipVolumePercent NOTIFY selectedClipChanged)
+    Q_PROPERTY(bool selectedClipMuted READ selectedClipMuted NOTIFY selectedClipChanged)
+    Q_PROPERTY(int selectedClipFadeInMs READ selectedClipFadeInMs NOTIFY selectedClipChanged)
+    Q_PROPERTY(int selectedClipFadeOutMs READ selectedClipFadeOutMs NOTIFY selectedClipChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
@@ -60,6 +64,10 @@ public:
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] QString selectedClipId() const { return selected_clip_id_; }
     [[nodiscard]] QStringList selectedClipIds() const { return selected_clip_ids_; }
+    [[nodiscard]] int selectedClipVolumePercent() const noexcept;
+    [[nodiscard]] bool selectedClipMuted() const noexcept;
+    [[nodiscard]] int selectedClipFadeInMs() const noexcept;
+    [[nodiscard]] int selectedClipFadeOutMs() const noexcept;
     [[nodiscard]] bool canUndo() const noexcept { return timeline_.can_undo(); }
     [[nodiscard]] bool canRedo() const noexcept { return timeline_.can_redo(); }
     [[nodiscard]] bool importing() const noexcept { return importing_; }
@@ -107,6 +115,10 @@ public slots:
     void splitAtPlayhead();
     void duplicateSelectedClip();
     void deleteSelectedClip();
+    void setSelectedClipVolumePercent(int percent);
+    void setSelectedClipMuted(bool muted);
+    void setSelectedClipFadeInMs(int milliseconds);
+    void setSelectedClipFadeOutMs(int milliseconds);
     void undo();
     void redo();
     void saveProject(const QString& path);

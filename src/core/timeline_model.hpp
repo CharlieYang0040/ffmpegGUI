@@ -3,6 +3,7 @@
 #include "core/media_asset.hpp"
 
 #include <cstddef>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -10,11 +11,21 @@
 
 namespace ffgui {
 
+struct ClipAudio final {
+    double gain{1.0};
+    bool muted{};
+    TimeNs fade_in{};
+    TimeNs fade_out{};
+
+    bool operator==(const ClipAudio&) const = default;
+};
+
 struct Clip final {
     std::string id;
     std::string asset_id;
     TimeNs source_in{};
     TimeNs duration{};
+    ClipAudio audio{};
 
     bool operator==(const Clip&) const = default;
 
@@ -64,6 +75,7 @@ public:
         TimeNs timeline_in,
         TimeNs timeline_out,
         std::string right_remainder_id);
+    void set_clips_audio(const std::vector<std::string>& clip_ids, ClipAudio audio);
     void split_at(
         TimeNs timeline_position,
         std::string left_clip_id,

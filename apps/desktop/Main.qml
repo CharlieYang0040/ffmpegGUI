@@ -45,6 +45,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+Shift+X"; onActivated: EditorController.clearRange() }
     Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.duplicateSelectedClip() }
     Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.deleteSelectedClip() }
+    Shortcut { sequence: "M"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted) }
 
     FileDialog {
         id: mediaDialog
@@ -287,6 +288,69 @@ ApplicationWindow {
                         wrapMode: Text.WordWrap
                         text: "NVENC를 먼저 사용하고, 지원되지 않으면 CPU로 자동 전환합니다."
                         color: "#8994a3"
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
+                        color: "#303844"
+                    }
+                    Label {
+                        text: EditorController.selectedClipIds.length > 1
+                              ? "오디오 · " + EditorController.selectedClipIds.length + "개 클립"
+                              : "클립 오디오"
+                        font.bold: true
+                        visible: EditorController.selectedClipIds.length > 0
+                    }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 2
+                        visible: EditorController.selectedClipIds.length > 0
+                        columnSpacing: 8
+                        rowSpacing: 8
+
+                        Label { text: "볼륨"; color: "#b4bdc8" }
+                        SpinBox {
+                            Layout.fillWidth: true
+                            from: 0
+                            to: 400
+                            stepSize: 5
+                            editable: true
+                            value: EditorController.selectedClipVolumePercent
+                            textFromValue: function(value) { return value + "%" }
+                            valueFromText: function(text) { return parseInt(text) || 0 }
+                            onValueModified: EditorController.setSelectedClipVolumePercent(value)
+                        }
+                        Label { text: "페이드 인"; color: "#b4bdc8" }
+                        SpinBox {
+                            Layout.fillWidth: true
+                            from: 0
+                            to: 60000
+                            stepSize: 100
+                            editable: true
+                            value: EditorController.selectedClipFadeInMs
+                            textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                            valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
+                            onValueModified: EditorController.setSelectedClipFadeInMs(value)
+                        }
+                        Label { text: "페이드 아웃"; color: "#b4bdc8" }
+                        SpinBox {
+                            Layout.fillWidth: true
+                            from: 0
+                            to: 60000
+                            stepSize: 100
+                            editable: true
+                            value: EditorController.selectedClipFadeOutMs
+                            textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                            valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
+                            onValueModified: EditorController.setSelectedClipFadeOutMs(value)
+                        }
+                    }
+                    Button {
+                        Layout.fillWidth: true
+                        visible: EditorController.selectedClipIds.length > 0
+                        text: EditorController.selectedClipMuted ? "음소거 해제 (M)" : "음소거 (M)"
+                        highlighted: EditorController.selectedClipMuted
+                        onClicked: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted)
                     }
                     ProgressBar {
                         Layout.fillWidth: true

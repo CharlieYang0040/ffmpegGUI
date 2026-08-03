@@ -91,12 +91,15 @@ void TimelineModel::insert_clip_at(
             }
 
             const auto local = timeline_position - cursor;
-            Clip left{std::move(left_clip_id), original.asset_id, original.source_in, local};
-            Clip right{
-                std::move(right_clip_id),
-                original.asset_id,
-                checked_add(original.source_in, local),
-                original.duration - local};
+            auto left = original;
+            left.id = std::move(left_clip_id);
+            left.duration = local;
+            left.audio.fade_out = 0;
+            auto right = original;
+            right.id = std::move(right_clip_id);
+            right.source_in = checked_add(original.source_in, local);
+            right.duration = original.duration - local;
+            right.audio.fade_in = 0;
             validate_clip(left, index);
             validate_clip(right, index);
             record_edit();
@@ -236,12 +239,14 @@ void TimelineModel::erase_range(
         if (leftDuration > 0) {
             auto left = clip;
             left.duration = leftDuration;
+            left.audio.fade_out = 0;
             candidate.push_back(std::move(left));
         }
         if (rightDuration > 0) {
             auto right = clip;
             right.source_in = checked_add(clip.source_in, clip.duration - rightDuration);
             right.duration = rightDuration;
+            right.audio.fade_in = 0;
             if (leftDuration > 0) {
                 if (right_remainder_id.empty()) {
                     throw std::invalid_argument("range split remainder id must not be empty");
@@ -267,6 +272,30 @@ void TimelineModel::erase_range(
     clips_ = std::move(candidate);
 }
 
+void TimelineModel::set_clips_audio(
+    const std::vector<std::string>& clip_ids,
+    ClipAudio audio) {
+    if (clip_ids.empty()) return;
+    if (!std::isfinite(audio.gain) || audio.gain < 0.0 || audio.gain > 4.0 ||
+        audio.fade_in < 0 || audio.fade_out < 0) {
+        throw std::invalid_argument("clip audio settings are invalid");
+    }
+    const std::unordered_set<std::string> uniqueIds(clip_ids.begin(), clip_ids.end());
+    if (uniqueIds.size() != clip_ids.size()) {
+        throw std::invalid_argument("clip audio selection contains duplicate ids");
+    }
+    bool changed = false;
+    for (const auto& id : uniqueIds) {
+        const auto index = index_of(id);
+        changed = changed || clips_[index].audio != audio;
+    }
+    if (!changed) return;
+    record_edit();
+    for (auto& clip : clips_) {
+        if (uniqueIds.contains(clip.id)) clip.audio = audio;
+    }
+}
+
 void TimelineModel::split_at(
     TimeNs timeline_position,
     std::string left_clip_id,
@@ -284,12 +313,15 @@ void TimelineModel::split_at(
         throw std::invalid_argument("split position must be inside a clip");
     }
 
-    Clip left{std::move(left_clip_id), original.asset_id, original.source_in, mapped->clip_time};
-    Clip right{
-        std::move(right_clip_id),
-        original.asset_id,
-        checked_add(original.source_in, mapped->clip_time),
-        original.duration - mapped->clip_time};
+    auto left = original;
+    left.id = std::move(left_clip_id);
+    left.duration = mapped->clip_time;
+    left.audio.fade_out = 0;
+    auto right = original;
+    right.id = std::move(right_clip_id);
+    right.source_in = checked_add(original.source_in, mapped->clip_time);
+    right.duration = original.duration - mapped->clip_time;
+    right.audio.fade_in = 0;
 
     validate_clip(left);
     validate_clip(right);
@@ -486,6 +518,10 @@ void TimelineModel::validate_clip(const Clip& clip, std::optional<std::size_t> r
     }
     if (!source_asset->contains_range(clip.source_in, clip.duration)) {
         throw std::invalid_argument("clip source range is outside the asset");
+    }
+    if (!std::isfinite(clip.audio.gain) || clip.audio.gain < 0.0 || clip.audio.gain > 4.0 ||
+        clip.audio.fade_in < 0 || clip.audio.fade_out < 0) {
+        throw std::invalid_argument("clip audio settings are invalid");
     }
     for (std::size_t index = 0; index < clips_.size(); ++index) {
         if (replacing.has_value() && index == replacing.value()) {

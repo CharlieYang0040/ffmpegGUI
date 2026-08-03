@@ -18,6 +18,7 @@
 #include <QtConcurrentRun>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -246,6 +247,10 @@ QVariantList EditorController::clips() const {
         value.insert("timelineInNs", static_cast<qint64>(span.timeline_in));
         value.insert("sourceInNs", static_cast<qint64>(span.clip.source_in));
         value.insert("durationNs", static_cast<qint64>(span.clip.duration));
+        value.insert("audioGain", span.clip.audio.gain);
+        value.insert("audioMuted", span.clip.audio.muted);
+        value.insert("audioFadeInNs", static_cast<qint64>(span.clip.audio.fade_in));
+        value.insert("audioFadeOutNs", static_cast<qint64>(span.clip.audio.fade_out));
         const auto* asset = timeline_.asset(span.clip.asset_id);
         value.insert("assetDurationNs", static_cast<qint64>(asset ? asset->duration() : 0));
         value.insert(
@@ -298,6 +303,40 @@ QVariantList EditorController::mediaAssets() const {
 
 qint64 EditorController::durationNs() const noexcept {
     return static_cast<qint64>(timeline_.duration());
+}
+
+int EditorController::selectedClipVolumePercent() const noexcept {
+    for (const auto& clip : timeline_.clips()) {
+        if (clip.id == selected_clip_id_.toStdString()) {
+            return static_cast<int>(std::lround(clip.audio.gain * 100.0));
+        }
+    }
+    return 100;
+}
+
+bool EditorController::selectedClipMuted() const noexcept {
+    for (const auto& clip : timeline_.clips()) {
+        if (clip.id == selected_clip_id_.toStdString()) return clip.audio.muted;
+    }
+    return false;
+}
+
+int EditorController::selectedClipFadeInMs() const noexcept {
+    for (const auto& clip : timeline_.clips()) {
+        if (clip.id == selected_clip_id_.toStdString()) {
+            return static_cast<int>(clip.audio.fade_in / 1'000'000);
+        }
+    }
+    return 0;
+}
+
+int EditorController::selectedClipFadeOutMs() const noexcept {
+    for (const auto& clip : timeline_.clips()) {
+        if (clip.id == selected_clip_id_.toStdString()) {
+            return static_cast<int>(clip.audio.fade_out / 1'000'000);
+        }
+    }
+    return 0;
 }
 
 void EditorController::attachVideoItem(QObject* item) {
@@ -667,6 +706,86 @@ void EditorController::deleteSelectedClip() {
     }
 }
 
+void EditorController::setSelectedClipVolumePercent(int percent) {
+    if (selected_clip_ids_.isEmpty()) return;
+    const auto selected = selected_clip_id_.toStdString();
+    const auto found = std::find_if(timeline_.clips().begin(), timeline_.clips().end(),
+        [&selected](const auto& clip) { return clip.id == selected; });
+    if (found == timeline_.clips().end()) return;
+    auto audio = found->audio;
+    audio.gain = static_cast<double>(std::clamp(percent, 0, 400)) / 100.0;
+    try {
+        std::vector<std::string> ids;
+        for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
+        timeline_.set_clips_audio(ids, audio);
+        emit selectedClipChanged();
+        publishTimeline();
+        setStatus(QStringLiteral("선택 클립 볼륨 · %1%").arg(percent));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::setSelectedClipMuted(bool muted) {
+    if (selected_clip_ids_.isEmpty()) return;
+    const auto selected = selected_clip_id_.toStdString();
+    const auto found = std::find_if(timeline_.clips().begin(), timeline_.clips().end(),
+        [&selected](const auto& clip) { return clip.id == selected; });
+    if (found == timeline_.clips().end()) return;
+    auto audio = found->audio;
+    audio.muted = muted;
+    try {
+        std::vector<std::string> ids;
+        for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
+        timeline_.set_clips_audio(ids, audio);
+        emit selectedClipChanged();
+        publishTimeline();
+        setStatus(muted ? "선택 클립 음소거" : "선택 클립 음소거 해제");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::setSelectedClipFadeInMs(int milliseconds) {
+    if (selected_clip_ids_.isEmpty()) return;
+    const auto selected = selected_clip_id_.toStdString();
+    const auto found = std::find_if(timeline_.clips().begin(), timeline_.clips().end(),
+        [&selected](const auto& clip) { return clip.id == selected; });
+    if (found == timeline_.clips().end()) return;
+    auto audio = found->audio;
+    audio.fade_in = static_cast<ffgui::TimeNs>(std::clamp(milliseconds, 0, 3'600'000)) * 1'000'000;
+    try {
+        std::vector<std::string> ids;
+        for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
+        timeline_.set_clips_audio(ids, audio);
+        emit selectedClipChanged();
+        publishTimeline();
+        setStatus("선택 클립 페이드 인 변경");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::setSelectedClipFadeOutMs(int milliseconds) {
+    if (selected_clip_ids_.isEmpty()) return;
+    const auto selected = selected_clip_id_.toStdString();
+    const auto found = std::find_if(timeline_.clips().begin(), timeline_.clips().end(),
+        [&selected](const auto& clip) { return clip.id == selected; });
+    if (found == timeline_.clips().end()) return;
+    auto audio = found->audio;
+    audio.fade_out = static_cast<ffgui::TimeNs>(std::clamp(milliseconds, 0, 3'600'000)) * 1'000'000;
+    try {
+        std::vector<std::string> ids;
+        for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
+        timeline_.set_clips_audio(ids, audio);
+        emit selectedClipChanged();
+        publishTimeline();
+        setStatus("선택 클립 페이드 아웃 변경");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
 void EditorController::duplicateSelectedClip() {
     if (selected_clip_ids_.isEmpty()) return;
     try {
@@ -752,7 +871,11 @@ void EditorController::saveProject(const QString& path) {
                 {"id", QString::fromStdString(clip.id)},
                 {"assetId", QString::fromStdString(clip.asset_id)},
                 {"sourceInNs", timeString(clip.source_in)},
-                {"durationNs", timeString(clip.duration)}});
+                {"durationNs", timeString(clip.duration)},
+                {"audioGain", clip.audio.gain},
+                {"audioMuted", clip.audio.muted},
+                {"audioFadeInNs", timeString(clip.audio.fade_in)},
+                {"audioFadeOutNs", timeString(clip.audio.fade_out)}});
         }
         const QJsonDocument document(QJsonObject{
             {"format", "ffmpegGUI-next"},
@@ -824,7 +947,14 @@ void EditorController::loadProject(const QString& path) {
                 object.value("id").toString().toStdString(),
                 object.value("assetId").toString().toStdString(),
                 parseTime(object.value("sourceInNs"), "sourceInNs"),
-                parseTime(object.value("durationNs"), "durationNs")});
+                parseTime(object.value("durationNs"), "durationNs"),
+                ffgui::ClipAudio{
+                    object.contains("audioGain") ? object.value("audioGain").toDouble() : 1.0,
+                    object.value("audioMuted").toBool(false),
+                    object.contains("audioFadeInNs")
+                        ? parseTime(object.value("audioFadeInNs"), "audioFadeInNs") : 0,
+                    object.contains("audioFadeOutNs")
+                        ? parseTime(object.value("audioFadeOutNs"), "audioFadeOutNs") : 0}});
         }
         loaded.clear_history();
         timeline_ = std::move(loaded);
@@ -905,7 +1035,11 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             span.clip.duration,
             asset != nullptr && !asset->audio_peaks().empty(),
             asset != nullptr ? asset->duration() : 0,
-            asset != nullptr ? asset->keyframe_pts() : std::vector<ffgui::TimeNs>{}});
+            asset != nullptr ? asset->keyframe_pts() : std::vector<ffgui::TimeNs>{},
+            span.clip.audio.gain,
+            span.clip.audio.muted,
+            span.clip.audio.fade_in,
+            span.clip.audio.fade_out});
     }
     const auto exportCache = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
         .filePath("export-jobs");

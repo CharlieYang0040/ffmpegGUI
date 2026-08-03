@@ -9,7 +9,10 @@
 #include <gst/gst.h>
 #include <gst/video/videooverlay.h>
 #include <gst/d3d11/gstd3d11.h>
+#include <gst/controller/gstinterpolationcontrolsource.h>
+#include <gst/controller/gsttimedvaluecontrolsource.h>
 
+#include <algorithm>
 #include <chrono>
 #include <limits>
 #include <stdexcept>
@@ -17,6 +20,75 @@
 
 namespace ffgui {
 namespace {
+
+std::pair<TimeNs, TimeNs> normalized_fades(const Clip& clip) {
+    auto fadeIn = std::min(clip.audio.fade_in, clip.duration);
+    auto fadeOut = std::min(clip.audio.fade_out, clip.duration);
+    const auto total = checked_add(fadeIn, fadeOut);
+    if (total > clip.duration) {
+        const auto ratio = static_cast<long double>(clip.duration) /
+                           static_cast<long double>(total);
+        fadeIn = static_cast<TimeNs>(static_cast<long double>(fadeIn) * ratio);
+        fadeOut = clip.duration - fadeIn;
+    }
+    return {fadeIn, fadeOut};
+}
+
+void add_audio_effect(GESUriClip* uri_clip, const Clip& clip) {
+    auto* effect = ges_effect_new("volume");
+    if (effect == nullptr) {
+        throw std::runtime_error("failed to create clip volume effect");
+    }
+    const auto gain = clip.audio.muted ? 0.0 : clip.audio.gain;
+    const auto [fadeIn, fadeOut] = normalized_fades(clip);
+    GValue value = G_VALUE_INIT;
+    g_value_init(&value, G_TYPE_DOUBLE);
+    g_value_set_double(&value, gain);
+    const auto volumeSet = ges_timeline_element_set_child_property(
+        GES_TIMELINE_ELEMENT(effect), "volume", &value);
+    g_value_unset(&value);
+    if (!volumeSet) {
+        gst_object_unref(effect);
+        throw std::runtime_error("failed to configure clip volume effect");
+    }
+
+    if ((fadeIn > 0 || fadeOut > 0) && gain > 0.0) {
+        auto* source = gst_interpolation_control_source_new();
+        if (source == nullptr) {
+            gst_object_unref(effect);
+            throw std::runtime_error("failed to create clip fade controller");
+        }
+        g_object_set(source, "mode", GST_INTERPOLATION_MODE_LINEAR, nullptr);
+        auto* timed = GST_TIMED_VALUE_CONTROL_SOURCE(source);
+        const auto setPoint = [timed](TimeNs time, double level) {
+            return gst_timed_value_control_source_set(
+                timed, static_cast<GstClockTime>(time), level);
+        };
+        bool pointsSet = true;
+        if (fadeIn > 0) {
+            pointsSet = setPoint(0, 0.0) && setPoint(fadeIn, gain);
+        } else {
+            pointsSet = setPoint(0, gain);
+        }
+        if (fadeOut > 0) {
+            pointsSet = pointsSet &&
+                setPoint(clip.duration - fadeOut, gain) && setPoint(clip.duration, 0.0);
+        } else {
+            pointsSet = pointsSet && setPoint(clip.duration, gain);
+        }
+        const auto bound = pointsSet && ges_track_element_set_control_source(
+            GES_TRACK_ELEMENT(effect), GST_CONTROL_SOURCE(source), "volume", "direct-absolute");
+        gst_object_unref(source);
+        if (!bound) {
+            gst_object_unref(effect);
+            throw std::runtime_error("failed to bind clip fade controller");
+        }
+    }
+    if (!ges_container_add(GES_CONTAINER(uri_clip), GES_TIMELINE_ELEMENT(effect))) {
+        gst_object_unref(effect);
+        throw std::runtime_error("failed to attach clip audio effect");
+    }
+}
 
 std::string path_to_utf8(const std::filesystem::path& path) {
     const auto value = path.u8string();
@@ -352,6 +424,9 @@ void GesSequencePlayer::rebuild_pipeline_locked(const std::vector<TimelineSpan>&
                 ges_timeline_element_set_start(element, span.timeline_in) &&
                 ges_timeline_element_set_inpoint(element, span.clip.source_in) &&
                 ges_timeline_element_set_duration(element, span.clip.duration);
+            if (configured && span.clip.audio != ClipAudio{}) {
+                add_audio_effect(uri_clip, span.clip);
+            }
             if (!configured || !ges_layer_add_clip(layer, GES_CLIP(uri_clip))) {
                 gst_object_unref(uri_clip);
                 throw std::runtime_error("failed to configure GES clip");

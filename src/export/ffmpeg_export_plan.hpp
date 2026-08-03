@@ -25,6 +25,10 @@ struct ExportClipInput final {
     bool has_audio{};
     TimeNs asset_duration{};
     std::vector<TimeNs> keyframe_pts;
+    double audio_gain{1.0};
+    bool audio_muted{};
+    TimeNs audio_fade_in{};
+    TimeNs audio_fade_out{};
 };
 
 struct ExportRequest final {
