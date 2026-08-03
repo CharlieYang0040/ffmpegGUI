@@ -158,6 +158,12 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         controller.undo();
+        QEventLoop previewRefreshLoop;
+        QTimer::singleShot(100, &previewRefreshLoop, &QEventLoop::quit);
+        previewRefreshLoop.exec();
+        if (controller.previewRebuildCount() == 0 || controller.previewRebuildCount() > 2) {
+            return EXIT_FAILURE;
+        }
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);

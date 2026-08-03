@@ -12,6 +12,7 @@
 #include <QHash>
 #include <QProcess>
 #include <QStringList>
+#include <QTimer>
 #include <QVariantList>
 #include <QUrl>
 #include <QWindow>
@@ -75,6 +76,9 @@ public:
         return video_frames_delivered_;
     }
     [[nodiscard]] std::uint64_t videoFramesReceived() const noexcept;
+    [[nodiscard]] std::uint64_t previewRebuildCount() const noexcept {
+        return preview_rebuild_count_;
+    }
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);
 
@@ -134,10 +138,14 @@ private:
     void finishExport(bool success);
     [[nodiscard]] std::string makeUniqueClipId(const std::string& prefix);
     void setSingleSelection(QString clipId);
+    bool applyPreviewTimeline(bool restorePosition);
 
     ffgui::TimelineModel timeline_;
     std::vector<ffgui::TimelineSpan> preview_snapshot_;
     std::uint64_t preview_revision_{};
+    std::uint64_t preview_generation_{};
+    std::optional<std::uint64_t> preview_applied_generation_;
+    std::uint64_t preview_rebuild_count_{};
     std::uint64_t video_frames_presented_{};
     std::uint64_t video_frames_delivered_{};
     qint64 playhead_ns_{};
@@ -153,6 +161,7 @@ private:
     bool use_d3d_scene_graph_{};
     bool importing_{};
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
+    QTimer preview_update_timer_;
     QHash<QString, QString> thumbnail_atlases_;
     QProcess export_process_;
     std::optional<ffgui::ExportRequest> export_request_;

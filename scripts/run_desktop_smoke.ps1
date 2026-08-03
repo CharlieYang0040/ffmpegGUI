@@ -114,6 +114,14 @@ if ($copyDuration -lt 2.9 -or $copyDuration -gt 3.2) {
 }
 Write-Output "Stream-copy passed: two keyframe-aligned cuts were remuxed without re-encoding"
 
+$playback = Start-Process -FilePath $application `
+    -ArgumentList @("--playback-smoke", $clipA, $clipB, $clipVfr) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($playback.ExitCode -ne 0) {
+    throw "deferred preview rebuild playback failed with code $($playback.ExitCode)"
+}
+Write-Output "Preview refresh passed: deferred rebuild was ready before sequence playback"
+
 $process = Start-Process -FilePath $application `
     -ArgumentList @($clipA, $clipB, $clipVfr) `
     -WindowStyle Hidden -PassThru

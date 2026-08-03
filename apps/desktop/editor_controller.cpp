@@ -203,6 +203,11 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             Qt::QueuedConnection);
     });
 #endif
+    preview_update_timer_.setSingleShot(true);
+    preview_update_timer_.setInterval(50);
+    connect(&preview_update_timer_, &QTimer::timeout, this, [this] {
+        static_cast<void>(applyPreviewTimeline(true));
+    });
 }
 
 void EditorController::setVideoWindow(QWindow* window) {
@@ -308,7 +313,8 @@ void EditorController::attachVideoItem(QObject* item) {
 #ifdef FFGUI_HAS_GES
     connect(videoItem, &D3D11VideoItem::d3d11DeviceReady, this, [this](quintptr device) {
         player_->set_d3d11_device(reinterpret_cast<void*>(device));
-        if (!preview_snapshot_.empty()) player_->set_timeline(preview_snapshot_);
+        preview_applied_generation_.reset();
+        if (!preview_snapshot_.empty()) static_cast<void>(applyPreviewTimeline(true));
     });
     if (videoItem->devicePointer() != 0) {
         player_->set_d3d11_device(reinterpret_cast<void*>(videoItem->devicePointer()));
@@ -384,6 +390,7 @@ void EditorController::seek(qint64 timelinePosition) {
     emit playheadChanged();
 #ifdef FFGUI_HAS_GES
     try {
+        if (!applyPreviewTimeline(false)) return;
         player_->seek(playhead_ns_);
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -397,6 +404,7 @@ void EditorController::togglePlayback() {
         if (playing_) {
             player_->pause();
         } else {
+            if (!applyPreviewTimeline(true)) return;
             if (playhead_ns_ >= durationNs()) {
                 seek(0);
             }
@@ -934,15 +942,38 @@ void EditorController::finishExport(bool success) {
     export_request_.reset();
 }
 
+bool EditorController::applyPreviewTimeline(bool restorePosition) {
+#ifdef FFGUI_HAS_GES
+    if (preview_applied_generation_.has_value() &&
+        preview_applied_generation_.value() == preview_generation_) {
+        return true;
+    }
+    preview_update_timer_.stop();
+    try {
+        player_->set_timeline(preview_snapshot_);
+        preview_applied_generation_ = preview_generation_;
+        ++preview_rebuild_count_;
+        if (restorePosition && playhead_ns_ > 0 && playhead_ns_ < durationNs()) {
+            player_->seek(playhead_ns_);
+        }
+        setStatus(timeline_.clips().empty() ? "미디어를 추가하세요" : "재생 준비 완료");
+        return true;
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+        return false;
+    }
+#else
+    static_cast<void>(restorePosition);
+    return true;
+#endif
+}
+
 void EditorController::publishTimeline(bool resetPlayhead) {
-    QString playbackError;
 #ifdef FFGUI_HAS_GES
     try {
-        if (playing_) {
-            player_->stop();
-        }
+        if (playing_) player_->stop();
     } catch (const std::exception& error) {
-        playbackError = QString::fromUtf8(error.what());
+        setStatus(QString::fromUtf8(error.what()));
     }
 #endif
     if (resetPlayhead) {
@@ -950,29 +981,19 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     } else {
         playhead_ns_ = std::clamp<qint64>(playhead_ns_, 0, durationNs());
     }
-#ifdef FFGUI_HAS_GES
     preview_snapshot_ = timeline_.snapshot();
     preview_revision_ = timeline_.revision();
-    try {
-        player_->set_timeline(preview_snapshot_);
-        if (playhead_ns_ > 0 && playhead_ns_ < durationNs()) {
-            player_->seek(playhead_ns_);
-        }
-    } catch (const std::exception& error) {
-        playbackError = QString::fromUtf8(error.what());
-    }
-#endif
-#ifndef FFGUI_HAS_GES
-    preview_snapshot_ = timeline_.snapshot();
-    preview_revision_ = timeline_.revision();
-#endif
+    ++preview_generation_;
     emit timelineChanged();
     emit playheadChanged();
     emit selectedClipChanged();
     emit historyChanged();
-    setStatus(!playbackError.isEmpty()
-        ? playbackError
-        : (timeline_.clips().empty() ? "미디어를 추가하세요" : "재생 준비 완료"));
+#ifdef FFGUI_HAS_GES
+    preview_update_timer_.start();
+    setStatus(timeline_.clips().empty() ? "미디어를 추가하세요" : "미리보기 갱신 중");
+#else
+    setStatus(timeline_.clips().empty() ? "미디어를 추가하세요" : "재생 준비 완료");
+#endif
 }
 
 void EditorController::setStatus(QString status) {
