@@ -20,6 +20,7 @@ add_library(ffgui_core STATIC
     src/core/ffprobe_parser.cpp
     src/core/media_asset.cpp
     src/core/timeline_model.cpp
+    src/export/ffmpeg_export_plan.cpp
 )
 add_library(ffgui::core ALIAS ffgui_core)
 

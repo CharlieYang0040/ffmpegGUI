@@ -1,6 +1,7 @@
 #include "core/media_asset.hpp"
 #include "core/ffprobe_parser.hpp"
 #include "core/timeline_model.hpp"
+#include "export/ffmpeg_export_plan.hpp"
 
 #include <exception>
 #include <filesystem>
@@ -167,6 +168,45 @@ void test_ffprobe_timestamp_parser_preserves_vfr() {
     require(ffgui::estimated_media_end(pts) == 500'000'000, "last frame duration estimate");
 }
 
+void test_ffmpeg_export_plan_preserves_clip_ranges_and_audio() {
+    const auto plan = ffgui::compile_ffmpeg_export(ffgui::ExportRequest{
+        {
+            {std::filesystem::path{"A.mp4"}, 1'234'567'890, seconds(2), true},
+            {std::filesystem::path{"B.mkv"}, seconds(4), 500'000'000, false},
+        },
+        std::filesystem::path{"result.mp4"},
+        ffgui::ExportVideoEncoder::h264_nvenc});
+    require(plan.duration == 2'500'000'000, "export duration must sum magnetic clips");
+    const auto joined = [&] {
+        std::string value;
+        for (const auto& argument : plan.arguments) value += argument + '\n';
+        return value;
+    }();
+    require(joined.contains("1.234567890"), "source in must retain nanosecond precision");
+    require(joined.contains("0.500000000"), "sub-second clip duration must remain exact");
+    require(joined.contains("[0:a:0]aresample=48000"), "audio source must be normalized");
+    require(joined.contains("apad=whole_dur=2.000000000,atrim=duration=2.000000000"),
+            "short source audio must be padded and clipped to the shot duration");
+    require(joined.contains("anullsrc=r=48000:cl=stereo:d=0.500000000"),
+            "silent clips must receive matching audio");
+    require(joined.contains("concat=n=2:v=1:a=1"), "all clips must share one concat graph");
+    require(joined.contains("h264_nvenc"), "requested GPU encoder must be selected");
+}
+
+void test_ffmpeg_export_plan_rejects_invalid_requests() {
+    require_throws<std::invalid_argument>(
+        [] { static_cast<void>(ffgui::compile_ffmpeg_export(ffgui::ExportRequest{})); },
+        "empty export must fail");
+    require_throws<std::invalid_argument>(
+        [] {
+            static_cast<void>(ffgui::compile_ffmpeg_export(ffgui::ExportRequest{
+                {{std::filesystem::path{"A.mp4"}, 0, 0, true}},
+                std::filesystem::path{"out.mp4"},
+                ffgui::ExportVideoEncoder::libx264}));
+        },
+        "zero-duration export clip must fail");
+}
+
 }  // namespace
 
 int main() {
@@ -179,6 +219,8 @@ int main() {
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"ffprobe_timestamp_parser_preserves_vfr", test_ffprobe_timestamp_parser_preserves_vfr},
+        {"ffmpeg_export_plan_preserves_clip_ranges_and_audio", test_ffmpeg_export_plan_preserves_clip_ranges_and_audio},
+        {"ffmpeg_export_plan_rejects_invalid_requests", test_ffmpeg_export_plan_rejects_invalid_requests},
     };
 
     int failed = 0;

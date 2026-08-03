@@ -47,6 +47,7 @@ int main(int argc, char* argv[]) {
 
     QStringList mediaFiles;
     QString roundtripProject;
+    QString exportSmokeOutput;
     bool playbackSmoke = false;
     const auto arguments = application.arguments();
     for (int index = 1; index < arguments.size(); ++index) {
@@ -56,6 +57,10 @@ int main(int argc, char* argv[]) {
         }
         if (arguments[index] == "--playback-smoke") {
             playbackSmoke = true;
+            continue;
+        }
+        if (arguments[index] == "--export-smoke" && index + 1 < arguments.size()) {
+            exportSmokeOutput = arguments[++index];
             continue;
         }
         mediaFiles.push_back(arguments[index]);
@@ -72,7 +77,8 @@ int main(int argc, char* argv[]) {
     if (!mediaFiles.isEmpty()) {
         controller.loadFiles(mediaFiles);
     }
-    if ((!roundtripProject.isEmpty() || playbackSmoke) && controller.importing()) {
+    if ((!roundtripProject.isEmpty() || !exportSmokeOutput.isEmpty() || playbackSmoke) &&
+        controller.importing()) {
         QEventLoop importLoop;
         QTimer importTimeout;
         importTimeout.setSingleShot(true);
@@ -93,6 +99,27 @@ int main(int argc, char* argv[]) {
         }
         controller.loadProject(roundtripProject);
         return controller.durationNs() == expectedDuration && expectedDuration > 0
+            ? EXIT_SUCCESS
+            : EXIT_FAILURE;
+    }
+    if (!exportSmokeOutput.isEmpty()) {
+        bool exportSucceeded = false;
+        QEventLoop exportLoop;
+        QTimer exportTimeout;
+        exportTimeout.setSingleShot(true);
+        QObject::connect(
+            &controller,
+            &EditorController::exportFinished,
+            &exportLoop,
+            [&exportSucceeded, &exportLoop](bool success, const QUrl&) {
+                exportSucceeded = success;
+                exportLoop.quit();
+            });
+        QObject::connect(&exportTimeout, &QTimer::timeout, &exportLoop, &QEventLoop::quit);
+        controller.exportTimelineUrl(QUrl::fromLocalFile(exportSmokeOutput));
+        exportTimeout.start(120'000);
+        exportLoop.exec();
+        return exportSucceeded && QFileInfo(exportSmokeOutput).isFile()
             ? EXIT_SUCCESS
             : EXIT_FAILURE;
     }

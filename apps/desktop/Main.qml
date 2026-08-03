@@ -47,6 +47,37 @@ ApplicationWindow {
         nameFilters: ["ffmpegGUI Next 프로젝트 (*.ffnext)"]
         onAccepted: EditorController.saveProjectUrl(selectedFile)
     }
+    FileDialog {
+        id: exportDialog
+        title: "영상 내보내기"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "mp4"
+        nameFilters: ["MP4 영상 (*.mp4)"]
+        onAccepted: {
+            if (EditorController.outputExists(selectedFile)) {
+                overwriteDialog.suggestedUrl = EditorController.uniqueOutputUrl(selectedFile)
+                overwriteDialog.open()
+            } else {
+                EditorController.exportTimelineUrl(selectedFile)
+            }
+        }
+    }
+    Dialog {
+        id: overwriteDialog
+        property url suggestedUrl
+        anchors.centerIn: parent
+        modal: true
+        title: "같은 이름의 파일이 있습니다"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onAccepted: EditorController.exportTimelineUrl(suggestedUrl)
+
+        Label {
+            width: 420
+            wrapMode: Text.WordWrap
+            text: "기존 파일은 유지하고 새 번호를 붙여 저장합니다.\n\n"
+                  + suggestedUrl.toString().split('/').pop()
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -71,7 +102,11 @@ ApplicationWindow {
                     onClicked: saveProjectDialog.open()
                 }
                 Item { Layout.fillWidth: true }
-                Button { text: "내보내기"; enabled: false }
+                Button {
+                    text: EditorController.exporting ? "내보내는 중…" : "내보내기"
+                    enabled: EditorController.durationNs > 0 && !EditorController.exporting
+                    onClicked: exportDialog.open()
+                }
             }
         }
 
@@ -100,7 +135,35 @@ ApplicationWindow {
                 SplitView.preferredWidth: 320
                 SplitView.minimumWidth: 280
                 SplitView.maximumWidth: 380
-                Label { anchors.centerIn: parent; text: "출력"; color: "#8994a3" }
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 20
+                    spacing: 12
+                    Label { text: "출력"; font.pixelSize: 18; font.bold: true }
+                    Label { text: "H.264 · MP4"; color: "#8994a3" }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: "NVENC를 먼저 사용하고, 지원되지 않으면 CPU로 자동 전환합니다."
+                        color: "#8994a3"
+                    }
+                    ProgressBar {
+                        Layout.fillWidth: true
+                        visible: EditorController.exporting
+                        from: 0
+                        to: 1
+                        value: EditorController.exportProgress
+                    }
+                    Button {
+                        Layout.fillWidth: true
+                        text: EditorController.exporting ? "취소" : "영상 내보내기"
+                        enabled: EditorController.exporting || EditorController.durationNs > 0
+                        onClicked: EditorController.exporting
+                            ? EditorController.cancelExport()
+                            : exportDialog.open()
+                    }
+                    Item { Layout.fillHeight: true }
+                }
             }
         }
 

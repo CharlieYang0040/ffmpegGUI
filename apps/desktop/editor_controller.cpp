@@ -3,12 +3,14 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
 #include <QJSEngine>
 #include <QSaveFile>
+#include <QRegularExpression>
 #include <QtConcurrentRun>
 
 #include <algorithm>
@@ -16,6 +18,13 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -81,6 +90,58 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             emit importingChanged();
             emit mediaImportFinished(success);
         });
+    export_process_.setProcessChannelMode(QProcess::SeparateChannels);
+#ifdef Q_OS_WIN
+    export_process_.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
+        args->flags |= CREATE_NO_WINDOW;
+    });
+#endif
+    connect(&export_process_, &QProcess::readyReadStandardError, this, [this] {
+        export_stderr_.append(export_process_.readAllStandardError());
+        if (export_stderr_.size() > 65'536) {
+            export_stderr_ = export_stderr_.right(65'536);
+        }
+        static const QRegularExpression progressExpression(
+            QStringLiteral("(?:^|\\n)out_time_us=(\\d+)"));
+        auto matches = progressExpression.globalMatch(QString::fromUtf8(export_stderr_));
+        qint64 latestMicroseconds = -1;
+        while (matches.hasNext()) {
+            latestMicroseconds = matches.next().captured(1).toLongLong();
+        }
+        if (latestMicroseconds >= 0 && export_request_.has_value()) {
+            const auto duration = std::max<ffgui::TimeNs>(1, export_duration_ns_);
+            const auto next = std::clamp(
+                static_cast<qreal>(latestMicroseconds * 1'000.0 / duration), 0.0, 0.99);
+            if (!qFuzzyCompare(export_progress_, next)) {
+                export_progress_ = next;
+                emit exportProgressChanged();
+            }
+        }
+    });
+    connect(
+        &export_process_,
+        qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+        this,
+        [this](int exitCode, QProcess::ExitStatus status) {
+            if (!exporting_) return;
+            if (!export_cancelled_ && status == QProcess::NormalExit && exitCode == 0) {
+                finishExport(true);
+                return;
+            }
+            if (!export_cancelled_ && !export_cpu_fallback_) {
+                export_cpu_fallback_ = true;
+                QFile::remove(QString::fromStdWString(export_request_->output_path.wstring()));
+                setStatus("NVENC를 사용할 수 없어 CPU 인코딩으로 다시 시도합니다");
+                startExportProcess(ffgui::ExportVideoEncoder::libx264);
+                return;
+            }
+            finishExport(false);
+        });
+    connect(&export_process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (exporting_ && error == QProcess::FailedToStart) {
+            finishExport(false);
+        }
+    });
 #ifdef FFGUI_HAS_GES
     player_ = std::make_unique<ffgui::GesSequencePlayer>("d3d11videosink", "wasapi2sink");
     player_->set_position_callback([this](ffgui::TimeNs position) {
@@ -117,7 +178,12 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
 #endif
 }
 
-EditorController::~EditorController() = default;
+EditorController::~EditorController() {
+    if (export_process_.state() != QProcess::NotRunning) {
+        export_process_.kill();
+        export_process_.waitForFinished(3'000);
+    }
+}
 
 QVariantList EditorController::clips() const {
     QVariantList result;
@@ -474,6 +540,121 @@ void EditorController::loadProjectUrl(const QUrl& url) {
     } else {
         setStatus("로컬 프로젝트 경로만 열 수 있습니다");
     }
+}
+
+bool EditorController::outputExists(const QUrl& url) const {
+    return url.isLocalFile() && QFileInfo::exists(url.toLocalFile());
+}
+
+QUrl EditorController::uniqueOutputUrl(const QUrl& url) const {
+    if (!url.isLocalFile()) return {};
+    const QFileInfo info(url.toLocalFile());
+    if (!info.exists()) return url;
+    const auto directory = info.absoluteDir();
+    const auto base = info.completeBaseName();
+    const auto suffix = info.suffix().isEmpty() ? QStringLiteral("mp4") : info.suffix();
+    for (int number = 1; number < 10'000; ++number) {
+        const auto candidate = directory.filePath(
+            QStringLiteral("%1_%2.%3").arg(base).arg(number, 3, 10, QLatin1Char('0')).arg(suffix));
+        if (!QFileInfo::exists(candidate)) return QUrl::fromLocalFile(candidate);
+    }
+    return {};
+}
+
+void EditorController::exportTimelineUrl(const QUrl& url) {
+    if (exporting_) {
+        setStatus("이미 내보내는 중입니다");
+        return;
+    }
+    if (!url.isLocalFile() || timeline_.clips().empty()) {
+        setStatus("내보낼 타임라인과 로컬 출력 경로가 필요합니다");
+        return;
+    }
+    auto output = QFileInfo(url.toLocalFile()).absoluteFilePath();
+    if (QFileInfo(output).suffix().isEmpty()) output += ".mp4";
+    if (QFileInfo::exists(output)) {
+        setStatus("기존 파일을 덮어쓰지 않습니다. 새 이름을 선택하세요");
+        return;
+    }
+
+    ffgui::ExportRequest request;
+    request.output_path = std::filesystem::path(output.toStdWString());
+    for (const auto& span : timeline_.snapshot()) {
+        const auto* asset = timeline_.asset(span.clip.asset_id);
+        request.clips.push_back(ffgui::ExportClipInput{
+            span.source_path,
+            span.clip.source_in,
+            span.clip.duration,
+            asset != nullptr && !asset->audio_peaks().empty()});
+    }
+    export_request_ = std::move(request);
+    export_cpu_fallback_ = false;
+    export_cancelled_ = false;
+    export_progress_ = 0;
+    exporting_ = true;
+    emit exportProgressChanged();
+    emit exportingChanged();
+#ifdef FFGUI_HAS_GES
+    if (playing_) player_->pause();
+#endif
+    startExportProcess(ffgui::ExportVideoEncoder::h264_nvenc);
+}
+
+void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
+    try {
+        export_request_->video_encoder = encoder;
+        const auto plan = ffgui::compile_ffmpeg_export(*export_request_);
+        export_duration_ns_ = plan.duration;
+        QStringList arguments;
+        arguments.reserve(static_cast<qsizetype>(plan.arguments.size()));
+        for (const auto& argument : plan.arguments) {
+            arguments.push_back(QString::fromUtf8(argument.data(), static_cast<qsizetype>(argument.size())));
+        }
+        export_stderr_.clear();
+        export_process_.setProgram(ffgui::locate_ffmpeg());
+        export_process_.setArguments(arguments);
+        setStatus(encoder == ffgui::ExportVideoEncoder::h264_nvenc
+            ? "내보내는 중 · NVENC"
+            : "내보내는 중 · CPU");
+        export_process_.start();
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+        finishExport(false);
+    }
+}
+
+void EditorController::cancelExport() {
+    if (!exporting_) return;
+    export_cancelled_ = true;
+    setStatus("내보내기를 취소하는 중입니다");
+    export_process_.kill();
+}
+
+void EditorController::finishExport(bool success) {
+    if (!exporting_) return;
+    const auto output = export_request_.has_value()
+        ? QString::fromStdWString(export_request_->output_path.wstring())
+        : QString{};
+    if (success) {
+        export_progress_ = 1;
+        setStatus(QStringLiteral("내보내기 완료 · %1").arg(QFileInfo(output).fileName()));
+    } else {
+        QFile::remove(output);
+        if (export_cancelled_) {
+            setStatus("내보내기가 취소되었습니다");
+        } else {
+            const auto lines = QString::fromUtf8(export_stderr_).trimmed().split('\n');
+            const auto detail = lines.isEmpty() ? QString{} : lines.back().trimmed();
+            setStatus(detail.isEmpty()
+                ? QStringLiteral("내보내기에 실패했습니다")
+                : QStringLiteral("내보내기 실패 · %1").arg(detail));
+        }
+    }
+    exporting_ = false;
+    emit exportProgressChanged();
+    emit exportingChanged();
+    emit exportFinished(success, QUrl::fromLocalFile(output));
+    export_request_.reset();
 }
 
 void EditorController::publishTimeline(bool resetPlayhead) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/timeline_model.hpp"
+#include "export/ffmpeg_export_plan.hpp"
 
 #ifdef FFGUI_HAS_GES
 #include "integration/ges/ges_sequence_player.hpp"
@@ -9,6 +10,7 @@
 #include <QObject>
 #include <QFutureWatcher>
 #include <QHash>
+#include <QProcess>
 #include <QStringList>
 #include <QVariantList>
 #include <QWindow>
@@ -16,6 +18,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <memory>
+#include <optional>
 
 class QQmlEngine;
 class QJSEngine;
@@ -34,6 +37,8 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(QWindow* videoWindow READ videoWindow CONSTANT)
     Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
+    Q_PROPERTY(bool exporting READ exporting NOTIFY exportingChanged)
+    Q_PROPERTY(qreal exportProgress READ exportProgress NOTIFY exportProgressChanged)
 
 public:
     explicit EditorController(QObject* parent);
@@ -49,6 +54,8 @@ public:
     [[nodiscard]] bool canRedo() const noexcept { return timeline_.can_redo(); }
     [[nodiscard]] QWindow* videoWindow() const noexcept { return video_window_; }
     [[nodiscard]] bool importing() const noexcept { return importing_; }
+    [[nodiscard]] bool exporting() const noexcept { return exporting_; }
+    [[nodiscard]] qreal exportProgress() const noexcept { return export_progress_; }
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);
 
@@ -71,6 +78,10 @@ public slots:
     void loadUrls(const QList<QUrl>& urls);
     void saveProjectUrl(const QUrl& url);
     void loadProjectUrl(const QUrl& url);
+    void exportTimelineUrl(const QUrl& url);
+    void cancelExport();
+    [[nodiscard]] bool outputExists(const QUrl& url) const;
+    [[nodiscard]] QUrl uniqueOutputUrl(const QUrl& url) const;
 
 signals:
     void timelineChanged();
@@ -81,6 +92,9 @@ signals:
     void historyChanged();
     void importingChanged();
     void mediaImportFinished(bool success);
+    void exportingChanged();
+    void exportProgressChanged();
+    void exportFinished(bool success, QUrl outputUrl);
 
 private:
     struct PendingImport final {
@@ -91,6 +105,8 @@ private:
 
     void publishTimeline(bool resetPlayhead = false);
     void setStatus(QString status);
+    void startExportProcess(ffgui::ExportVideoEncoder encoder);
+    void finishExport(bool success);
 
     ffgui::TimelineModel timeline_;
     qint64 playhead_ns_{};
@@ -103,6 +119,14 @@ private:
     bool importing_{};
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
     QHash<QString, QString> thumbnail_atlases_;
+    QProcess export_process_;
+    std::optional<ffgui::ExportRequest> export_request_;
+    QByteArray export_stderr_;
+    bool exporting_{};
+    bool export_cpu_fallback_{};
+    bool export_cancelled_{};
+    qreal export_progress_{};
+    ffgui::TimeNs export_duration_ns_{};
     static EditorController* singleton_instance_;
 #ifdef FFGUI_HAS_GES
     std::unique_ptr<ffgui::GesSequencePlayer> player_;

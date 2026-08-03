@@ -14,6 +14,7 @@ $clipA = Join-Path $mediaDir "shot-a.mp4"
 $clipB = Join-Path $mediaDir "shot-b.mkv"
 $clipVfr = Join-Path $mediaDir "shot-vfr.mkv"
 $roundtripProject = Join-Path $mediaDir "roundtrip.ffnext"
+$exportOutput = Join-Path $mediaDir "export-smoke.mp4"
 
 foreach ($required in @($application, $clipA, $clipB, $clipVfr)) {
     if (-not (Test-Path -LiteralPath $required)) {
@@ -44,6 +45,28 @@ foreach ($asset in $savedProject.assets) {
     }
 }
 Write-Output "Thumbnail atlas passed: all imported media have cached timeline images"
+
+if (Test-Path -LiteralPath $exportOutput -PathType Leaf) {
+    Remove-Item -LiteralPath $exportOutput -Force
+}
+$export = Start-Process -FilePath $application `
+    -ArgumentList @("--export-smoke", $exportOutput, $clipA, $clipB, $clipVfr) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($export.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $exportOutput -PathType Leaf)) {
+    throw "edited timeline export failed"
+}
+$probe = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
+    -v error -show_entries format=duration -of default=nw=1:nk=1 $exportOutput
+$exportDuration = [double]::Parse($probe, [Globalization.CultureInfo]::InvariantCulture)
+if ($exportDuration -lt 6.0 -or $exportDuration -gt 6.4) {
+    throw "exported timeline duration is outside the expected range: $exportDuration"
+}
+$streams = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
+    -v error -show_entries stream=codec_type -of csv=p=0 $exportOutput
+if ($streams -notcontains "video" -or $streams -notcontains "audio") {
+    throw "exported timeline must contain both video and audio streams"
+}
+Write-Output "Timeline export passed: NVENC/CPU pipeline produced a $exportDuration second MP4"
 
 $process = Start-Process -FilePath $application `
     -ArgumentList @($clipA, $clipB, $clipVfr) `
