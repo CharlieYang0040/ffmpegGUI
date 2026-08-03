@@ -29,6 +29,7 @@ void TimelineModel::insert_clip(std::size_t index, Clip clip) {
         throw std::out_of_range("clip insertion index is outside the timeline");
     }
     validate_clip(clip);
+    record_edit();
     clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), std::move(clip));
 }
 
@@ -38,17 +39,17 @@ void TimelineModel::trim_clip(const std::string& clip_id, TimeNs source_in, Time
     replacement.source_in = source_in;
     replacement.duration = range_duration;
     validate_clip(replacement, index);
+    record_edit();
     clips_[index] = std::move(replacement);
 }
 
 void TimelineModel::move_clip(const std::string& clip_id, std::size_t insertion_index) {
     const auto old_index = index_of(clip_id);
     if (insertion_index >= clips_.size()) {
-        if (insertion_index != clips_.size() - 1) {
-            throw std::out_of_range("clip move index is outside the remaining timeline");
-        }
+        throw std::out_of_range("clip move index is outside the remaining timeline");
     }
 
+    record_edit();
     Clip moving = std::move(clips_[old_index]);
     clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(old_index));
     if (insertion_index > clips_.size()) {
@@ -61,6 +62,7 @@ void TimelineModel::move_clip(const std::string& clip_id, std::size_t insertion_
 
 void TimelineModel::erase_clip(const std::string& clip_id) {
     const auto index = index_of(clip_id);
+    record_edit();
     clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(index));
 }
 
@@ -88,19 +90,41 @@ void TimelineModel::split_at(
         checked_add(original.source_in, mapped->clip_time),
         original.duration - mapped->clip_time};
 
-    clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(index));
-    try {
-        validate_clip(left);
-        clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), left);
-        validate_clip(right);
-        clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index + 1), right);
-    } catch (...) {
-        if (index < clips_.size() && clips_[index].id == left.id) {
-            clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(index));
-        }
-        clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), original);
-        throw;
+    validate_clip(left);
+    validate_clip(right);
+    record_edit();
+    clips_[index] = std::move(left);
+    clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index + 1), std::move(right));
+}
+
+bool TimelineModel::undo() {
+    if (undo_stack_.empty()) {
+        return false;
     }
+    redo_stack_.push_back(std::move(clips_));
+    clips_ = std::move(undo_stack_.back());
+    undo_stack_.pop_back();
+    return true;
+}
+
+bool TimelineModel::redo() {
+    if (redo_stack_.empty()) {
+        return false;
+    }
+    undo_stack_.push_back(std::move(clips_));
+    clips_ = std::move(redo_stack_.back());
+    redo_stack_.pop_back();
+    return true;
+}
+
+void TimelineModel::clear_history() noexcept {
+    undo_stack_.clear();
+    redo_stack_.clear();
+}
+
+void TimelineModel::record_edit() {
+    undo_stack_.push_back(clips_);
+    redo_stack_.clear();
 }
 
 std::vector<TimelineSpan> TimelineModel::snapshot() const {
@@ -109,7 +133,11 @@ std::vector<TimelineSpan> TimelineModel::snapshot() const {
     TimeNs cursor = 0;
     for (const auto& clip : clips_) {
         const auto end = checked_add(cursor, clip.duration);
-        spans.push_back(TimelineSpan{clip, cursor, end});
+        const auto* source_asset = asset(clip.asset_id);
+        if (source_asset == nullptr) {
+            throw std::logic_error("timeline references a missing asset: " + clip.asset_id);
+        }
+        spans.push_back(TimelineSpan{clip, source_asset->path(), cursor, end});
         cursor = end;
     }
     return spans;

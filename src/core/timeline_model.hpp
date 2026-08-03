@@ -21,6 +21,7 @@ struct Clip final {
 
 struct TimelineSpan final {
     Clip clip;
+    std::filesystem::path source_path;
     TimeNs timeline_in{};
     TimeNs timeline_out{};
 };
@@ -38,6 +39,9 @@ class TimelineModel final {
 public:
     void add_asset(MediaAsset asset);
     [[nodiscard]] const MediaAsset* asset(const std::string& asset_id) const noexcept;
+    [[nodiscard]] const std::unordered_map<std::string, MediaAsset>& assets() const noexcept {
+        return assets_;
+    }
 
     void append_clip(Clip clip);
     void insert_clip(std::size_t index, Clip clip);
@@ -48,6 +52,11 @@ public:
         TimeNs timeline_position,
         std::string left_clip_id,
         std::string right_clip_id);
+    [[nodiscard]] bool can_undo() const noexcept { return !undo_stack_.empty(); }
+    [[nodiscard]] bool can_redo() const noexcept { return !redo_stack_.empty(); }
+    bool undo();
+    bool redo();
+    void clear_history() noexcept;
 
     [[nodiscard]] const std::vector<Clip>& clips() const noexcept { return clips_; }
     [[nodiscard]] std::vector<TimelineSpan> snapshot() const;
@@ -60,9 +69,12 @@ public:
 private:
     [[nodiscard]] std::size_t index_of(const std::string& clip_id) const;
     void validate_clip(const Clip& clip, std::optional<std::size_t> replacing = std::nullopt) const;
+    void record_edit();
 
     std::unordered_map<std::string, MediaAsset> assets_;
     std::vector<Clip> clips_;
+    std::vector<std::vector<Clip>> undo_stack_;
+    std::vector<std::vector<Clip>> redo_stack_;
 };
 
 }  // namespace ffgui

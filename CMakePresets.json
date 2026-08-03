@@ -14,7 +14,14 @@
       "binaryDir": "${sourceDir}/out/build/windows-msvc",
       "cacheVariables": {
         "BUILD_TESTING": "ON",
-        "FFGUI_BUILD_DESKTOP": "ON"
+        "FFGUI_BUILD_DESKTOP": "ON",
+        "FFGUI_ENABLE_GES": "ON",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/.tools/Qt/6.10.2/msvc2022_64",
+        "PKG_CONFIG_EXECUTABLE": "${sourceDir}/.tools/gstreamer/bin/pkg-config.exe"
+      },
+      "environment": {
+        "PATH": "${sourceDir}/.tools/gstreamer/bin;$penv{PATH}",
+        "PKG_CONFIG_PATH": "${sourceDir}/.tools/gstreamer/lib/pkgconfig"
       }
     }
   ],

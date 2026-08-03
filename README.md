@@ -15,22 +15,32 @@ Windows용 네이티브 마그네틱 컷 편집기입니다. 기존 Python `ffmp
 ## 기술 기준선
 
 - C++23 / CMake / MSVC x64
-- Qt Quick 6.8 이상
-- GStreamer Editing Services 1.28.x
-- FFmpeg 8.x
+- Qt Quick 6.10.2
+- GStreamer Editing Services 1.28.5
+- FFmpeg 8.1.2
 
-Qt와 GStreamer가 없어도 편집 코어와 테스트는 빌드할 수 있습니다.
+Qt와 GStreamer가 없어도 편집 코어와 테스트는 빌드할 수 있습니다. Windows 로컬
+개발 의존성은 저장소 밖 시스템 경로를 바꾸지 않고 `.tools`에 설치합니다.
 
 ## 빌드
 
+Visual Studio 2022 Build Tools, CMake 3.28 이상, Python 3가 필요합니다. Qt,
+GStreamer, FFmpeg는 준비 스크립트가 프로젝트 로컬 경로에 설치합니다.
+
 ```powershell
+.\scripts\bootstrap_windows.ps1
 cmake --preset windows-msvc
 cmake --build --preset windows-debug
 ctest --preset windows-debug
+.\scripts\run_ges_smoke.ps1
+.\out\build\windows-msvc\Debug\ffgui_core_benchmark.exe
+.\scripts\run_desktop_smoke.ps1
 ```
 
-Qt가 발견되면 `ffmpegGUI-next` 데스크톱 대상도 함께 생성됩니다. 현재 시스템에서
-Qt가 발견되지 않으면 코어와 테스트만 빌드하고 구성 단계에 안내를 표시합니다.
+`run_ges_smoke.ps1`은 CFR MP4, CFR MKV, VFR MKV를 생성해 트림된 4개 샷을 하나의
+타임라인으로 연속 재생합니다. `run_desktop_smoke.ps1`은 같은 파일로 네이티브 창과
+D3D11 출력 초기화를 검사합니다. 기본 FFmpeg는 SHA-256 검증 후 `.tools/ffmpeg`에
+설치된 8.1.2이며 `-FFmpegPath`로 바꿀 수 있습니다.
 
 ## 디렉터리
 
@@ -38,4 +48,6 @@ Qt가 발견되지 않으면 코어와 테스트만 빌드하고 구성 단계�
 - `src/playback`: 미리보기 엔진이 구현할 인터페이스
 - `apps/desktop`: Qt Quick 애플리케이션
 - `tests`: 외부 SDK 없이 실행되는 코어 회귀 테스트
+- `scripts`: 의존성 설치와 실제 미디어 회귀 검사
+- `tools`: GES 미디어 스모크와 대규모 타임라인 측정 도구
 - `docs`: 아키텍처와 단계별 완료 기준

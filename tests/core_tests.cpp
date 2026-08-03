@@ -132,6 +132,30 @@ void test_invalid_edits_are_rejected_without_mutation() {
     require(timeline.clips()[0].duration == seconds(2), "failed trim must preserve clip");
 }
 
+void test_undo_redo_covers_structural_edits() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"a", "asset-a", 0, seconds(4)});
+    timeline.clear_history();
+
+    timeline.trim_clip("a", seconds(1), seconds(2));
+    timeline.split_at(seconds(1), "left", "right");
+    timeline.erase_clip("left");
+    require(timeline.clips().size() == 1 && timeline.clips()[0].id == "right", "edited state");
+
+    require(timeline.undo(), "delete must be undoable");
+    require(timeline.clips().size() == 2, "undo delete restores both split clips");
+    require(timeline.undo(), "split must be undoable");
+    require(timeline.clips().size() == 1 && timeline.clips()[0].id == "a", "undo split");
+    require(timeline.undo(), "trim must be undoable");
+    require(timeline.clips()[0].source_in == 0, "undo trim restores source in");
+    require(timeline.redo() && timeline.redo() && timeline.redo(), "all edits must redo");
+    require(timeline.clips().size() == 1 && timeline.clips()[0].id == "right", "redo state");
+
+    require(timeline.undo(), "redo state must remain undoable");
+    timeline.move_clip("right", 0);
+    require(!timeline.can_redo(), "new edit must invalidate redo history");
+}
+
 }  // namespace
 
 int main() {
@@ -142,6 +166,7 @@ int main() {
         {"split_preserves_duration_and_source_boundary", test_split_preserves_duration_and_source_boundary},
         {"reorder_uses_insertion_index_after_removal", test_reorder_uses_insertion_index_after_removal},
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
+        {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
     };
 
     int failed = 0;

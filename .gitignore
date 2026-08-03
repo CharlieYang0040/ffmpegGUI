@@ -1,4 +1,5 @@
 /out/
+/.tools/
 /.vs/
 /.vscode/
 /CMakeUserPresets.json
@@ -6,3 +7,4 @@
 *.suo
 *.VC.db
 *.VC.VC.opendb
+/aqtinstall.log
