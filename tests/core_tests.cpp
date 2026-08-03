@@ -158,6 +158,24 @@ void test_undo_redo_covers_structural_edits() {
     require(!timeline.can_redo(), "new edit must invalidate redo history");
 }
 
+void test_timeline_revision_changes_only_after_successful_edits() {
+    auto timeline = make_timeline();
+    const auto initial = timeline.revision();
+    timeline.append_clip(Clip{"a", "asset-a", 0, seconds(2)});
+    require(timeline.revision() == initial + 1, "successful append must advance revision");
+    const auto edited = timeline.revision();
+    require_throws<std::invalid_argument>(
+        [&] { timeline.trim_clip("a", seconds(9), seconds(2)); },
+        "invalid edit should fail");
+    require(timeline.revision() == edited, "rejected edit must not advance revision");
+    timeline.trim_clip("a", seconds(1), seconds(1));
+    require(timeline.revision() == edited + 1, "trim must advance revision");
+    require(timeline.undo(), "trim undo must succeed");
+    require(timeline.revision() == edited + 2, "undo must publish a distinct revision");
+    require(timeline.redo(), "trim redo must succeed");
+    require(timeline.revision() == edited + 3, "redo must publish a distinct revision");
+}
+
 void test_ffprobe_timestamp_parser_preserves_vfr() {
     require(ffgui::parse_ffprobe_seconds("12.345678901") == 12'345'678'901, "exact decimal ns");
     const auto pts = ffgui::parse_ffprobe_frame_pts(
@@ -254,6 +272,7 @@ int main() {
         {"reorder_uses_insertion_index_after_removal", test_reorder_uses_insertion_index_after_removal},
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
+        {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},
         {"ffprobe_timestamp_parser_preserves_vfr", test_ffprobe_timestamp_parser_preserves_vfr},
         {"ffprobe_frame_timeline_preserves_keyframes", test_ffprobe_frame_timeline_preserves_keyframes},
         {"ffmpeg_export_plan_preserves_clip_ranges_and_audio", test_ffmpeg_export_plan_preserves_clip_ranges_and_audio},

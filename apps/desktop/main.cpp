@@ -130,7 +130,8 @@ int main(int argc, char* argv[]) {
         controller.exportTimelineUrl(QUrl::fromLocalFile(exportSmokeOutput));
         exportTimeout.start(120'000);
         exportLoop.exec();
-        return exportSucceeded && QFileInfo(exportSmokeOutput).isFile()
+        return exportSucceeded && controller.lastExportMatchedPreview() &&
+               QFileInfo(exportSmokeOutput).isFile()
             ? EXIT_SUCCESS
             : EXIT_FAILURE;
     }
@@ -152,6 +153,7 @@ int main(int argc, char* argv[]) {
         exportTimeout.start(120'000);
         exportLoop.exec();
         return exportSucceeded && controller.lastExportUsedStreamCopy() &&
+               controller.lastExportMatchedPreview() &&
                QFileInfo(exportProjectOutput).isFile()
             ? EXIT_SUCCESS
             : EXIT_FAILURE;

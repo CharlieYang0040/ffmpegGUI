@@ -59,6 +59,9 @@ public:
     [[nodiscard]] bool lastExportUsedStreamCopy() const noexcept {
         return last_export_stream_copy_;
     }
+    [[nodiscard]] bool lastExportMatchedPreview() const noexcept {
+        return last_export_matched_preview_;
+    }
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);
 
@@ -112,6 +115,8 @@ private:
     void finishExport(bool success);
 
     ffgui::TimelineModel timeline_;
+    std::vector<ffgui::TimelineSpan> preview_snapshot_;
+    std::uint64_t preview_revision_{};
     qint64 playhead_ns_{};
     bool playing_{};
     QString status_{"미디어를 추가하세요"};
@@ -130,6 +135,7 @@ private:
     bool export_cancelled_{};
     bool export_stream_copy_active_{};
     bool last_export_stream_copy_{};
+    bool last_export_matched_preview_{};
     qreal export_progress_{};
     ffgui::TimeNs export_duration_ns_{};
     QString export_concat_path_;

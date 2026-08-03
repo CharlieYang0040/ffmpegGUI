@@ -61,6 +61,7 @@ public:
     [[nodiscard]] const std::vector<Clip>& clips() const noexcept { return clips_; }
     [[nodiscard]] std::vector<TimelineSpan> snapshot() const;
     [[nodiscard]] TimeNs duration() const;
+    [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
     [[nodiscard]] std::optional<MappedPosition> locate(TimeNs timeline_position) const;
     [[nodiscard]] std::optional<TimeNs> timeline_time_for_source(
         const std::string& clip_id,
@@ -75,6 +76,7 @@ private:
     std::vector<Clip> clips_;
     std::vector<std::vector<Clip>> undo_stack_;
     std::vector<std::vector<Clip>> redo_stack_;
+    std::uint64_t revision_{};
 };
 
 }  // namespace ffgui

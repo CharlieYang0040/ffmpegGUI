@@ -601,7 +601,12 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
 
     ffgui::ExportRequest request;
     request.output_path = std::filesystem::path(output.toStdWString());
-    for (const auto& span : timeline_.snapshot()) {
+    if (preview_revision_ != timeline_.revision() || preview_snapshot_.empty()) {
+        setStatus("미리보기와 편집 상태가 일치하지 않아 출력을 시작하지 않았습니다");
+        return;
+    }
+    last_export_matched_preview_ = false;
+    for (const auto& span : preview_snapshot_) {
         const auto* asset = timeline_.asset(span.clip.asset_id);
         request.clips.push_back(ffgui::ExportClipInput{
             span.source_path,
@@ -619,6 +624,7 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
         .arg(QDateTime::currentMSecsSinceEpoch()));
     request.concat_script_path = std::filesystem::path(export_concat_path_.toStdWString());
     export_request_ = std::move(request);
+    last_export_matched_preview_ = true;
     export_cpu_fallback_ = false;
     export_cancelled_ = false;
     last_export_stream_copy_ = false;
@@ -716,10 +722,16 @@ void EditorController::publishTimeline(bool resetPlayhead) {
         playhead_ns_ = std::clamp<qint64>(playhead_ns_, 0, durationNs());
     }
 #ifdef FFGUI_HAS_GES
-    player_->set_timeline(timeline_.snapshot());
+    preview_snapshot_ = timeline_.snapshot();
+    preview_revision_ = timeline_.revision();
+    player_->set_timeline(preview_snapshot_);
     if (playhead_ns_ > 0 && playhead_ns_ < durationNs()) {
         player_->seek(playhead_ns_);
     }
+#endif
+#ifndef FFGUI_HAS_GES
+    preview_snapshot_ = timeline_.snapshot();
+    preview_revision_ = timeline_.revision();
 #endif
     emit timelineChanged();
     emit playheadChanged();

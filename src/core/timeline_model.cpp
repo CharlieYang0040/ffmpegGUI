@@ -104,6 +104,7 @@ bool TimelineModel::undo() {
     redo_stack_.push_back(std::move(clips_));
     clips_ = std::move(undo_stack_.back());
     undo_stack_.pop_back();
+    ++revision_;
     return true;
 }
 
@@ -114,6 +115,7 @@ bool TimelineModel::redo() {
     undo_stack_.push_back(std::move(clips_));
     clips_ = std::move(redo_stack_.back());
     redo_stack_.pop_back();
+    ++revision_;
     return true;
 }
 
@@ -125,6 +127,7 @@ void TimelineModel::clear_history() noexcept {
 void TimelineModel::record_edit() {
     undo_stack_.push_back(clips_);
     redo_stack_.clear();
+    ++revision_;
 }
 
 std::vector<TimelineSpan> TimelineModel::snapshot() const {
