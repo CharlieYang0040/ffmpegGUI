@@ -5,6 +5,7 @@
 #include <gst/video/videooverlay.h>
 
 #include <chrono>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -158,6 +159,36 @@ PlaybackState GesSequencePlayer::state() const noexcept {
     return state_.load();
 }
 
+void GesSequencePlayer::reset_audio_continuity_metrics() noexcept {
+    audio_buffer_count_.store(0);
+    audio_last_end_ns_.store(-1);
+    audio_maximum_gap_ns_.store(0);
+}
+
+AudioContinuityMetrics GesSequencePlayer::audio_continuity_metrics() const noexcept {
+    return AudioContinuityMetrics{audio_buffer_count_.load(), audio_maximum_gap_ns_.load()};
+}
+
+void GesSequencePlayer::audio_handoff(GstElement*, GstBuffer* buffer, GstPad*, void* user_data) {
+    auto* player = static_cast<GesSequencePlayer*>(user_data);
+    if (player == nullptr || buffer == nullptr || !GST_BUFFER_PTS_IS_VALID(buffer)) return;
+    const auto pts = static_cast<TimeNs>(GST_BUFFER_PTS(buffer));
+    const auto duration = GST_BUFFER_DURATION_IS_VALID(buffer)
+        ? static_cast<TimeNs>(GST_BUFFER_DURATION(buffer))
+        : 0;
+    const auto end = duration <= std::numeric_limits<TimeNs>::max() - pts
+        ? pts + duration
+        : std::numeric_limits<TimeNs>::max();
+    const auto previousEnd = player->audio_last_end_ns_.exchange(end);
+    player->audio_buffer_count_.fetch_add(1);
+    if (previousEnd < 0 || pts <= previousEnd) return;
+    const auto gap = pts - previousEnd;
+    auto maximum = player->audio_maximum_gap_ns_.load();
+    while (gap > maximum &&
+           !player->audio_maximum_gap_ns_.compare_exchange_weak(maximum, gap)) {
+    }
+}
+
 void GesSequencePlayer::rebuild_pipeline_locked(const std::vector<TimelineSpan>& spans) {
     destroy_pipeline_locked();
     if (spans.empty()) {
@@ -246,7 +277,8 @@ void GesSequencePlayer::rebuild_pipeline_locked(const std::vector<TimelineSpan>&
             }
             gst_object_ref_sink(sink);
             if (audio_sink_factory_ == "fakesink") {
-                g_object_set(sink, "sync", TRUE, nullptr);
+                g_object_set(sink, "sync", TRUE, "signal-handoffs", TRUE, nullptr);
+                g_signal_connect(sink, "handoff", G_CALLBACK(GesSequencePlayer::audio_handoff), this);
             }
             ges_pipeline_preview_set_audio_sink(new_pipeline, sink);
             gst_object_unref(sink);

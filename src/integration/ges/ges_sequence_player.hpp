@@ -11,8 +11,15 @@
 typedef struct _GESPipeline GESPipeline;
 typedef struct _GESTimeline GESTimeline;
 typedef struct _GstElement GstElement;
+typedef struct _GstBuffer GstBuffer;
+typedef struct _GstPad GstPad;
 
 namespace ffgui {
+
+struct AudioContinuityMetrics final {
+    std::uint64_t buffer_count{};
+    TimeNs maximum_positive_gap{};
+};
 
 class GesSequencePlayer final : public SequencePlayer {
 public:
@@ -37,12 +44,15 @@ public:
     [[nodiscard]] TimeNs duration() const noexcept;
     [[nodiscard]] TimeNs position() const noexcept;
     [[nodiscard]] PlaybackState state() const noexcept;
+    void reset_audio_continuity_metrics() noexcept;
+    [[nodiscard]] AudioContinuityMetrics audio_continuity_metrics() const noexcept;
 
 private:
     void rebuild_pipeline_locked(const std::vector<TimelineSpan>& timeline);
     void destroy_pipeline_locked() noexcept;
     void notify_state(PlaybackState state_value);
     void monitor(std::stop_token stop_token);
+    static void audio_handoff(GstElement*, GstBuffer*, GstPad*, void* user_data);
 
     std::string video_sink_factory_;
     std::string audio_sink_factory_;
@@ -57,6 +67,9 @@ private:
     std::atomic<TimeNs> duration_ns_{0};
     std::atomic<TimeNs> position_ns_{0};
     std::atomic<PlaybackState> state_{PlaybackState::stopped};
+    std::atomic<std::uint64_t> audio_buffer_count_{0};
+    std::atomic<TimeNs> audio_last_end_ns_{-1};
+    std::atomic<TimeNs> audio_maximum_gap_ns_{0};
     std::jthread monitor_thread_;
 };
 

@@ -75,12 +75,25 @@ int main(int argc, char* argv[]) {
         wait_for_position(player, milliseconds(1450), std::chrono::seconds(8));
 
         player.stop();
+        player.reset_audio_continuity_metrics();
         player.play();
         wait_for_position(player, milliseconds(2650), std::chrono::seconds(12));
         player.stop();
 
+        const auto audio = player.audio_continuity_metrics();
+        if (audio.buffer_count < 20) {
+            throw std::runtime_error("GES audio continuity probe received too few buffers");
+        }
+        if (audio.maximum_positive_gap > milliseconds(2)) {
+            throw std::runtime_error(
+                "GES audio gap exceeded 2 ms: " +
+                std::to_string(audio.maximum_positive_gap) + " ns");
+        }
+
         std::cout << "GES continuous playback passed: 4 shots including VFR, "
-                  << player.duration() / 1'000'000 << " ms\n";
+                  << player.duration() / 1'000'000 << " ms; "
+                  << audio.buffer_count << " audio buffers, max gap "
+                  << audio.maximum_positive_gap << " ns\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "GES smoke failed: " << error.what() << '\n';
