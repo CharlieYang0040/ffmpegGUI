@@ -10,11 +10,13 @@ MediaAsset::MediaAsset(
     std::string id,
     std::filesystem::path path,
     TimeNs duration,
-    std::vector<TimeNs> frame_pts)
+    std::vector<TimeNs> frame_pts,
+    std::vector<float> audio_peaks)
     : id_(std::move(id)),
       path_(std::move(path)),
       duration_(duration),
-      frame_pts_(std::move(frame_pts)) {
+      frame_pts_(std::move(frame_pts)),
+      audio_peaks_(std::move(audio_peaks)) {
     if (id_.empty()) {
         throw std::invalid_argument("asset id must not be empty");
     }
@@ -37,6 +39,11 @@ MediaAsset::MediaAsset(
         if (frame_pts_.back() >= duration_) {
             throw std::invalid_argument("frame timestamps must be inside asset duration");
         }
+    }
+    if (std::any_of(audio_peaks_.begin(), audio_peaks_.end(), [](float peak) {
+            return peak < 0.0F || peak > 1.0F;
+        })) {
+        throw std::invalid_argument("audio peaks must be normalized between zero and one");
     }
 }
 

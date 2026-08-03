@@ -17,6 +17,7 @@ option(FFGUI_ENABLE_GES "Build the GStreamer Editing Services adapter when avail
 include(CTest)
 
 add_library(ffgui_core STATIC
+    src/core/ffprobe_parser.cpp
     src/core/media_asset.cpp
     src/core/timeline_model.cpp
 )
@@ -85,7 +86,7 @@ if(BUILD_TESTING)
 endif()
 
 if(FFGUI_BUILD_DESKTOP)
-    find_package(Qt6 6.8 QUIET COMPONENTS Quick QuickControls2)
+    find_package(Qt6 6.8 QUIET COMPONENTS Concurrent Quick QuickControls2)
     if(Qt6_FOUND)
         qt_standard_project_setup(REQUIRES 6.8)
         qt_add_executable(ffmpegGUI-next
@@ -98,6 +99,8 @@ if(FFGUI_BUILD_DESKTOP)
             SOURCES
                 apps/desktop/editor_controller.cpp
                 apps/desktop/editor_controller.hpp
+                apps/desktop/ffprobe_analyzer.cpp
+                apps/desktop/ffprobe_analyzer.hpp
                 apps/desktop/timeline_view.cpp
                 apps/desktop/timeline_view.hpp
         )
@@ -105,6 +108,7 @@ if(FFGUI_BUILD_DESKTOP)
             ffgui::core
             Qt6::Quick
             Qt6::QuickControls2
+            Qt6::Concurrent
         )
         target_include_directories(ffmpegGUI-next PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/apps/desktop")
         if(FFGUI_GES_AVAILABLE)

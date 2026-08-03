@@ -7,6 +7,7 @@
 #endif
 
 #include <QObject>
+#include <QFutureWatcher>
 #include <QStringList>
 #include <QVariantList>
 #include <QWindow>
@@ -31,6 +32,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(QWindow* videoWindow READ videoWindow CONSTANT)
+    Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
 
 public:
     explicit EditorController(QObject* parent);
@@ -45,6 +47,7 @@ public:
     [[nodiscard]] bool canUndo() const noexcept { return timeline_.can_undo(); }
     [[nodiscard]] bool canRedo() const noexcept { return timeline_.can_redo(); }
     [[nodiscard]] QWindow* videoWindow() const noexcept { return video_window_; }
+    [[nodiscard]] bool importing() const noexcept { return importing_; }
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);
 
@@ -75,8 +78,15 @@ signals:
     void statusChanged();
     void selectedClipChanged();
     void historyChanged();
+    void importingChanged();
+    void mediaImportFinished(bool success);
 
 private:
+    struct PendingImport final {
+        ffgui::MediaAsset asset;
+        std::string clip_id;
+    };
+
     void publishTimeline(bool resetPlayhead = false);
     void setStatus(QString status);
 
@@ -88,6 +98,8 @@ private:
     std::uint64_t generated_clip_id_{};
     std::uint64_t generated_asset_id_{};
     QWindow* video_window_{};
+    bool importing_{};
+    QFutureWatcher<std::vector<PendingImport>> import_watcher_;
     static EditorController* singleton_instance_;
 #ifdef FFGUI_HAS_GES
     std::unique_ptr<ffgui::GesSequencePlayer> player_;

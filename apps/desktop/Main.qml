@@ -59,7 +59,11 @@ ApplicationWindow {
                 anchors.leftMargin: 16
                 anchors.rightMargin: 16
                 Label { text: "ffmpegGUI"; font.pixelSize: 18; font.bold: true }
-                Button { text: "영상 추가"; onClicked: mediaDialog.open() }
+                Button {
+                    text: EditorController.importing ? "분석 중…" : "영상 추가"
+                    enabled: !EditorController.importing
+                    onClicked: mediaDialog.open()
+                }
                 Button { text: "열기"; onClicked: openProjectDialog.open() }
                 Button {
                     text: "저장"

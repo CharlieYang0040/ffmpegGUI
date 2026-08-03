@@ -19,6 +19,7 @@ $qtRoot = Join-Path $root ".tools\Qt\6.10.2\msvc2022_64"
 $gstRoot = Join-Path $root ".tools\gstreamer"
 $gstBin = Join-Path $gstRoot "bin"
 $gstPluginRoot = Join-Path $gstRoot "lib\gstreamer-1.0"
+$ffmpegRoot = Join-Path $root ".tools\ffmpeg"
 $dumpbin = Get-ChildItem `
     "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC" `
     -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -like '*Hostx64\x64*' } |
@@ -45,7 +46,8 @@ $originalPath = $env:PATH
 $env:PATH = "$(Join-Path $qtRoot 'bin');$gstBin;$originalPath"
 try {
     & (Join-Path $qtRoot "bin\windeployqt.exe") --release --qmldir `
-        (Join-Path $root "apps\desktop") --no-translations --compiler-runtime $packageExe
+        (Join-Path $root "apps\desktop") --no-translations --no-compiler-runtime `
+        --verbose 0 $packageExe
     if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
 } finally {
     $env:PATH = $originalPath
@@ -119,10 +121,18 @@ $crtRoot = Join-Path $redistVersion.FullName "x64\Microsoft.VC143.CRT"
 if (-not (Test-Path -LiteralPath $crtRoot)) { throw "MSVC x64 CRT directory is missing" }
 Copy-Item -Path (Join-Path $crtRoot "*.dll") -Destination $packageDir
 
+$ffmpegToolTarget = Join-Path $packageDir "tools"
+$ffmpegLicenseTarget = Join-Path $licenseTarget "ffmpeg"
+New-Item -ItemType Directory -Path $ffmpegToolTarget, $ffmpegLicenseTarget -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $ffmpegRoot "bin\ffprobe.exe") -Destination $ffmpegToolTarget
+Copy-Item -LiteralPath (Join-Path $ffmpegRoot "bin\ffmpeg.exe") -Destination $ffmpegToolTarget
+Copy-Item -LiteralPath (Join-Path $ffmpegRoot "LICENSE") -Destination $ffmpegLicenseTarget
+Copy-Item -LiteralPath (Join-Path $ffmpegRoot "README.txt") -Destination $ffmpegLicenseTarget
+
 $notice = @"
 ffmpegGUI Next v$Version
 
-This package includes Qt 6.10.2 and GStreamer 1.28.5 runtime components.
+This package includes Qt 6.10.2, GStreamer 1.28.5 and FFprobe 8.1.2.
 It also includes the Microsoft Visual C++ 2022 x64 runtime DLLs.
 Qt licensing: https://www.qt.io/licensing/open-source-obligations
 GStreamer licensing: https://gstreamer.freedesktop.org/documentation/frequently-asked-questions/licensing.html

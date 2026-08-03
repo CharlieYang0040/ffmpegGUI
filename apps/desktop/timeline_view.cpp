@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace {
 
@@ -158,6 +159,66 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
         clipNode->setMaterial(new QSGVertexColorMaterial());
         clipNode->setFlag(QSGNode::OwnsMaterial);
         root->appendChildNode(clipNode);
+
+        std::vector<QPointF> waveformLines;
+        const auto waveformCenter = kTrackTop + trackHeight * 0.62;
+        const auto waveformAmplitude = trackHeight * 0.28;
+        for (const auto& value : visibleClips) {
+            const auto clip = value.toMap();
+            const auto waveform = clip.value("waveform").toList();
+            const auto assetDuration = clip.value("assetDurationNs").toLongLong();
+            const auto clipStart = clip.value("timelineInNs").toLongLong();
+            const auto clipDuration = clip.value("durationNs").toLongLong();
+            const auto sourceIn = clip.value("sourceInNs").toLongLong();
+            const auto visibleStart = std::max(clipStart, viewStart);
+            const auto visibleEnd = std::min(clipStart + clipDuration, viewEnd);
+            if (waveform.isEmpty() || assetDuration <= 0 || visibleStart >= visibleEnd) {
+                continue;
+            }
+            const auto left = kHorizontalPadding + contentWidth *
+                static_cast<qreal>(visibleStart - viewStart) / static_cast<qreal>(viewDuration);
+            const auto right = kHorizontalPadding + contentWidth *
+                static_cast<qreal>(visibleEnd - viewStart) / static_cast<qreal>(viewDuration);
+            const auto sampleCount = std::max(2, static_cast<int>((right - left) / 4.0));
+            for (int sample = 0; sample < sampleCount; ++sample) {
+                const auto ratio = static_cast<qreal>(sample) /
+                    static_cast<qreal>(sampleCount - 1);
+                const auto timelineTime = visibleStart + static_cast<qint64>(
+                    ratio * static_cast<qreal>(visibleEnd - visibleStart));
+                const auto sourceTime = sourceIn + timelineTime - clipStart;
+                const auto waveformIndex = std::clamp(
+                    static_cast<int>(static_cast<qreal>(sourceTime) /
+                        static_cast<qreal>(assetDuration) * waveform.size()),
+                    0,
+                    static_cast<int>(waveform.size()) - 1);
+                const auto amplitude = std::clamp(
+                    waveform[waveformIndex].toReal(), 0.0, 1.0) * waveformAmplitude;
+                const auto x = left + ratio * (right - left);
+                waveformLines.emplace_back(x, waveformCenter - amplitude);
+                waveformLines.emplace_back(x, waveformCenter + amplitude);
+            }
+        }
+        if (!waveformLines.empty()) {
+            auto* waveformGeometry = new QSGGeometry(
+                QSGGeometry::defaultAttributes_ColoredPoint2D(),
+                static_cast<int>(waveformLines.size()));
+            waveformGeometry->setDrawingMode(QSGGeometry::DrawLines);
+            auto* waveformVertices = waveformGeometry->vertexDataAsColoredPoint2D();
+            const QColor waveformColor("#c8d8ee");
+            for (std::size_t index = 0; index < waveformLines.size(); ++index) {
+                setVertex(
+                    waveformVertices[index],
+                    waveformLines[index].x(),
+                    waveformLines[index].y(),
+                    waveformColor);
+            }
+            auto* waveformNode = new QSGGeometryNode();
+            waveformNode->setGeometry(waveformGeometry);
+            waveformNode->setFlag(QSGNode::OwnsGeometry);
+            waveformNode->setMaterial(new QSGVertexColorMaterial());
+            waveformNode->setFlag(QSGNode::OwnsMaterial);
+            root->appendChildNode(waveformNode);
+        }
 
         for (const auto& value : visibleClips) {
             const auto clip = value.toMap();

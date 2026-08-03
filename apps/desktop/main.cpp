@@ -2,6 +2,7 @@
 #include "editor_controller.hpp"
 
 #include <QGuiApplication>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QDir>
 #include <QQmlApplicationEngine>
@@ -70,6 +71,19 @@ int main(int argc, char* argv[]) {
     engine.loadFromModule("FFGuiNext", "Main");
     if (!mediaFiles.isEmpty()) {
         controller.loadFiles(mediaFiles);
+    }
+    if ((!roundtripProject.isEmpty() || playbackSmoke) && controller.importing()) {
+        QEventLoop importLoop;
+        QTimer importTimeout;
+        importTimeout.setSingleShot(true);
+        QObject::connect(
+            &controller, &EditorController::mediaImportFinished, &importLoop, &QEventLoop::quit);
+        QObject::connect(&importTimeout, &QTimer::timeout, &importLoop, &QEventLoop::quit);
+        importTimeout.start(120'000);
+        importLoop.exec();
+        if (controller.importing() || controller.durationNs() <= 0) {
+            return EXIT_FAILURE;
+        }
     }
     if (!roundtripProject.isEmpty()) {
         const auto expectedDuration = controller.durationNs();

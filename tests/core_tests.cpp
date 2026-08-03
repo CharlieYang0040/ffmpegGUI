@@ -1,4 +1,5 @@
 #include "core/media_asset.hpp"
+#include "core/ffprobe_parser.hpp"
 #include "core/timeline_model.hpp"
 
 #include <exception>
@@ -156,6 +157,16 @@ void test_undo_redo_covers_structural_edits() {
     require(!timeline.can_redo(), "new edit must invalidate redo history");
 }
 
+void test_ffprobe_timestamp_parser_preserves_vfr() {
+    require(ffgui::parse_ffprobe_seconds("12.345678901") == 12'345'678'901, "exact decimal ns");
+    const auto pts = ffgui::parse_ffprobe_frame_pts(
+        "-0.100000,\r\n-0.066000\n0.000000\n0.000000\n0.200000\n");
+    require(pts.size() == 4, "duplicate frame timestamps must collapse");
+    require(pts[0] == 0 && pts[1] == 34'000'000, "negative start must normalize to zero");
+    require(pts[2] == 100'000'000 && pts[3] == 300'000'000, "VFR gaps must remain exact");
+    require(ffgui::estimated_media_end(pts) == 500'000'000, "last frame duration estimate");
+}
+
 }  // namespace
 
 int main() {
@@ -167,6 +178,7 @@ int main() {
         {"reorder_uses_insertion_index_after_removal", test_reorder_uses_insertion_index_after_removal},
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
+        {"ffprobe_timestamp_parser_preserves_vfr", test_ffprobe_timestamp_parser_preserves_vfr},
     };
 
     int failed = 0;

@@ -1,9 +1,5 @@
 #include "editor_controller.hpp"
-
-#ifdef FFGUI_HAS_GES
-#include <gst/gst.h>
-#include <gst/pbutils/pbutils.h>
-#endif
+#include "ffprobe_analyzer.hpp"
 
 #include <QFile>
 #include <QFileInfo>
@@ -13,6 +9,7 @@
 #include <QMetaObject>
 #include <QJSEngine>
 #include <QSaveFile>
+#include <QtConcurrentRun>
 
 #include <algorithm>
 #include <filesystem>
@@ -21,54 +18,6 @@
 #include <vector>
 
 namespace {
-
-#ifdef FFGUI_HAS_GES
-std::string toUtf8(const QString& value) {
-    const auto bytes = value.toUtf8();
-    return {bytes.constData(), static_cast<std::size_t>(bytes.size())};
-}
-
-ffgui::TimeNs discoverDuration(const QString& path) {
-    GError* error = nullptr;
-    auto* discoverer = gst_discoverer_new(5 * GST_SECOND, &error);
-    if (discoverer == nullptr) {
-        const std::string message = error && error->message ? error->message : "unknown error";
-        if (error) {
-            g_error_free(error);
-        }
-        throw std::runtime_error("failed to create media discoverer: " + message);
-    }
-
-    const auto nativePath = toUtf8(QFileInfo(path).absoluteFilePath());
-    gchar* uri = gst_filename_to_uri(nativePath.c_str(), &error);
-    if (uri == nullptr) {
-        gst_object_unref(discoverer);
-        const std::string message = error && error->message ? error->message : "unknown error";
-        if (error) {
-            g_error_free(error);
-        }
-        throw std::runtime_error("failed to create media URI: " + message);
-    }
-
-    auto* info = gst_discoverer_discover_uri(discoverer, uri, &error);
-    g_free(uri);
-    if (info == nullptr) {
-        gst_object_unref(discoverer);
-        const std::string message = error && error->message ? error->message : "unknown error";
-        if (error) {
-            g_error_free(error);
-        }
-        throw std::runtime_error("failed to inspect media: " + message);
-    }
-    const auto duration = static_cast<ffgui::TimeNs>(gst_discoverer_info_get_duration(info));
-    gst_discoverer_info_unref(info);
-    gst_object_unref(discoverer);
-    if (duration <= 0 || duration == static_cast<ffgui::TimeNs>(GST_CLOCK_TIME_NONE)) {
-        throw std::runtime_error("media duration is unavailable");
-    }
-    return duration;
-}
-#endif
 
 QString timeString(ffgui::TimeNs value) {
     return QString::number(static_cast<qint64>(value));
@@ -100,6 +49,34 @@ void EditorController::setSingletonInstance(EditorController* instance) {
 }
 
 EditorController::EditorController(QObject* parent) : QObject(parent) {
+    connect(
+        &import_watcher_,
+        &QFutureWatcher<std::vector<PendingImport>>::finished,
+        this,
+        [this] {
+            bool success = false;
+            try {
+                auto imported = import_watcher_.result();
+                for (auto& item : imported) {
+                    const auto assetId = item.asset.id();
+                    const auto duration = item.asset.duration();
+                    timeline_.add_asset(std::move(item.asset));
+                    timeline_.append_clip(ffgui::Clip{
+                        std::move(item.clip_id), assetId, 0, duration});
+                    if (selected_clip_id_.isEmpty()) {
+                        selected_clip_id_ = QString::fromStdString(timeline_.clips().back().id);
+                    }
+                }
+                timeline_.clear_history();
+                publishTimeline(true);
+                success = true;
+            } catch (const std::exception& error) {
+                setStatus(QString::fromUtf8(error.what()));
+            }
+            importing_ = false;
+            emit importingChanged();
+            emit mediaImportFinished(success);
+        });
 #ifdef FFGUI_HAS_GES
     player_ = std::make_unique<ffgui::GesSequencePlayer>("d3d11videosink", "wasapi2sink");
     player_->set_position_callback([this](ffgui::TimeNs position) {
@@ -151,6 +128,14 @@ QVariantList EditorController::clips() const {
         value.insert("durationNs", static_cast<qint64>(span.clip.duration));
         const auto* asset = timeline_.asset(span.clip.asset_id);
         value.insert("assetDurationNs", static_cast<qint64>(asset ? asset->duration() : 0));
+        QVariantList waveform;
+        if (asset != nullptr) {
+            waveform.reserve(static_cast<qsizetype>(asset->audio_peaks().size()));
+            for (const auto peak : asset->audio_peaks()) {
+                waveform.push_back(peak);
+            }
+        }
+        value.insert("waveform", waveform);
         value.insert("color", index % 2 == 0 ? "#315a94" : "#3b6599");
         result.push_back(value);
     }
@@ -173,34 +158,51 @@ void EditorController::setVideoWindow(QWindow* window) {
 }
 
 void EditorController::loadFiles(const QStringList& paths) {
+    if (importing_) {
+        setStatus("미디어 분석이 끝난 후 다시 추가하세요");
+        return;
+    }
     try {
+        struct Request final {
+            QString path;
+            std::string asset_id;
+            std::string clip_id;
+        };
+        std::vector<Request> requests;
         for (const auto& path : paths) {
             const QFileInfo info(path);
             if (!info.isFile()) {
                 continue;
             }
-#ifdef FFGUI_HAS_GES
-            const auto duration = discoverDuration(info.absoluteFilePath());
-#else
-            const auto duration = ffgui::kNanosecondsPerSecond;
-#endif
             std::string assetId;
             do {
                 assetId = "asset-" + std::to_string(++generated_asset_id_);
             } while (timeline_.asset(assetId) != nullptr);
             const auto serial = std::to_string(generated_asset_id_);
-            const auto clipId = "clip-" + serial;
-            timeline_.add_asset(ffgui::MediaAsset{
-                assetId,
-                std::filesystem::path(info.absoluteFilePath().toStdWString()),
-                duration});
-            timeline_.append_clip(ffgui::Clip{clipId, assetId, 0, duration});
-            if (selected_clip_id_.isEmpty()) {
-                selected_clip_id_ = QString::fromStdString(clipId);
-            }
+            requests.push_back(Request{
+                info.absoluteFilePath(), std::move(assetId), "clip-" + serial});
         }
-        timeline_.clear_history();
-        publishTimeline(true);
+        if (requests.empty()) {
+            return;
+        }
+        const auto ffprobe = ffgui::locate_ffprobe();
+        const auto ffmpeg = ffgui::locate_ffmpeg();
+        importing_ = true;
+        emit importingChanged();
+        setStatus(QString("프레임 분석 중 · %1개 파일").arg(requests.size()));
+        import_watcher_.setFuture(QtConcurrent::run(
+            [ffprobe, ffmpeg, requests = std::move(requests)]() mutable {
+                std::vector<PendingImport> result;
+                result.reserve(requests.size());
+                for (auto& request : requests) {
+                    const auto clipId = std::move(request.clip_id);
+                    result.push_back(PendingImport{
+                        ffgui::analyze_media(
+                            ffprobe, ffmpeg, request.path, std::move(request.asset_id)),
+                        clipId});
+                }
+                return result;
+            }));
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
     }
@@ -348,11 +350,16 @@ void EditorController::saveProject(const QString& path) {
             for (const auto pts : asset.frame_pts()) {
                 framePts.push_back(timeString(pts));
             }
+            QJsonArray audioPeaks;
+            for (const auto peak : asset.audio_peaks()) {
+                audioPeaks.push_back(peak);
+            }
             assets.push_back(QJsonObject{
                 {"id", QString::fromStdString(id)},
                 {"path", QString::fromStdWString(asset.path().wstring())},
                 {"durationNs", timeString(asset.duration())},
-                {"framePtsNs", framePts}});
+                {"framePtsNs", framePts},
+                {"audioPeaks", audioPeaks}});
         }
 
         QJsonArray clips;
@@ -380,6 +387,10 @@ void EditorController::saveProject(const QString& path) {
 }
 
 void EditorController::loadProject(const QString& path) {
+    if (importing_) {
+        setStatus("미디어 분석 중에는 프로젝트를 열 수 없습니다");
+        return;
+    }
     try {
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly)) {
@@ -401,11 +412,16 @@ void EditorController::loadProject(const QString& path) {
             for (const auto pts : object.value("framePtsNs").toArray()) {
                 framePts.push_back(parseTime(pts, "framePtsNs"));
             }
+            std::vector<float> audioPeaks;
+            for (const auto peak : object.value("audioPeaks").toArray()) {
+                audioPeaks.push_back(static_cast<float>(peak.toDouble()));
+            }
             loaded.add_asset(ffgui::MediaAsset{
                 object.value("id").toString().toStdString(),
                 std::filesystem::path(object.value("path").toString().toStdWString()),
                 parseTime(object.value("durationNs"), "durationNs"),
-                std::move(framePts)});
+                std::move(framePts),
+                std::move(audioPeaks)});
         }
         for (const auto value : root.value("clips").toArray()) {
             const auto object = value.toObject();
