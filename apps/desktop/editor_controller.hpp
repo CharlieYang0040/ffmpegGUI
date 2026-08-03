@@ -28,6 +28,7 @@ class EditorController final : public QObject {
     QML_ELEMENT
     QML_SINGLETON
     Q_PROPERTY(QVariantList clips READ clips NOTIFY timelineChanged)
+    Q_PROPERTY(QVariantList mediaAssets READ mediaAssets NOTIFY timelineChanged)
     Q_PROPERTY(qint64 durationNs READ durationNs NOTIFY timelineChanged)
     Q_PROPERTY(qint64 playheadNs READ playheadNs NOTIFY playheadChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
@@ -46,6 +47,7 @@ public:
     ~EditorController() override;
 
     [[nodiscard]] QVariantList clips() const;
+    [[nodiscard]] QVariantList mediaAssets() const;
     [[nodiscard]] qint64 durationNs() const noexcept;
     [[nodiscard]] qint64 playheadNs() const noexcept { return playhead_ns_; }
     [[nodiscard]] bool playing() const noexcept { return playing_; }
@@ -86,6 +88,7 @@ public slots:
     void selectClip(const QString& clipId);
     void trimClip(const QString& clipId, qint64 sourceIn, qint64 duration);
     void moveClip(const QString& clipId, int insertionIndex);
+    void insertAssetAtTime(const QString& assetId, qint64 timelinePosition);
     void splitAtPlayhead();
     void duplicateSelectedClip();
     void deleteSelectedClip();
@@ -126,6 +129,7 @@ private:
     void setStatus(QString status);
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
     void finishExport(bool success);
+    [[nodiscard]] std::string makeUniqueClipId(const std::string& prefix);
 
     ffgui::TimelineModel timeline_;
     std::vector<ffgui::TimelineSpan> preview_snapshot_;

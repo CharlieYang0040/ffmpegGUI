@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -13,6 +15,13 @@ ApplicationWindow {
     minimumHeight: 700
     title: "ffmpegGUI Next"
     color: "#111419"
+
+    function durationText(nanoseconds) {
+        const totalSeconds = Math.max(0, Math.floor(nanoseconds / 1000000000))
+        const minutes = Math.floor(totalSeconds / 60)
+        const seconds = totalSeconds % 60
+        return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
+    }
 
     palette.window: "#111419"
     palette.windowText: "#e8edf2"
@@ -126,7 +135,113 @@ ApplicationWindow {
             Frame {
                 SplitView.preferredWidth: 300
                 SplitView.minimumWidth: 240
-                Label { anchors.centerIn: parent; text: "미디어"; color: "#8994a3" }
+                background: Rectangle { color: "#151a20" }
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 10
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { text: "미디어"; font.pixelSize: 17; font.bold: true }
+                        Label {
+                            text: EditorController.mediaAssets.length
+                            color: "#8994a3"
+                        }
+                        Item { Layout.fillWidth: true }
+                        Button {
+                            text: "+"
+                            implicitWidth: 34
+                            onClicked: mediaDialog.open()
+                        }
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        visible: EditorController.mediaAssets.length === 0
+                        text: EditorController.importing ? "미디어 분석 중…" : "영상을 추가하세요"
+                        color: "#8994a3"
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+
+                    ListView {
+                        id: mediaBin
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 8
+                        model: EditorController.mediaAssets
+
+                        delegate: Rectangle {
+                            id: mediaCard
+                            required property var modelData
+                            property string assetId: modelData.id
+                            width: ListView.view.width
+                            height: 68
+                            radius: 7
+                            color: dragHandler.active ? "#2a3545" : "#1d232b"
+                            border.color: dragHandler.active ? "#6d9cff" : "#2a323d"
+
+                            Drag.active: dragHandler.active
+                            Drag.keys: ["ffgui/media-asset"]
+                            Drag.mimeData: {
+                                "application/x-ffgui-asset-id": mediaCard.assetId
+                            }
+                            Drag.hotSpot.x: width / 2
+                            Drag.hotSpot.y: height / 2
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.margins: 7
+                                spacing: 9
+
+                                Image {
+                                    Layout.preferredWidth: 76
+                                    Layout.fillHeight: true
+                                    source: mediaCard.modelData.thumbnailAtlas.length > 0
+                                        ? "file:///" + mediaCard.modelData.thumbnailAtlas.replace(/\\/g, "/")
+                                        : ""
+                                    fillMode: Image.PreserveAspectCrop
+                                    asynchronous: true
+                                    cache: true
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: mediaCard.modelData.name
+                                        elide: Text.ElideRight
+                                    }
+                                    Label {
+                                        text: root.durationText(mediaCard.modelData.durationNs)
+                                              + "  ·  " + mediaCard.modelData.useCount + "회 사용"
+                                        color: "#8994a3"
+                                        font.pixelSize: 11
+                                    }
+                                }
+                                Button {
+                                    text: "+"
+                                    implicitWidth: 30
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "재생 헤드 위치에 삽입"
+                                    onClicked: EditorController.insertAssetAtTime(
+                                        mediaCard.assetId, EditorController.playheadNs)
+                                }
+                            }
+
+                            DragHandler {
+                                id: dragHandler
+                                target: null
+                            }
+                            TapHandler {
+                                onDoubleTapped: EditorController.insertAssetAtTime(
+                                    mediaCard.assetId, EditorController.playheadNs)
+                            }
+                        }
+                    }
+                }
             }
 
             Frame {
@@ -257,6 +372,7 @@ ApplicationWindow {
                         model: EditorController.clips
 
                         delegate: Item {
+                            id: clipThumbnail
                             required property var modelData
                             readonly property real contentWidth: Math.max(1, timelineLayer.width - 24)
                             readonly property real timelineStart: modelData.timelineInNs
@@ -277,8 +393,8 @@ ApplicationWindow {
                             Image {
                                 id: atlas
                                 anchors.fill: parent
-                                source: modelData.thumbnailAtlas.length > 0
-                                    ? "file:///" + modelData.thumbnailAtlas.replace(/\\/g, "/")
+                                source: clipThumbnail.modelData.thumbnailAtlas.length > 0
+                                    ? "file:///" + clipThumbnail.modelData.thumbnailAtlas.replace(/\\/g, "/")
                                     : ""
                                 fillMode: Image.Stretch
                                 asynchronous: true
@@ -286,11 +402,11 @@ ApplicationWindow {
                                 smooth: true
                                 opacity: 0.9
                                 sourceClipRect: Qt.rect(
-                                    atlas.sourceSize.width * modelData.sourceInNs
-                                        / Math.max(1, modelData.assetDurationNs),
+                                    atlas.sourceSize.width * clipThumbnail.modelData.sourceInNs
+                                        / Math.max(1, clipThumbnail.modelData.assetDurationNs),
                                     0,
-                                    atlas.sourceSize.width * modelData.durationNs
-                                        / Math.max(1, modelData.assetDurationNs),
+                                    atlas.sourceSize.width * clipThumbnail.modelData.durationNs
+                                        / Math.max(1, clipThumbnail.modelData.assetDurationNs),
                                     atlas.sourceSize.height)
                             }
                         }
@@ -309,6 +425,30 @@ ApplicationWindow {
                             EditorController.trimClip(clipId, sourceIn, duration)
                         onMoveCommitted: (clipId, insertionIndex) =>
                             EditorController.moveClip(clipId, insertionIndex)
+                    }
+
+                    DropArea {
+                        id: mediaDropArea
+                        anchors.fill: parent
+                        z: 5
+                        keys: ["ffgui/media-asset"]
+                        property real indicatorX: 0
+                        onPositionChanged: drag => indicatorX = drag.x
+                        onDropped: drop => {
+                            EditorController.insertAssetAtTime(
+                                drop.getDataAsString("application/x-ffgui-asset-id"),
+                                timeline.timelineTimeAt(drop.x))
+                            drop.acceptProposedAction()
+                        }
+
+                        Rectangle {
+                            visible: mediaDropArea.containsDrag
+                            x: Math.max(12, Math.min(parent.width - 12, mediaDropArea.indicatorX)) - 1
+                            y: 8
+                            width: 2
+                            height: parent.height - 18
+                            color: "#78a5ff"
+                        }
                     }
                 }
             }

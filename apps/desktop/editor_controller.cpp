@@ -259,6 +259,37 @@ QVariantList EditorController::clips() const {
     return result;
 }
 
+QVariantList EditorController::mediaAssets() const {
+    std::vector<const ffgui::MediaAsset*> assets;
+    assets.reserve(timeline_.assets().size());
+    for (const auto& [id, asset] : timeline_.assets()) {
+        static_cast<void>(id);
+        assets.push_back(&asset);
+    }
+    std::sort(assets.begin(), assets.end(), [](const auto* left, const auto* right) {
+        return left->path().wstring() < right->path().wstring();
+    });
+
+    QVariantList result;
+    result.reserve(static_cast<qsizetype>(assets.size()));
+    for (const auto* asset : assets) {
+        const auto id = QString::fromStdString(asset->id());
+        const QFileInfo file(QString::fromStdWString(asset->path().wstring()));
+        int useCount = 0;
+        for (const auto& clip : timeline_.clips()) {
+            if (clip.asset_id == asset->id()) ++useCount;
+        }
+        result.push_back(QVariantMap{
+            {"id", id},
+            {"name", file.completeBaseName()},
+            {"path", file.absoluteFilePath()},
+            {"durationNs", static_cast<qint64>(asset->duration())},
+            {"thumbnailAtlas", thumbnail_atlases_.value(id)},
+            {"useCount", useCount}});
+    }
+    return result;
+}
+
 qint64 EditorController::durationNs() const noexcept {
     return static_cast<qint64>(timeline_.duration());
 }
@@ -305,9 +336,8 @@ void EditorController::loadFiles(const QStringList& paths) {
             do {
                 assetId = "asset-" + std::to_string(++generated_asset_id_);
             } while (timeline_.asset(assetId) != nullptr);
-            const auto serial = std::to_string(generated_asset_id_);
             requests.push_back(Request{
-                info.absoluteFilePath(), std::move(assetId), "clip-" + serial});
+                info.absoluteFilePath(), std::move(assetId), makeUniqueClipId("clip")});
         }
         if (requests.empty()) {
             return;
@@ -449,15 +479,49 @@ void EditorController::moveClip(const QString& clipId, int insertionIndex) {
     }
 }
 
+std::string EditorController::makeUniqueClipId(const std::string& prefix) {
+    for (;;) {
+        const auto candidate = prefix + "-" + std::to_string(++generated_clip_id_);
+        const auto exists = std::any_of(
+            timeline_.clips().begin(), timeline_.clips().end(), [&candidate](const auto& clip) {
+                return clip.id == candidate;
+            });
+        if (!exists) return candidate;
+    }
+}
+
+void EditorController::insertAssetAtTime(const QString& assetId, qint64 timelinePosition) {
+    try {
+        const auto id = assetId.toStdString();
+        const auto* asset = timeline_.asset(id);
+        if (asset == nullptr) throw std::invalid_argument("unknown media asset");
+        const auto clamped = std::clamp<qint64>(timelinePosition, 0, durationNs());
+        const auto insertionTime = timeline_.nearest_frame_time(clamped).value_or(clamped);
+        const auto insertedId = makeUniqueClipId("clip");
+        const auto leftId = makeUniqueClipId("clip-left");
+        const auto rightId = makeUniqueClipId("clip-right");
+        timeline_.insert_clip_at(
+            insertionTime,
+            ffgui::Clip{insertedId, id, 0, asset->duration()},
+            leftId,
+            rightId);
+        selected_clip_id_ = QString::fromStdString(insertedId);
+        playhead_ns_ = insertionTime;
+        publishTimeline();
+        setStatus("미디어를 타임라인에 삽입했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
 void EditorController::splitAtPlayhead() {
     const auto mapped = timeline_.locate(playhead_ns_);
     if (!mapped.has_value()) {
         return;
     }
     try {
-        const auto serial = std::to_string(++generated_clip_id_);
-        const auto left = mapped->clip_id + "-left-" + serial;
-        const auto right = mapped->clip_id + "-right-" + serial;
+        const auto left = makeUniqueClipId(mapped->clip_id + "-left");
+        const auto right = makeUniqueClipId(mapped->clip_id + "-right");
         const auto splitPosition = timeline_.nearest_frame_time(playhead_ns_).value_or(playhead_ns_);
         timeline_.split_at(splitPosition, left, right);
         playhead_ns_ = splitPosition;
@@ -496,7 +560,7 @@ void EditorController::duplicateSelectedClip() {
         const auto insertionIndex = static_cast<std::size_t>(
             std::distance(clips.begin(), selected) + 1);
         auto duplicate = *selected;
-        duplicate.id += "-copy-" + std::to_string(++generated_clip_id_);
+        duplicate.id = makeUniqueClipId(duplicate.id + "-copy");
         const auto duplicateId = duplicate.id;
         timeline_.insert_clip(insertionIndex, std::move(duplicate));
         selected_clip_id_ = QString::fromStdString(duplicateId);

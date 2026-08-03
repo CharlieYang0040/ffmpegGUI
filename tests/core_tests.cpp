@@ -175,6 +175,37 @@ void test_duplicate_style_insert_is_magnetic_and_undoable() {
     require(timeline.clips().size() == 1, "undo must remove only the duplicate");
 }
 
+void test_time_insert_splits_once_and_is_single_step_undoable() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"original", "asset-a", seconds(1), seconds(6)});
+    timeline.clear_history();
+
+    timeline.insert_clip_at(
+        seconds(2),
+        Clip{"inserted", "asset-b", 0, seconds(3)},
+        "left",
+        "right");
+    const auto spans = timeline.snapshot();
+    require(spans.size() == 3, "time insert must split the occupied clip around the insert");
+    require(spans[0].clip.id == "left" && spans[0].clip.duration == seconds(2),
+            "left side must preserve the source before the insertion point");
+    require(spans[1].clip.id == "inserted" && spans[1].timeline_in == seconds(2),
+            "inserted media must begin at the requested timeline time");
+    require(spans[2].clip.id == "right" && spans[2].clip.source_in == seconds(3),
+            "right side must resume the original source after the split");
+    require(timeline.duration() == seconds(9), "insert edit must extend the magnetic timeline");
+    require(timeline.undo(), "split insert must be one undoable edit");
+    require(timeline.clips().size() == 1 && timeline.clips()[0].id == "original",
+            "one undo must restore the unsplit original clip");
+
+    timeline.insert_clip_at(
+        timeline.duration(),
+        Clip{"tail", "asset-b", 0, seconds(1)},
+        "unused-left",
+        "unused-right");
+    require(timeline.clips().back().id == "tail", "inserting at the end must append");
+}
+
 void test_invalid_edits_are_rejected_without_mutation() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"a", "asset-a", 0, seconds(2)});
@@ -327,6 +358,7 @@ int main() {
         {"split_preserves_duration_and_source_boundary", test_split_preserves_duration_and_source_boundary},
         {"reorder_uses_insertion_index_after_removal", test_reorder_uses_insertion_index_after_removal},
         {"duplicate_style_insert_is_magnetic_and_undoable", test_duplicate_style_insert_is_magnetic_and_undoable},
+        {"time_insert_splits_once_and_is_single_step_undoable", test_time_insert_splits_once_and_is_single_step_undoable},
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},

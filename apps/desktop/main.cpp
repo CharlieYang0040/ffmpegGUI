@@ -122,6 +122,11 @@ int main(int argc, char* argv[]) {
         controller.duplicateSelectedClip();
         controller.undo();
         controller.redo();
+        const auto importedAssets = controller.mediaAssets();
+        if (importedAssets.isEmpty()) return EXIT_FAILURE;
+        controller.insertAssetAtTime(
+            importedAssets.front().toMap().value("id").toString(),
+            100'000'000);
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);
@@ -131,7 +136,7 @@ int main(int argc, char* argv[]) {
         controller.loadProject(roundtripProject);
         return controller.durationNs() == expectedDuration && expectedDuration > 0 &&
                controller.clips().size() == expectedClipCount &&
-               expectedClipCount == importedClipCount + 2
+               expectedClipCount == importedClipCount + 4
             ? EXIT_SUCCESS
             : EXIT_FAILURE;
     }

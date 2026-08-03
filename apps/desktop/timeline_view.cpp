@@ -41,6 +41,10 @@ TimelineView::TimelineView(QQuickItem* parent) : QQuickItem(parent) {
     setAcceptedMouseButtons(Qt::LeftButton);
 }
 
+qint64 TimelineView::timelineTimeAt(qreal x) const {
+    return timeAt(x);
+}
+
 void TimelineView::setClips(QVariantList clips) {
     if (clips_ == clips) {
         return;

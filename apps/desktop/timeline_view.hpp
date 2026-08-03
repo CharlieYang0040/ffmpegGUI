@@ -36,6 +36,7 @@ public:
     void setZoomLevel(qreal zoom);
     [[nodiscard]] qint64 viewportStartNs() const noexcept { return viewport_start_ns_; }
     [[nodiscard]] qint64 visibleDurationNs() const;
+    Q_INVOKABLE qint64 timelineTimeAt(qreal x) const;
 
 signals:
     void clipsChanged();

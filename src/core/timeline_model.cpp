@@ -33,6 +33,66 @@ void TimelineModel::insert_clip(std::size_t index, Clip clip) {
     clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), std::move(clip));
 }
 
+void TimelineModel::insert_clip_at(
+    TimeNs timeline_position,
+    Clip clip,
+    std::string left_clip_id,
+    std::string right_clip_id) {
+    const auto total = duration();
+    if (timeline_position < 0 || timeline_position > total) {
+        throw std::out_of_range("clip insertion time is outside the timeline");
+    }
+    validate_clip(clip);
+
+    TimeNs cursor = 0;
+    for (std::size_t index = 0; index < clips_.size(); ++index) {
+        const auto clipEnd = checked_add(cursor, clips_[index].duration);
+        if (timeline_position == cursor) {
+            record_edit();
+            clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), std::move(clip));
+            return;
+        }
+        if (timeline_position < clipEnd) {
+            const auto& original = clips_[index];
+            if (left_clip_id.empty() || right_clip_id.empty() ||
+                left_clip_id == right_clip_id || left_clip_id == clip.id ||
+                right_clip_id == clip.id) {
+                throw std::invalid_argument("insert split ids must be distinct and non-empty");
+            }
+            const auto idExists = [this, index](const std::string& id) {
+                for (std::size_t candidate = 0; candidate < clips_.size(); ++candidate) {
+                    if (candidate != index && clips_[candidate].id == id) return true;
+                }
+                return false;
+            };
+            if (idExists(left_clip_id) || idExists(right_clip_id)) {
+                throw std::invalid_argument("insert split id already exists");
+            }
+
+            const auto local = timeline_position - cursor;
+            Clip left{std::move(left_clip_id), original.asset_id, original.source_in, local};
+            Clip right{
+                std::move(right_clip_id),
+                original.asset_id,
+                checked_add(original.source_in, local),
+                original.duration - local};
+            validate_clip(left, index);
+            validate_clip(right, index);
+            record_edit();
+            clips_[index] = std::move(left);
+            clips_.insert(
+                clips_.begin() + static_cast<std::ptrdiff_t>(index + 1), std::move(clip));
+            clips_.insert(
+                clips_.begin() + static_cast<std::ptrdiff_t>(index + 2), std::move(right));
+            return;
+        }
+        cursor = clipEnd;
+    }
+
+    record_edit();
+    clips_.push_back(std::move(clip));
+}
+
 void TimelineModel::trim_clip(const std::string& clip_id, TimeNs source_in, TimeNs range_duration) {
     const auto index = index_of(clip_id);
     Clip replacement = clips_[index];

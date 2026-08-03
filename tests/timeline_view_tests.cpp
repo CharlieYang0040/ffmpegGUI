@@ -48,6 +48,10 @@ int main(int argc, char* argv[]) {
     }
     timeline.setClips(clips);
     timeline.setDurationNs(static_cast<qint64>(clipCount) * clipDuration);
+    require(timeline.timelineTimeAt(12) == 0, "left track edge must map to sequence start");
+    require(
+        timeline.timelineTimeAt(1908) == static_cast<qint64>(clipCount) * clipDuration,
+        "right track edge must map to sequence end for media drops");
 
     auto* root = timeline.render(nullptr);
     require(root != nullptr, "timeline must create a scene graph root");
