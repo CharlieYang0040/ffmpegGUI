@@ -85,6 +85,21 @@ ApplicationWindow {
             }
         }
     }
+    FileDialog {
+        id: importSrtDialog
+        title: "SRT 자막 가져오기"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["SRT 자막 (*.srt)"]
+        onAccepted: EditorController.importSrtUrl(selectedFile)
+    }
+    FileDialog {
+        id: exportSrtDialog
+        title: "SRT 자막 내보내기"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "srt"
+        nameFilters: ["SRT 자막 (*.srt)"]
+        onAccepted: EditorController.exportSrtUrl(selectedFile)
+    }
     Dialog {
         id: overwriteDialog
         property url suggestedUrl
@@ -162,7 +177,6 @@ ApplicationWindow {
                             onClicked: mediaDialog.open()
                         }
                     }
-
                     Label {
                         Layout.fillWidth: true
                         visible: EditorController.mediaAssets.length === 0
@@ -278,10 +292,17 @@ ApplicationWindow {
                 SplitView.preferredWidth: 320
                 SplitView.minimumWidth: 280
                 SplitView.maximumWidth: 380
-                ColumnLayout {
+                ScrollView {
+                    id: inspectorScroll
                     anchors.fill: parent
-                    anchors.margins: 20
-                    spacing: 12
+                    clip: true
+                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                    ColumnLayout {
+                        x: 20
+                        y: 20
+                        width: Math.max(0, inspectorScroll.availableWidth - 40)
+                        spacing: 12
                     Label { text: "출력"; font.pixelSize: 18; font.bold: true }
                     Label { text: "H.264 · MP4"; color: "#8994a3" }
                     Label {
@@ -369,6 +390,21 @@ ApplicationWindow {
                             onClicked: EditorController.addCaptionAtPlayhead()
                         }
                     }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Button {
+                            Layout.fillWidth: true
+                            text: "SRT 가져오기"
+                            enabled: EditorController.durationNs > 0
+                            onClicked: importSrtDialog.open()
+                        }
+                        Button {
+                            Layout.fillWidth: true
+                            text: "SRT 내보내기"
+                            enabled: EditorController.captions.length > 0
+                            onClicked: exportSrtDialog.open()
+                        }
+                    }
                     TextField {
                         id: captionTextField
                         Layout.fillWidth: true
@@ -423,7 +459,8 @@ ApplicationWindow {
                             ? EditorController.cancelExport()
                             : exportDialog.open()
                     }
-                    Item { Layout.fillHeight: true }
+                        Item { Layout.preferredHeight: 20 }
+                    }
                 }
             }
         }
@@ -581,11 +618,18 @@ ApplicationWindow {
                             id: captionBar
                             required property var modelData
                             readonly property real contentWidth: Math.max(1, timelineLayer.width - 24)
-                            x: 12 + (modelData.timelineInNs - timeline.viewportStartNs)
+                            readonly property real baseX: 12 + (modelData.timelineInNs - timeline.viewportStartNs)
                                / Math.max(1, timeline.viewportDurationNs) * contentWidth
-                            y: timelineLayer.height - 31
-                            width: Math.max(4, modelData.durationNs
+                            readonly property real baseWidth: Math.max(4, modelData.durationNs
                                 / Math.max(1, timeline.viewportDurationNs) * contentWidth)
+                            readonly property real leftDelta: leftDrag.active
+                                ? Math.max(-baseX + 12, Math.min(leftDrag.translation.x, baseWidth - 8)) : 0
+                            readonly property real rightDelta: rightDrag.active
+                                ? Math.max(-baseWidth + 8, rightDrag.translation.x) : 0
+                            readonly property real moveDelta: moveDrag.active ? moveDrag.translation.x : 0
+                            x: baseX + leftDelta + moveDelta
+                            y: timelineLayer.height - 31
+                            width: Math.max(8, baseWidth - leftDelta + rightDelta)
                             height: 24
                             z: 4
                             radius: 3
@@ -607,6 +651,77 @@ ApplicationWindow {
                             }
                             TapHandler {
                                 onTapped: EditorController.selectCaption(captionBar.modelData.id)
+                            }
+                            Item {
+                                anchors.fill: parent
+                                anchors.leftMargin: 7
+                                anchors.rightMargin: 7
+                                DragHandler {
+                                    id: moveDrag
+                                    target: null
+                                    xAxis.enabled: true
+                                    yAxis.enabled: false
+                                    onActiveChanged: {
+                                        if (active) {
+                                            EditorController.selectCaption(captionBar.modelData.id)
+                                        } else if (translation.x !== 0) {
+                                            EditorController.moveCaption(
+                                                captionBar.modelData.id,
+                                                timeline.timelineTimeAt(
+                                                    captionBar.baseX + translation.x))
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                anchors.left: parent.left
+                                width: 7
+                                height: parent.height
+                                color: "#eadcff"
+                                z: 2
+                                DragHandler {
+                                    id: leftDrag
+                                    target: null
+                                    xAxis.enabled: true
+                                    yAxis.enabled: false
+                                    onActiveChanged: {
+                                        if (active) {
+                                            EditorController.selectCaption(captionBar.modelData.id)
+                                        } else if (translation.x !== 0) {
+                                            const newIn = timeline.timelineTimeAt(
+                                                captionBar.baseX + translation.x)
+                                            const oldOut = captionBar.modelData.timelineInNs
+                                                           + captionBar.modelData.durationNs
+                                            EditorController.trimCaption(
+                                                captionBar.modelData.id, newIn, oldOut - newIn)
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                anchors.right: parent.right
+                                width: 7
+                                height: parent.height
+                                color: "#eadcff"
+                                z: 2
+                                DragHandler {
+                                    id: rightDrag
+                                    target: null
+                                    xAxis.enabled: true
+                                    yAxis.enabled: false
+                                    onActiveChanged: {
+                                        if (active) {
+                                            EditorController.selectCaption(captionBar.modelData.id)
+                                        } else if (translation.x !== 0) {
+                                            const newOut = timeline.timelineTimeAt(
+                                                captionBar.baseX + captionBar.baseWidth + translation.x)
+                                            EditorController.trimCaption(
+                                                captionBar.modelData.id,
+                                                captionBar.modelData.timelineInNs,
+                                                newOut - captionBar.modelData.timelineInNs)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

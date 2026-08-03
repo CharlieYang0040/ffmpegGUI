@@ -1,6 +1,7 @@
 #include "editor_controller.hpp"
 #include "ffprobe_analyzer.hpp"
 #include "d3d11_video_item.hpp"
+#include "core/subtitle_srt.hpp"
 
 #include <QFile>
 #include <QCoreApplication>
@@ -875,6 +876,109 @@ void EditorController::deleteSelectedCaption() {
         publishTimeline();
         emit captionSelectionChanged();
         setStatus("자막을 삭제했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::moveCaption(const QString& captionId, qint64 timelineIn) {
+    const auto id = captionId.toStdString();
+    const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
+    if (found == timeline_.captions().end()) return;
+    try {
+        auto replacement = *found;
+        replacement.timeline_in = std::clamp<ffgui::TimeNs>(
+            timelineIn, 0, durationNs() - replacement.duration);
+        timeline_.update_caption(std::move(replacement));
+        selected_caption_id_ = captionId;
+        publishTimeline();
+        setStatus("자막 위치를 이동했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::trimCaption(
+    const QString& captionId,
+    qint64 timelineIn,
+    qint64 duration) {
+    const auto id = captionId.toStdString();
+    const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
+    if (found == timeline_.captions().end()) return;
+    try {
+        const auto start = std::clamp<ffgui::TimeNs>(timelineIn, 0, durationNs() - 100'000'000);
+        const auto available = durationNs() - start;
+        auto replacement = *found;
+        replacement.timeline_in = start;
+        replacement.duration = std::clamp<ffgui::TimeNs>(duration, 100'000'000, available);
+        timeline_.update_caption(std::move(replacement));
+        selected_caption_id_ = captionId;
+        publishTimeline();
+        setStatus("자막 구간을 조정했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::importSrtUrl(const QUrl& url) {
+    if (!url.isLocalFile() || durationNs() <= 0) {
+        setStatus("자막을 넣을 타임라인과 로컬 SRT 파일이 필요합니다");
+        return;
+    }
+    try {
+        QFile file(url.toLocalFile());
+        if (!file.open(QIODevice::ReadOnly)) throw std::runtime_error("SRT file could not be opened");
+        const auto contents = file.readAll();
+        const auto parsed = ffgui::parse_srt(std::string_view(
+            contents.constData(), static_cast<std::size_t>(contents.size())));
+        std::vector<ffgui::CaptionCue> imported;
+        for (const auto& cue : parsed) {
+            if (cue.timeline_in >= durationNs()) continue;
+            std::string id;
+            do {
+                id = "caption-" + std::to_string(++generated_caption_id_);
+            } while (std::ranges::any_of(timeline_.captions(),
+                [&id](const auto& caption) { return caption.id == id; }));
+            imported.push_back(ffgui::CaptionCue{
+                std::move(id),
+                cue.text,
+                cue.timeline_in,
+                std::min<ffgui::TimeNs>(cue.duration, durationNs() - cue.timeline_in)});
+        }
+        if (imported.empty()) {
+            throw std::invalid_argument("타임라인 범위 안에 가져올 자막이 없습니다");
+        }
+        const auto firstId = QString::fromStdString(imported.front().id);
+        const auto importedCount = imported.size();
+        timeline_.add_captions(std::move(imported));
+        selected_caption_id_ = firstId;
+        publishTimeline();
+        setStatus(QStringLiteral("SRT 자막 %1개를 가져왔습니다").arg(importedCount));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::exportSrtUrl(const QUrl& url) {
+    if (!url.isLocalFile() || timeline_.captions().empty()) {
+        setStatus("내보낼 자막과 로컬 SRT 경로가 필요합니다");
+        return;
+    }
+    try {
+        std::vector<ffgui::SrtCue> cues;
+        cues.reserve(timeline_.captions().size());
+        for (const auto& caption : timeline_.captions()) {
+            cues.push_back(ffgui::SrtCue{
+                caption.text, caption.timeline_in, caption.duration});
+        }
+        const auto serialized = ffgui::serialize_srt(cues);
+        QSaveFile file(url.toLocalFile());
+        if (!file.open(QIODevice::WriteOnly) ||
+            file.write(serialized.data(), static_cast<qint64>(serialized.size())) !=
+                static_cast<qint64>(serialized.size()) || !file.commit()) {
+            throw std::runtime_error("SRT file could not be saved atomically");
+        }
+        setStatus("SRT 자막을 내보냈습니다");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
     }

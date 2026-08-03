@@ -131,6 +131,10 @@ public slots:
     void selectCaption(const QString& captionId);
     void updateSelectedCaption(const QString& text, int durationMs);
     void deleteSelectedCaption();
+    void moveCaption(const QString& captionId, qint64 timelineIn);
+    void trimCaption(const QString& captionId, qint64 timelineIn, qint64 duration);
+    void importSrtUrl(const QUrl& url);
+    void exportSrtUrl(const QUrl& url);
     void undo();
     void redo();
     void saveProject(const QString& path);

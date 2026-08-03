@@ -1,6 +1,7 @@
 #include "core/media_asset.hpp"
 #include "core/ffprobe_parser.hpp"
 #include "core/timeline_model.hpp"
+#include "core/subtitle_srt.hpp"
 #include "export/ffmpeg_export_plan.hpp"
 
 #include <exception>
@@ -431,6 +432,36 @@ void test_caption_edits_and_ripple_mapping_share_undo_state() {
             "inserted time must shift cues at and after the edit");
     require(timeline.undo() && timeline.captions()[0].timeline_in == 500'000'000,
             "insert ripple must be one undo step");
+
+    timeline.clear_history();
+    timeline.add_captions({
+        {"batch-a", "one", seconds(1), 250'000'000},
+        {"batch-b", "two", seconds(2), 250'000'000}});
+    require(timeline.captions().size() == 5, "caption imports must append the complete batch");
+    require(timeline.undo() && timeline.captions().size() == 3,
+            "caption import batch must be one undo step");
+}
+
+void test_srt_utf8_multiline_parse_and_serialize_roundtrip() {
+    const auto cues = ffgui::parse_srt(
+        "\xEF\xBB\xBF" "1\r\n00:00:00,125 --> 00:00:01,750\r\n첫 줄\r\n둘째 줄\r\n\r\n"
+        "2\n00:00:02.000 --> 00:00:03.250\nsecond\n");
+    require(cues.size() == 2, "SRT parser must preserve two cue blocks");
+    require(cues[0] == ffgui::SrtCue{"첫 줄\n둘째 줄", 125'000'000, 1'625'000'000},
+            "SRT parser must preserve UTF-8, multiline text and millisecond timing");
+    require(cues[1].timeline_in == seconds(2) && cues[1].duration == 1'250'000'000,
+            "SRT parser must accept dot millisecond separators");
+
+    const auto serialized = ffgui::serialize_srt(cues);
+    require(serialized.contains("00:00:00,125 --> 00:00:01,750\r\n"),
+            "SRT writer must emit canonical CRLF timestamps");
+    require(serialized.contains("첫 줄\r\n둘째 줄\r\n\r\n"),
+            "SRT writer must normalize multiline text to CRLF");
+    require(ffgui::parse_srt(serialized) == cues,
+            "serialized SRT must parse back without timing or text drift");
+    require_throws<std::invalid_argument>(
+        [] { static_cast<void>(ffgui::parse_srt("1\n00:00:02,000 --> 00:00:01,000\nbad\n")); },
+        "negative SRT durations must be rejected");
 }
 
 void test_ffprobe_timestamp_parser_preserves_vfr() {
@@ -589,6 +620,7 @@ int main() {
         {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},
         {"clip_audio_edits_are_atomic_and_follow_split_edges", test_clip_audio_edits_are_atomic_and_follow_split_edges},
         {"caption_edits_and_ripple_mapping_share_undo_state", test_caption_edits_and_ripple_mapping_share_undo_state},
+        {"srt_utf8_multiline_parse_and_serialize_roundtrip", test_srt_utf8_multiline_parse_and_serialize_roundtrip},
         {"ffprobe_timestamp_parser_preserves_vfr", test_ffprobe_timestamp_parser_preserves_vfr},
         {"ffprobe_frame_timeline_preserves_keyframes", test_ffprobe_frame_timeline_preserves_keyframes},
         {"ffmpeg_export_plan_preserves_clip_ranges_and_audio", test_ffmpeg_export_plan_preserves_clip_ranges_and_audio},

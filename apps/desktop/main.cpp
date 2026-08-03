@@ -195,6 +195,33 @@ int main(int argc, char* argv[]) {
             QStringLiteral("회귀 테스트 자막")) {
             return EXIT_FAILURE;
         }
+        const auto captionId = controller.selectedCaptionId();
+        controller.moveCaption(captionId, 1'100'000'000);
+        controller.trimCaption(captionId, 1'200'000'000, 700'000'000);
+        auto editedCaption = controller.captions().front().toMap();
+        if (editedCaption.value("timelineInNs").toLongLong() != 1'200'000'000 ||
+            editedCaption.value("durationNs").toLongLong() != 700'000'000) {
+            return EXIT_FAILURE;
+        }
+        controller.undo();
+        if (controller.captions().front().toMap().value("timelineInNs").toLongLong() !=
+            1'100'000'000) {
+            return EXIT_FAILURE;
+        }
+        controller.redo();
+        const auto srtRoundtrip = roundtripProject + ".srt";
+        QFile::remove(srtRoundtrip);
+        controller.exportSrtUrl(QUrl::fromLocalFile(srtRoundtrip));
+        if (!QFileInfo(srtRoundtrip).isFile()) return EXIT_FAILURE;
+        controller.deleteSelectedCaption();
+        if (!controller.captions().isEmpty()) return EXIT_FAILURE;
+        controller.importSrtUrl(QUrl::fromLocalFile(srtRoundtrip));
+        QFile::remove(srtRoundtrip);
+        if (controller.captions().size() != 1 ||
+            controller.captions().front().toMap().value("text").toString() !=
+                QStringLiteral("회귀 테스트 자막")) {
+            return EXIT_FAILURE;
+        }
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);

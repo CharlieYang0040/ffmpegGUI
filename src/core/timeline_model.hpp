@@ -87,6 +87,7 @@ public:
         std::string right_remainder_id);
     void set_clips_audio(const std::vector<std::string>& clip_ids, ClipAudio audio);
     void add_caption(CaptionCue caption);
+    void add_captions(std::vector<CaptionCue> captions);
     void update_caption(CaptionCue caption);
     void erase_caption(const std::string& caption_id);
     void split_at(

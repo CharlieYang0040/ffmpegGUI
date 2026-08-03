@@ -19,6 +19,7 @@ include(CTest)
 add_library(ffgui_core STATIC
     src/core/ffprobe_parser.cpp
     src/core/media_asset.cpp
+    src/core/subtitle_srt.cpp
     src/core/timeline_model.cpp
     src/export/ffmpeg_export_plan.cpp
 )

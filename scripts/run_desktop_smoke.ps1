@@ -38,7 +38,7 @@ $roundtrip = Start-Process -FilePath $application `
 if ($roundtrip.ExitCode -ne 0) {
     throw "project save/load roundtrip failed"
 }
-Write-Output "Project roundtrip passed: frame/group/range edits, audio controls and timeline captions survived save/load"
+Write-Output "Project roundtrip passed: caption move/trim, undo/redo and SRT import/export survived save/load"
 
 $savedProject = Get-Content -LiteralPath $roundtripProject -Raw | ConvertFrom-Json
 foreach ($asset in $savedProject.assets) {

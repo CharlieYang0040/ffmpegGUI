@@ -315,9 +315,23 @@ void TimelineModel::erase_range(
 }
 
 void TimelineModel::add_caption(CaptionCue caption) {
-    validate_caption(caption);
+    add_captions({std::move(caption)});
+}
+
+void TimelineModel::add_captions(std::vector<CaptionCue> captions) {
+    if (captions.empty()) return;
+    std::unordered_set<std::string> batchIds;
+    for (const auto& caption : captions) {
+        validate_caption(caption);
+        if (!batchIds.insert(caption.id).second) {
+            throw std::invalid_argument("duplicate caption id in insertion batch: " + caption.id);
+        }
+    }
     record_edit();
-    captions_.push_back(std::move(caption));
+    captions_.insert(
+        captions_.end(),
+        std::make_move_iterator(captions.begin()),
+        std::make_move_iterator(captions.end()));
     std::ranges::sort(captions_, {}, &CaptionCue::timeline_in);
 }
 
