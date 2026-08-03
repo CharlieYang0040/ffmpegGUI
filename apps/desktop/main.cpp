@@ -103,13 +103,35 @@ int main(int argc, char* argv[]) {
         }
     }
     if (!roundtripProject.isEmpty()) {
+        const auto importedClips = controller.clips();
+        if (importedClips.isEmpty()) return EXIT_FAILURE;
+        const auto importedClipCount = importedClips.size();
+        const auto first = importedClips.front().toMap();
+        const auto firstId = first.value("id").toString();
+        const auto sourceIn = first.value("sourceInNs").toLongLong();
+        const auto clipDuration = first.value("durationNs").toLongLong();
+        if (clipDuration <= 100'000'000) return EXIT_FAILURE;
+        controller.selectClip(firstId);
+        controller.trimClip(
+            firstId,
+            sourceIn + 17'000'000,
+            clipDuration - 34'000'000);
+        const auto trimmed = controller.clips().front().toMap();
+        controller.seek(trimmed.value("durationNs").toLongLong() / 2);
+        controller.splitAtPlayhead();
+        controller.duplicateSelectedClip();
+        controller.undo();
+        controller.redo();
         const auto expectedDuration = controller.durationNs();
+        const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);
         if (!QFileInfo::exists(roundtripProject)) {
             return EXIT_FAILURE;
         }
         controller.loadProject(roundtripProject);
-        return controller.durationNs() == expectedDuration && expectedDuration > 0
+        return controller.durationNs() == expectedDuration && expectedDuration > 0 &&
+               controller.clips().size() == expectedClipCount &&
+               expectedClipCount == importedClipCount + 2
             ? EXIT_SUCCESS
             : EXIT_FAILURE;
     }

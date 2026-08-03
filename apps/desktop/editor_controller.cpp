@@ -431,7 +431,7 @@ void EditorController::selectClip(const QString& clipId) {
 
 void EditorController::trimClip(const QString& clipId, qint64 sourceIn, qint64 duration) {
     try {
-        timeline_.trim_clip(clipId.toStdString(), sourceIn, duration);
+        timeline_.trim_clip_to_frame_boundaries(clipId.toStdString(), sourceIn, duration);
         selected_clip_id_ = clipId;
         publishTimeline();
     } catch (const std::exception& error) {
@@ -458,7 +458,9 @@ void EditorController::splitAtPlayhead() {
         const auto serial = std::to_string(++generated_clip_id_);
         const auto left = mapped->clip_id + "-left-" + serial;
         const auto right = mapped->clip_id + "-right-" + serial;
-        timeline_.split_at(playhead_ns_, left, right);
+        const auto splitPosition = timeline_.nearest_frame_time(playhead_ns_).value_or(playhead_ns_);
+        timeline_.split_at(splitPosition, left, right);
+        playhead_ns_ = splitPosition;
         selected_clip_id_ = QString::fromStdString(right);
         publishTimeline();
     } catch (const std::exception& error) {
@@ -475,6 +477,29 @@ void EditorController::deleteSelectedClip() {
         selected_clip_id_ = timeline_.clips().empty()
             ? QString{}
             : QString::fromStdString(timeline_.clips().front().id);
+        publishTimeline();
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::duplicateSelectedClip() {
+    if (selected_clip_id_.isEmpty()) return;
+    try {
+        const auto selectedId = selected_clip_id_.toStdString();
+        const auto& clips = timeline_.clips();
+        const auto selected = std::find_if(
+            clips.begin(), clips.end(), [&selectedId](const ffgui::Clip& clip) {
+                return clip.id == selectedId;
+            });
+        if (selected == clips.end()) return;
+        const auto insertionIndex = static_cast<std::size_t>(
+            std::distance(clips.begin(), selected) + 1);
+        auto duplicate = *selected;
+        duplicate.id += "-copy-" + std::to_string(++generated_clip_id_);
+        const auto duplicateId = duplicate.id;
+        timeline_.insert_clip(insertionIndex, std::move(duplicate));
+        selected_clip_id_ = QString::fromStdString(duplicateId);
         publishTimeline();
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));

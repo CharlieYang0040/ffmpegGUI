@@ -39,8 +39,44 @@ void TimelineModel::trim_clip(const std::string& clip_id, TimeNs source_in, Time
     replacement.source_in = source_in;
     replacement.duration = range_duration;
     validate_clip(replacement, index);
+    if (replacement.source_in == clips_[index].source_in &&
+        replacement.duration == clips_[index].duration) {
+        return;
+    }
     record_edit();
     clips_[index] = std::move(replacement);
+}
+
+void TimelineModel::trim_clip_to_frame_boundaries(
+    const std::string& clip_id,
+    TimeNs source_in,
+    TimeNs range_duration) {
+    const auto index = index_of(clip_id);
+    const auto& current = clips_[index];
+    const auto* sourceAsset = asset(current.asset_id);
+    if (sourceAsset == nullptr || !sourceAsset->contains_range(source_in, range_duration)) {
+        throw std::invalid_argument("clip source range is outside the asset");
+    }
+    if (sourceAsset->frame_pts().empty()) {
+        trim_clip(clip_id, source_in, range_duration);
+        return;
+    }
+
+    const auto requestedOut = checked_add(source_in, range_duration);
+    auto snappedIn = sourceAsset->nearest_frame_boundary(source_in);
+    auto snappedOut = sourceAsset->nearest_frame_boundary(requestedOut);
+    if (snappedOut <= snappedIn) {
+        if (source_in != current.source_in) {
+            const auto previous = sourceAsset->previous_frame_boundary(snappedOut);
+            if (!previous.has_value()) throw std::invalid_argument("trim must keep one frame");
+            snappedIn = previous.value();
+        } else {
+            const auto next = sourceAsset->next_frame_boundary(snappedIn);
+            if (!next.has_value()) throw std::invalid_argument("trim must keep one frame");
+            snappedOut = next.value();
+        }
+    }
+    trim_clip(clip_id, snappedIn, snappedOut - snappedIn);
 }
 
 void TimelineModel::move_clip(const std::string& clip_id, std::size_t insertion_index) {
@@ -245,6 +281,22 @@ std::optional<TimeNs> TimelineModel::previous_frame_time(TimeNs timeline_positio
         cursor = clipEnd;
     }
     return std::nullopt;
+}
+
+std::optional<TimeNs> TimelineModel::nearest_frame_time(TimeNs timeline_position) const {
+    if (timeline_position == duration() && !clips_.empty()) return timeline_position;
+    const auto mapped = locate(timeline_position);
+    if (!mapped.has_value()) return std::nullopt;
+    const auto* sourceAsset = asset(mapped->asset_id);
+    if (sourceAsset == nullptr || sourceAsset->frame_pts().empty()) return timeline_position;
+    const auto clipIndex = index_of(mapped->clip_id);
+    const auto& clip = clips_[clipIndex];
+    const auto snappedSource = std::clamp(
+        sourceAsset->nearest_frame_boundary(mapped->source_time),
+        clip.source_in,
+        clip.source_out());
+    return checked_add(
+        timeline_position - mapped->clip_time, snappedSource - clip.source_in);
 }
 
 std::size_t TimelineModel::index_of(const std::string& clip_id) const {

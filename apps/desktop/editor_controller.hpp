@@ -87,6 +87,7 @@ public slots:
     void trimClip(const QString& clipId, qint64 sourceIn, qint64 duration);
     void moveClip(const QString& clipId, int insertionIndex);
     void splitAtPlayhead();
+    void duplicateSelectedClip();
     void deleteSelectedClip();
     void undo();
     void redo();

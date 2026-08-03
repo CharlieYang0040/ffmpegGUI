@@ -117,6 +117,25 @@ void test_vfr_frame_stepping_respects_trims_and_clip_boundaries() {
     require(!timeline.previous_frame_time(0).has_value(), "cannot step before the start");
 }
 
+void test_trim_and_split_snap_to_vfr_frame_boundaries() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"clip", "asset-a", seconds(1), seconds(6)});
+    timeline.clear_history();
+
+    timeline.trim_clip_to_frame_boundaries("clip", 1'600'000'000, 4'600'000'000);
+    require(timeline.clips()[0].source_in == seconds(2), "trim in must snap to nearest PTS");
+    require(timeline.clips()[0].source_out() == seconds(7), "trim out must snap to boundary");
+    const auto revision = timeline.revision();
+    timeline.trim_clip_to_frame_boundaries("clip", 2'100'000'000, 4'800'000'000);
+    require(timeline.revision() == revision, "same snapped range must not create undo history");
+
+    const auto snapped = timeline.nearest_frame_time(1'700'000'000);
+    require(snapped == seconds(2), "sequence split position must snap through source PTS");
+    timeline.split_at(snapped.value(), "left", "right");
+    require(timeline.clips()[0].duration == seconds(2), "left split must end at snapped frame");
+    require(timeline.clips()[1].source_in == seconds(4), "right split must start on frame PTS");
+}
+
 void test_split_preserves_duration_and_source_boundary() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"original", "asset-a", seconds(1), seconds(6)});
@@ -142,6 +161,18 @@ void test_reorder_uses_insertion_index_after_removal() {
     timeline.move_clip("c", 2);
     require(timeline.clips()[2].id == "c", "clip must move to the end");
     require(timeline.duration() == seconds(3), "reorder must preserve duration");
+}
+
+void test_duplicate_style_insert_is_magnetic_and_undoable() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"original", "asset-a", seconds(1), seconds(2)});
+    timeline.clear_history();
+    timeline.insert_clip(1, Clip{"copy", "asset-a", seconds(1), seconds(2)});
+    const auto spans = timeline.snapshot();
+    require(spans.size() == 2, "duplicate insert must keep both clips");
+    require(spans[1].timeline_in == seconds(2), "duplicate must magnetically follow original");
+    require(timeline.undo(), "duplicate insert must be undoable in one step");
+    require(timeline.clips().size() == 1, "undo must remove only the duplicate");
 }
 
 void test_invalid_edits_are_rejected_without_mutation() {
@@ -292,8 +323,10 @@ int main() {
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},
         {"sequence_to_source_mapping", test_sequence_to_source_mapping},
         {"vfr_frame_stepping_respects_trims_and_clip_boundaries", test_vfr_frame_stepping_respects_trims_and_clip_boundaries},
+        {"trim_and_split_snap_to_vfr_frame_boundaries", test_trim_and_split_snap_to_vfr_frame_boundaries},
         {"split_preserves_duration_and_source_boundary", test_split_preserves_duration_and_source_boundary},
         {"reorder_uses_insertion_index_after_removal", test_reorder_uses_insertion_index_after_removal},
+        {"duplicate_style_insert_is_magnetic_and_undoable", test_duplicate_style_insert_is_magnetic_and_undoable},
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},

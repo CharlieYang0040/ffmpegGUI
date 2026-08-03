@@ -46,6 +46,8 @@ public:
     void append_clip(Clip clip);
     void insert_clip(std::size_t index, Clip clip);
     void trim_clip(const std::string& clip_id, TimeNs source_in, TimeNs duration);
+    void trim_clip_to_frame_boundaries(
+        const std::string& clip_id, TimeNs source_in, TimeNs duration);
     void move_clip(const std::string& clip_id, std::size_t insertion_index);
     void erase_clip(const std::string& clip_id);
     void split_at(
@@ -65,6 +67,7 @@ public:
     [[nodiscard]] std::optional<MappedPosition> locate(TimeNs timeline_position) const;
     [[nodiscard]] std::optional<TimeNs> next_frame_time(TimeNs timeline_position) const;
     [[nodiscard]] std::optional<TimeNs> previous_frame_time(TimeNs timeline_position) const;
+    [[nodiscard]] std::optional<TimeNs> nearest_frame_time(TimeNs timeline_position) const;
     [[nodiscard]] std::optional<TimeNs> timeline_time_for_source(
         const std::string& clip_id,
         TimeNs source_time) const;

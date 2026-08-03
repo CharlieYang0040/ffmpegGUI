@@ -31,6 +31,9 @@ public:
     [[nodiscard]] bool contains_range(TimeNs source_in, TimeNs range_duration) const noexcept;
     [[nodiscard]] std::optional<std::size_t> frame_at_or_before(TimeNs source_time) const noexcept;
     [[nodiscard]] std::optional<TimeNs> frame_time(std::size_t frame_index) const noexcept;
+    [[nodiscard]] TimeNs nearest_frame_boundary(TimeNs source_time) const noexcept;
+    [[nodiscard]] std::optional<TimeNs> previous_frame_boundary(TimeNs source_time) const noexcept;
+    [[nodiscard]] std::optional<TimeNs> next_frame_boundary(TimeNs source_time) const noexcept;
 
 private:
     std::string id_;

@@ -80,4 +80,29 @@ std::optional<TimeNs> MediaAsset::frame_time(std::size_t frame_index) const noex
     return frame_pts_[frame_index];
 }
 
+TimeNs MediaAsset::nearest_frame_boundary(TimeNs source_time) const noexcept {
+    source_time = std::clamp(source_time, TimeNs{0}, duration_);
+    if (frame_pts_.empty() || source_time == duration_) return source_time;
+    const auto next = std::lower_bound(frame_pts_.begin(), frame_pts_.end(), source_time);
+    if (next != frame_pts_.end() && *next == source_time) return source_time;
+    const auto nextTime = next != frame_pts_.end() ? *next : duration_;
+    const auto previousTime = next != frame_pts_.begin() ? *std::prev(next) : TimeNs{0};
+    return source_time - previousTime <= nextTime - source_time ? previousTime : nextTime;
+}
+
+std::optional<TimeNs> MediaAsset::previous_frame_boundary(TimeNs source_time) const noexcept {
+    if (source_time <= 0) return std::nullopt;
+    source_time = std::min(source_time, duration_);
+    const auto previous = std::lower_bound(frame_pts_.begin(), frame_pts_.end(), source_time);
+    if (previous == frame_pts_.begin()) return TimeNs{0};
+    return *std::prev(previous);
+}
+
+std::optional<TimeNs> MediaAsset::next_frame_boundary(TimeNs source_time) const noexcept {
+    if (source_time < 0) return TimeNs{0};
+    if (source_time >= duration_) return std::nullopt;
+    const auto next = std::upper_bound(frame_pts_.begin(), frame_pts_.end(), source_time);
+    return next != frame_pts_.end() ? *next : duration_;
+}
+
 }  // namespace ffgui
