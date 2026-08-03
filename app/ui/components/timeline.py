@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.events import Events, event_emitter
+from app.core.media_timing import FrameTimeMap
 from app.services.logging_service import LoggingService
 from app.ui.widgets.cut_timeline_widget import CutTimelineWidget
 
@@ -30,6 +31,7 @@ class TimelineComponent:
         self.speed_slider = None
         self.speed_value_label = None
         self.current_timecode_label = None
+        self.frame_time_map = FrameTimeMap(())
         self._shortcuts = ()
 
     def create_timeline_area(self, layout):
@@ -99,10 +101,12 @@ class TimelineComponent:
         fps: float,
         duration: float,
         nb_frames: int = 0,
+        frame_timestamps_ms=(),
     ):
         if not self.timeline_widget:
             return
         if frame_count <= 0 and nb_frames <= 0:
+            self.frame_time_map = FrameTimeMap(())
             self.timeline_widget.set_video_info(1, 30.0, 0.0, 0)
             self.timeline_widget.set_current_frame(1, emit_signal=False)
             if self.play_button:
@@ -112,6 +116,11 @@ class TimelineComponent:
         frame_count = int(nb_frames or frame_count)
         fps = float(fps or 30.0)
         duration = float(duration or (frame_count / fps))
+        self.frame_time_map = FrameTimeMap.from_timestamps(
+            frame_timestamps_ms,
+            frame_count=frame_count,
+            fps=fps,
+        )
         self.timeline_widget.set_video_info(frame_count, fps, duration, nb_frames)
         if self.play_button:
             self.play_button.setEnabled(True)
@@ -137,11 +146,12 @@ class TimelineComponent:
         return self.get_in_point(), self.get_out_point()
 
     def _on_frame_changed(self, frame: int):
-        fps = max(
-            1.0,
-            float(getattr(self.timeline_widget, "fps", 30.0) or 30.0),
-        )
-        total_seconds = max(0.0, (frame - 1) / fps)
+        fps = max(1.0, float(getattr(self.timeline_widget, "fps", 30.0) or 30.0))
+        frame_time_map = getattr(self, "frame_time_map", FrameTimeMap(()))
+        if frame_time_map.frame_count:
+            total_seconds = frame_time_map.timestamp_for_frame(frame) / 1000.0
+        else:
+            total_seconds = max(0.0, (frame - 1) / fps)
         hours = int(total_seconds // 3600)
         minutes = int(total_seconds % 3600 // 60)
         seconds = int(total_seconds % 60)

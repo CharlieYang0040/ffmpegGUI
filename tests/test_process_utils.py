@@ -4,7 +4,11 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from app.core.process_utils import probe_media_json, run_hidden
+from app.core.process_utils import (
+    probe_media_json,
+    probe_video_frame_timestamps,
+    run_hidden,
+)
 
 
 class ProcessUtilsTests(unittest.TestCase):
@@ -33,6 +37,25 @@ class ProcessUtilsTests(unittest.TestCase):
         command = run_mock.call_args.args[0]
         self.assertIn("-show_streams", command)
         self.assertEqual(command[-1], "input.mkv")
+
+    @patch("app.core.process_utils.run_hidden")
+    def test_probe_video_frame_timestamps_returns_milliseconds(self, run_mock):
+        run_mock.return_value.returncode = 0
+        run_mock.return_value.stdout = json.dumps(
+            {
+                "frames": [
+                    {"best_effort_timestamp_time": "0.000000"},
+                    {"best_effort_timestamp_time": "1.200000"},
+                ]
+            }
+        ).encode("utf-8")
+        run_mock.return_value.stderr = b""
+
+        result = probe_video_frame_timestamps("ffprobe.exe", "input.mp4")
+
+        self.assertEqual(result, [0.0, 1200.0])
+        command = run_mock.call_args.args[0]
+        self.assertIn("frame=best_effort_timestamp_time", command)
 
 
 if __name__ == "__main__":

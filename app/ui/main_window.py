@@ -61,6 +61,18 @@ from app.utils.utils import get_debug_mode, get_resource_path, set_debug_mode, s
 logger = LoggingService().get_logger(__name__)
 
 
+def normalize_workspace_splitter_sizes(saved_sizes):
+    defaults = [280, 760, 340]
+    try:
+        values = [max(1, int(size)) for size in saved_sizes]
+    except (TypeError, ValueError):
+        return defaults
+    if len(values) != 3:
+        return defaults
+    values[2] = max(300, min(values[2], 380))
+    return values
+
+
 class FFmpegSetupThread(QThread):
     """Resolve or install FFmpeg without blocking the Qt UI thread."""
 
@@ -198,6 +210,8 @@ class FFmpegGui(QMainWindow):
         inspector_scroll = QScrollArea()
         self.inspector_scroll = inspector_scroll
         inspector_scroll.setMinimumWidth(300)
+        inspector_scroll.setMaximumWidth(380)
+        inspector_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         inspector_scroll.setWidgetResizable(True)
         inspector_scroll.setFrameShape(QFrame.NoFrame)
         inspector_widget = self.create_panel("inspector-panel")
@@ -207,17 +221,14 @@ class FFmpegGui(QMainWindow):
         self.create_job_inspector(inspector_layout)
         inspector_scroll.setWidget(inspector_widget)
         workspace.addWidget(inspector_scroll)
+        workspace.setStretchFactor(0, 0)
+        workspace.setStretchFactor(1, 1)
+        workspace.setStretchFactor(2, 0)
         saved_sizes = self.settings_service.get(
             "workspace_splitter_sizes",
-            [280, 760, 320],
+            [280, 760, 340],
         )
-        try:
-            saved_sizes = [max(1, int(size)) for size in saved_sizes]
-        except (TypeError, ValueError):
-            saved_sizes = [280, 760, 320]
-        workspace.setSizes(
-            saved_sizes if len(saved_sizes) == 3 else [280, 760, 320]
-        )
+        workspace.setSizes(normalize_workspace_splitter_sizes(saved_sizes))
 
         self.preview_area.timeline.create_timeline_area(main_layout)
         self.create_bottom_progress_area(main_layout)
@@ -571,7 +582,7 @@ class FFmpegGui(QMainWindow):
                 break
         else:
             return
-        command_manager.execute(
+        changed = command_manager.execute(
             UpdateClipRangeCommand(
                 self.list_widget,
                 clip_id,
@@ -579,6 +590,8 @@ class FFmpegGui(QMainWindow):
                 new_range,
             )
         )
+        if changed:
+            self.apply_selected_item_trim_to_timeline()
 
     def commit_timeline_clip_move(self, clip_id, target_index):
         if not self.list_widget:
@@ -588,7 +601,12 @@ class FFmpegGui(QMainWindow):
             (
                 row
                 for row in range(self.list_widget.count())
-                if self.list_widget.itemWidget(self.list_widget.item(row)).clip_id == clip_id
+                if getattr(
+                    self.list_widget.itemWidget(self.list_widget.item(row)),
+                    "clip_id",
+                    None,
+                )
+                == clip_id
             ),
             -1,
         )
@@ -713,6 +731,11 @@ class FFmpegGui(QMainWindow):
         else:
             timeline.set_in_point(in_frame)
             timeline.set_out_point(out_frame)
+        current_frame = max(in_frame, min(timeline.current_frame, out_frame))
+        timeline.set_current_frame(current_frame, emit_signal=False)
+        preview = getattr(self, "preview_area", None)
+        if preview and hasattr(preview, "on_timeline_seek_frame"):
+            preview.on_timeline_seek_frame(current_frame)
 
     def apply_loaded_media_trim_to_timeline(self):
         """Restore the selected item's trim after async media metadata is loaded."""

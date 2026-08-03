@@ -9,11 +9,12 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QCoreApplication, QEvent, Qt
     from PySide6.QtGui import QImage
-    from PySide6.QtMultimedia import QVideoFrame
+    from PySide6.QtMultimedia import QMediaPlayer, QVideoFrame
     from PySide6.QtWidgets import QApplication, QLabel
     from app.core.image_sequence_loader import ImageSequenceLoaderThread
+    from app.core.media_timing import FrameTimeMap
     from app.ui.widgets.cut_timeline_widget import CutTimelineWidget
     from app.core.models import (
         ClipRange,
@@ -28,7 +29,7 @@ try:
         reconcile_sequence_frame,
     )
     from app.ui.components.timeline import TimelineComponent
-    from app.ui.main_window import FFmpegGui
+    from app.ui.main_window import FFmpegGui, normalize_workspace_splitter_sizes
     from app.ui.commands.commands import (
         ClearListCommand,
         DuplicateClipCommand,
@@ -102,6 +103,92 @@ class UIRegressionTests(unittest.TestCase):
         component.set_current_frame(31, emit_signal=False)
 
         self.assertEqual(component.current_timecode_label.text(), "00:00:01:00")
+
+    def test_vfr_frame_time_map_drives_preview_seek(self):
+        component = PreviewAreaComponent.__new__(PreviewAreaComponent)
+        component.current_frame_time_map = FrameTimeMap.from_timestamps(
+            [0, 66.667, 133.333, 1200, 2600]
+        )
+        component.current_media_fps = 30.0
+        component.current_media_frame_count = 5
+        component.current_media_duration_ms = 3000
+
+        self.assertEqual(component._frame_to_ms(4), 1200)
+        self.assertEqual(component._frame_to_ms(5), 2600)
+        self.assertEqual(component._ms_to_frame(1199), 3)
+        self.assertEqual(component._ms_to_frame(1200), 4)
+
+    def test_seek_after_end_of_media_refreshes_stale_video_frame(self):
+        events = []
+
+        class Source:
+            def toLocalFile(self):
+                return "C:/media/vfr.mp4"
+
+        class Player:
+            def mediaStatus(self):
+                return QMediaPlayer.EndOfMedia
+
+            def playbackState(self):
+                return QMediaPlayer.StoppedState
+
+            def source(self):
+                return Source()
+
+            def setPosition(self, value):
+                events.append(("position", value))
+
+            def play(self):
+                events.append("play")
+
+            def pause(self):
+                events.append("pause")
+
+        component = PreviewAreaComponent.__new__(PreviewAreaComponent)
+        component.media_player = Player()
+        component.current_media_path = "C:/media/vfr.mp4"
+        component._video_seek_generation = 0
+
+        with patch(
+            "app.ui.components.preview_area.QTimer.singleShot",
+            side_effect=lambda _delay, callback: callback(),
+        ):
+            component._set_video_position(1200, refresh_stopped_frame=True)
+
+        self.assertEqual(
+            events,
+            [("position", 1200), "play", "pause", ("position", 1200)],
+        )
+        component.media_player = None
+
+    def test_duration_change_does_not_overwrite_known_vfr_frame_count(self):
+        class Source:
+            def toLocalFile(self):
+                return "C:/media/vfr.mp4"
+
+        component = PreviewAreaComponent.__new__(PreviewAreaComponent)
+        component.is_video_mode = True
+        component.current_media_path = "C:/media/vfr.mp4"
+        component.current_media_duration_ms = 0
+        component.current_media_frame_count = 68
+        component.current_media_fps = 30.0
+        component.current_frame_time_map = FrameTimeMap.from_fps(68, 30.0)
+        component.timeline = SimpleNamespace(
+            set_video_info=lambda *args, **kwargs: self.fail("frame count replaced")
+        )
+        component.media_player = SimpleNamespace(source=Source)
+
+        component.on_duration_changed(3000)
+
+        self.assertEqual(component.current_media_frame_count, 68)
+        self.assertEqual(component.current_media_duration_ms, 3000)
+        component.media_player = None
+
+    def test_workspace_splitter_caps_wide_output_panel(self):
+        self.assertEqual(
+            normalize_workspace_splitter_sizes([440, 916, 550]),
+            [440, 916, 380],
+        )
 
     def test_preview_resize_does_not_treat_loading_video_as_sequence(self):
         component = PreviewAreaComponent.__new__(PreviewAreaComponent)
@@ -277,6 +364,10 @@ class UIRegressionTests(unittest.TestCase):
 
         self.assertTrue(command.execute())
         self.assertIs(list_widget.itemWidget(list_widget.item(0)), widgets[1])
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.app.processEvents()
+        self.assertIs(list_widget.itemWidget(list_widget.item(0)), widgets[1])
+        self.assertIs(list_widget.itemWidget(list_widget.item(1)), widgets[0])
         self.assertIs(list_widget.itemWidget(list_widget.item(1)), widgets[0])
         self.assertTrue(command.undo())
         self.assertIs(list_widget.itemWidget(list_widget.item(0)), widgets[0])
