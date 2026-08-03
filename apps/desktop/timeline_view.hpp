@@ -51,6 +51,7 @@ signals:
 
 protected:
     QSGNode* updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) override;
+    void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -76,4 +77,7 @@ private:
     int move_target_index_{};
     qreal zoom_level_{1.0};
     qint64 viewport_start_ns_{};
+    bool timeline_geometry_dirty_{true};
+    qint64 painted_view_start_ns_{};
+    qint64 painted_view_duration_ns_{1};
 };

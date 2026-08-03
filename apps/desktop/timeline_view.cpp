@@ -46,6 +46,7 @@ void TimelineView::setClips(QVariantList clips) {
         return;
     }
     clips_ = std::move(clips);
+    timeline_geometry_dirty_ = true;
     emit clipsChanged();
     update();
 }
@@ -56,6 +57,7 @@ void TimelineView::setDurationNs(qint64 duration) {
         return;
     }
     duration_ns_ = duration;
+    timeline_geometry_dirty_ = true;
     playhead_ns_ = std::min(playhead_ns_, duration_ns_);
     emit durationNsChanged();
     emit playheadNsChanged();
@@ -70,6 +72,7 @@ void TimelineView::setZoomLevel(qreal zoom) {
         return;
     }
     zoom_level_ = zoom;
+    timeline_geometry_dirty_ = true;
     clampViewport();
     emit zoomLevelChanged();
     emit viewportChanged();
@@ -91,33 +94,53 @@ void TimelineView::setSelectedClipId(QString clipId) {
         return;
     }
     selected_clip_id_ = std::move(clipId);
+    timeline_geometry_dirty_ = true;
     emit selectedClipIdChanged();
     update();
 }
 
 QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
-    delete oldNode;
-    auto* root = new QSGNode();
+    auto* root = oldNode != nullptr ? oldNode : new QSGNode();
+    auto* contentRoot = root->firstChild();
+    if (contentRoot == nullptr) {
+        contentRoot = new QSGNode();
+        root->appendChildNode(contentRoot);
+    }
+    auto* playheadNode = static_cast<QSGSimpleRectNode*>(contentRoot->nextSibling());
+    if (playheadNode == nullptr) {
+        playheadNode = new QSGSimpleRectNode(QRectF{}, QColor("#f4f7fb"));
+        root->appendChildNode(playheadNode);
+    }
 
     const qreal contentWidth = std::max<qreal>(1.0, width() - kHorizontalPadding * 2.0);
-    const qreal trackHeight = std::max<qreal>(1.0, height() - kTrackTop - kTrackBottomPadding);
-    const auto visibleClips = previewClips();
-    qint64 totalDuration = 0;
-    for (const auto& value : visibleClips) {
-        totalDuration += value.toMap().value("durationNs").toLongLong();
-    }
-    const auto viewDuration = std::max<qint64>(1, static_cast<qint64>(
-        static_cast<qreal>(totalDuration) / zoom_level_));
-    const auto viewStart = std::min(viewport_start_ns_, std::max<qint64>(0, totalDuration - viewDuration));
-    const auto viewEnd = viewStart + viewDuration;
-    int drawableCount = 0;
-    for (const auto& value : visibleClips) {
-        const auto clip = value.toMap();
-        const auto start = clip.value("timelineInNs").toLongLong();
-        const auto end = start + clip.value("durationNs").toLongLong();
-        drawableCount += end > viewStart && start < viewEnd ? 1 : 0;
-    }
-    if (totalDuration > 0 && drawableCount > 0) {
+    if (timeline_geometry_dirty_) {
+        while (auto* child = contentRoot->firstChild()) {
+            contentRoot->removeChildNode(child);
+            delete child;
+        }
+
+        const qreal trackHeight = std::max<qreal>(1.0, height() - kTrackTop - kTrackBottomPadding);
+        const auto visibleClips = previewClips();
+        qint64 totalDuration = 0;
+        for (const auto& value : visibleClips) {
+            totalDuration += value.toMap().value("durationNs").toLongLong();
+        }
+        const auto viewDuration = std::max<qint64>(1, static_cast<qint64>(
+            static_cast<qreal>(totalDuration) / zoom_level_));
+        const auto viewStart = std::min(
+            viewport_start_ns_, std::max<qint64>(0, totalDuration - viewDuration));
+        const auto viewEnd = viewStart + viewDuration;
+        painted_view_start_ns_ = viewStart;
+        painted_view_duration_ns_ = viewDuration;
+
+        int drawableCount = 0;
+        for (const auto& value : visibleClips) {
+            const auto clip = value.toMap();
+            const auto start = clip.value("timelineInNs").toLongLong();
+            const auto end = start + clip.value("durationNs").toLongLong();
+            drawableCount += end > viewStart && start < viewEnd ? 1 : 0;
+        }
+        if (totalDuration > 0 && drawableCount > 0) {
         auto* geometry = new QSGGeometry(
             QSGGeometry::defaultAttributes_ColoredPoint2D(),
             drawableCount * 6);
@@ -160,7 +183,7 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
         clipNode->setFlag(QSGNode::OwnsGeometry);
         clipNode->setMaterial(new QSGVertexColorMaterial());
         clipNode->setFlag(QSGNode::OwnsMaterial);
-        root->appendChildNode(clipNode);
+        contentRoot->appendChildNode(clipNode);
 
         std::vector<QPointF> waveformLines;
         const auto waveformCenter = kTrackTop + trackHeight * 0.62;
@@ -219,7 +242,7 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             waveformNode->setFlag(QSGNode::OwnsGeometry);
             waveformNode->setMaterial(new QSGVertexColorMaterial());
             waveformNode->setFlag(QSGNode::OwnsMaterial);
-            root->appendChildNode(waveformNode);
+            contentRoot->appendChildNode(waveformNode);
         }
 
         for (const auto& value : visibleClips) {
@@ -233,27 +256,37 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                     contentWidth * static_cast<qreal>(start + clipDuration - viewStart) /
                         static_cast<qreal>(viewDuration);
                 if (left >= kHorizontalPadding && left <= width() - kHorizontalPadding) {
-                    root->appendChildNode(new QSGSimpleRectNode(
+                    contentRoot->appendChildNode(new QSGSimpleRectNode(
                         QRectF(left, kTrackTop, 4.0, trackHeight), QColor("#eef4ff")));
                 }
                 if (right >= kHorizontalPadding && right <= width() - kHorizontalPadding) {
-                    root->appendChildNode(new QSGSimpleRectNode(
+                    contentRoot->appendChildNode(new QSGSimpleRectNode(
                         QRectF(right - 4.0, kTrackTop, 4.0, trackHeight), QColor("#eef4ff")));
                 }
                 break;
             }
         }
 
-        if (playhead_ns_ >= viewStart && playhead_ns_ <= viewEnd) {
-            const auto playheadX = kHorizontalPadding +
-                contentWidth * static_cast<qreal>(playhead_ns_ - viewStart) /
-                    static_cast<qreal>(viewDuration);
-            root->appendChildNode(new QSGSimpleRectNode(
-                QRectF(playheadX - 1.0, 8.0, 2.0, height() - 12.0),
-                QColor("#f4f7fb")));
         }
+        timeline_geometry_dirty_ = false;
+    }
+
+    const auto paintedViewEnd = painted_view_start_ns_ + painted_view_duration_ns_;
+    if (duration_ns_ > 0 && playhead_ns_ >= painted_view_start_ns_ &&
+        playhead_ns_ <= paintedViewEnd) {
+        const auto playheadX = kHorizontalPadding +
+            contentWidth * static_cast<qreal>(playhead_ns_ - painted_view_start_ns_) /
+                static_cast<qreal>(painted_view_duration_ns_);
+        playheadNode->setRect(QRectF(playheadX - 1.0, 8.0, 2.0, height() - 12.0));
+    } else {
+        playheadNode->setRect(QRectF{});
     }
     return root;
+}
+
+void TimelineView::geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) {
+    timeline_geometry_dirty_ = true;
+    QQuickItem::geometryChange(newGeometry, oldGeometry);
 }
 
 void TimelineView::mousePressEvent(QMouseEvent* event) {
@@ -313,6 +346,7 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
             } else {
                 move_target_index_ = clipIndexAt(event->position().x());
             }
+            timeline_geometry_dirty_ = true;
             update();
         }
         event->accept();
@@ -340,6 +374,7 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
     drag_mode_ = DragMode::none;
     drag_clip_index_ = -1;
     drag_delta_ns_ = 0;
+    timeline_geometry_dirty_ = true;
     update();
     event->accept();
 }
@@ -371,6 +406,7 @@ void TimelineView::wheelEvent(QWheelEvent* event) {
         viewport_start_ns_ -= static_cast<qint64>(steps * visibleDurationNs() * 0.12);
     }
     clampViewport();
+    timeline_geometry_dirty_ = true;
     emit viewportChanged();
     update();
     event->accept();

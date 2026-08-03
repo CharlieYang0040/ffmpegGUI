@@ -109,6 +109,26 @@ if(FFGUI_BUILD_DESKTOP)
                 apps/desktop/timeline_view.cpp
                 apps/desktop/timeline_view.hpp
         )
+
+        if(BUILD_TESTING)
+            add_executable(ffgui_timeline_view_tests
+                tests/timeline_view_tests.cpp
+                apps/desktop/timeline_view.cpp
+                apps/desktop/timeline_view.hpp
+            )
+            target_include_directories(ffgui_timeline_view_tests PRIVATE apps/desktop)
+            target_link_libraries(ffgui_timeline_view_tests PRIVATE Qt6::Quick)
+            if(MSVC)
+                target_compile_options(
+                    ffgui_timeline_view_tests PRIVATE /W4 /permissive- /EHsc /utf-8)
+            endif()
+            add_test(NAME timeline_view COMMAND ffgui_timeline_view_tests)
+            set_tests_properties(timeline_view PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+                ENVIRONMENT_MODIFICATION
+                    "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
+            )
+        endif()
         target_link_libraries(ffmpegGUI-next PRIVATE
             ffgui::core
             Qt6::Quick
