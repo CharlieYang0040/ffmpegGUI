@@ -164,6 +164,18 @@ int main(int argc, char* argv[]) {
         if (controller.previewRebuildCount() == 0 || controller.previewRebuildCount() > 2) {
             return EXIT_FAILURE;
         }
+        const auto beforeRangeDeleteDuration = controller.durationNs();
+        controller.seek(100'000'000);
+        controller.setInPoint();
+        controller.seek(600'000'000);
+        controller.setOutPoint();
+        if (controller.inPointNs() < 0 || controller.outPointNs() <= controller.inPointNs()) {
+            return EXIT_FAILURE;
+        }
+        controller.extractMarkedRange();
+        if (controller.durationNs() >= beforeRangeDeleteDuration) return EXIT_FAILURE;
+        controller.undo();
+        if (controller.durationNs() != beforeRangeDeleteDuration) return EXIT_FAILURE;
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);

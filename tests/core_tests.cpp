@@ -283,6 +283,44 @@ void test_multi_clip_move_preserves_order_and_skips_noop_history() {
     require(timeline.revision() == revision, "rejected group move must not create history");
 }
 
+void test_range_delete_trims_boundaries_and_is_single_step_undoable() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"a", "asset-a", 0, seconds(3)});
+    timeline.append_clip(Clip{"b", "asset-b", seconds(2), seconds(4)});
+    timeline.append_clip(Clip{"c", "asset-b", seconds(8), seconds(3)});
+    timeline.clear_history();
+
+    timeline.erase_range(seconds(2), seconds(8), "unused");
+    require(timeline.clips().size() == 2, "range delete must remove covered middle clips");
+    require(timeline.clips()[0].id == "a" && timeline.clips()[0].duration == seconds(2),
+            "range delete must preserve the left boundary remainder");
+    require(timeline.clips()[1].id == "c" &&
+            timeline.clips()[1].source_in == seconds(9) &&
+            timeline.clips()[1].duration == seconds(2),
+            "range delete must preserve the right source remainder");
+    require(timeline.duration() == seconds(4), "range delete must close the gap magnetically");
+    require(timeline.undo(), "range delete must be one undo step");
+    require(timeline.clips().size() == 3, "one undo must restore every affected clip");
+
+    timeline.clear_history();
+    timeline.erase_range(seconds(1), seconds(2), "a-right");
+    require(timeline.clips().size() == 4, "range inside one clip must split it in two");
+    require(timeline.clips()[0].id == "a" && timeline.clips()[0].duration == seconds(1),
+            "single-clip range delete must keep its left side");
+    require(timeline.clips()[1].id == "a-right" &&
+            timeline.clips()[1].source_in == seconds(2) &&
+            timeline.clips()[1].duration == seconds(1),
+            "single-clip range delete must assign a unique right remainder");
+
+    require(timeline.undo(), "single-clip range delete must be undoable");
+    const auto revision = timeline.revision();
+    require_throws<std::invalid_argument>(
+        [&] { timeline.erase_range(seconds(1), seconds(2), "b"); },
+        "colliding remainder id must reject range delete atomically");
+    require(timeline.clips().size() == 3 && timeline.revision() == revision,
+            "rejected range delete must preserve timeline and history");
+}
+
 void test_invalid_edits_are_rejected_without_mutation() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"a", "asset-a", 0, seconds(2)});
@@ -439,6 +477,7 @@ int main() {
         {"multi_clip_delete_is_atomic_magnetic_and_undoable", test_multi_clip_delete_is_atomic_magnetic_and_undoable},
         {"multi_clip_insert_is_atomic_ordered_and_undoable", test_multi_clip_insert_is_atomic_ordered_and_undoable},
         {"multi_clip_move_preserves_order_and_skips_noop_history", test_multi_clip_move_preserves_order_and_skips_noop_history},
+        {"range_delete_trims_boundaries_and_is_single_step_undoable", test_range_delete_trims_boundaries_and_is_single_step_undoable},
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},

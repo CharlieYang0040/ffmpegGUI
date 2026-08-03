@@ -60,6 +60,10 @@ public:
     void move_clips(const std::vector<std::string>& clip_ids, std::size_t insertion_index);
     void erase_clip(const std::string& clip_id);
     void erase_clips(const std::vector<std::string>& clip_ids);
+    void erase_range(
+        TimeNs timeline_in,
+        TimeNs timeline_out,
+        std::string right_remainder_id);
     void split_at(
         TimeNs timeline_position,
         std::string left_clip_id,

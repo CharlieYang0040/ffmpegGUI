@@ -39,6 +39,10 @@ ApplicationWindow {
     Shortcut { sequence: "Up"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(-1) }
     Shortcut { sequence: "Down"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(1) }
     Shortcut { sequence: "Ctrl+K"; onActivated: EditorController.splitAtPlayhead() }
+    Shortcut { sequence: "I"; onActivated: EditorController.setInPoint() }
+    Shortcut { sequence: "O"; onActivated: EditorController.setOutPoint() }
+    Shortcut { sequence: "Shift+Delete"; enabled: EditorController.inPointNs >= 0 && EditorController.outPointNs > EditorController.inPointNs; onActivated: EditorController.extractMarkedRange() }
+    Shortcut { sequence: "Ctrl+Shift+X"; onActivated: EditorController.clearRange() }
     Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.duplicateSelectedClip() }
     Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.deleteSelectedClip() }
 
@@ -337,6 +341,22 @@ ApplicationWindow {
                         onClicked: EditorController.splitAtPlayhead()
                     }
                     Button {
+                        text: "시작점"
+                        enabled: EditorController.durationNs > 0
+                        onClicked: EditorController.setInPoint()
+                    }
+                    Button {
+                        text: "끝점"
+                        enabled: EditorController.durationNs > 0
+                        onClicked: EditorController.setOutPoint()
+                    }
+                    Button {
+                        text: "구간 삭제"
+                        enabled: EditorController.inPointNs >= 0
+                                 && EditorController.outPointNs > EditorController.inPointNs
+                        onClicked: EditorController.extractMarkedRange()
+                    }
+                    Button {
                         text: EditorController.selectedClipIds.length > 1
                               ? EditorController.selectedClipIds.length + "개 삭제"
                               : "삭제"
@@ -421,6 +441,8 @@ ApplicationWindow {
                         anchors.fill: parent
                         durationNs: EditorController.durationNs
                         playheadNs: EditorController.playheadNs
+                        inPointNs: EditorController.inPointNs
+                        outPointNs: EditorController.outPointNs
                         clips: EditorController.clips
                         selectedClipId: EditorController.selectedClipId
                         selectedClipIds: EditorController.selectedClipIds

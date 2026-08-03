@@ -12,6 +12,8 @@ class TimelineView : public QQuickItem {
     Q_PROPERTY(QVariantList clips READ clips WRITE setClips NOTIFY clipsChanged)
     Q_PROPERTY(qint64 durationNs READ durationNs WRITE setDurationNs NOTIFY durationNsChanged)
     Q_PROPERTY(qint64 playheadNs READ playheadNs WRITE setPlayheadNs NOTIFY playheadNsChanged)
+    Q_PROPERTY(qint64 inPointNs READ inPointNs WRITE setInPointNs NOTIFY rangeChanged)
+    Q_PROPERTY(qint64 outPointNs READ outPointNs WRITE setOutPointNs NOTIFY rangeChanged)
     Q_PROPERTY(QString selectedClipId READ selectedClipId WRITE setSelectedClipId NOTIFY selectedClipIdChanged)
     Q_PROPERTY(QStringList selectedClipIds READ selectedClipIds WRITE setSelectedClipIds NOTIFY selectedClipIdsChanged)
     Q_PROPERTY(qreal zoomLevel READ zoomLevel WRITE setZoomLevel NOTIFY zoomLevelChanged)
@@ -29,6 +31,10 @@ public:
 
     [[nodiscard]] qint64 playheadNs() const noexcept { return playhead_ns_; }
     void setPlayheadNs(qint64 position);
+    [[nodiscard]] qint64 inPointNs() const noexcept { return in_point_ns_; }
+    void setInPointNs(qint64 position);
+    [[nodiscard]] qint64 outPointNs() const noexcept { return out_point_ns_; }
+    void setOutPointNs(qint64 position);
 
     [[nodiscard]] QString selectedClipId() const { return selected_clip_id_; }
     void setSelectedClipId(QString clipId);
@@ -45,6 +51,7 @@ signals:
     void clipsChanged();
     void durationNsChanged();
     void playheadNsChanged();
+    void rangeChanged();
     void selectedClipIdChanged();
     void selectedClipIdsChanged();
     void zoomLevelChanged();
@@ -75,6 +82,8 @@ private:
     QVariantList clips_;
     qint64 duration_ns_{};
     qint64 playhead_ns_{};
+    qint64 in_point_ns_{-1};
+    qint64 out_point_ns_{-1};
     QString selected_clip_id_;
     QStringList selected_clip_ids_;
     DragMode drag_mode_{DragMode::none};

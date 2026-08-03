@@ -93,6 +93,22 @@ void TimelineView::setPlayheadNs(qint64 position) {
     update();
 }
 
+void TimelineView::setInPointNs(qint64 position) {
+    if (in_point_ns_ == position) return;
+    in_point_ns_ = position;
+    timeline_geometry_dirty_ = true;
+    emit rangeChanged();
+    update();
+}
+
+void TimelineView::setOutPointNs(qint64 position) {
+    if (out_point_ns_ == position) return;
+    out_point_ns_ = position;
+    timeline_geometry_dirty_ = true;
+    emit rangeChanged();
+    update();
+}
+
 void TimelineView::setSelectedClipId(QString clipId) {
     if (selected_clip_id_ == clipId) {
         return;
@@ -144,6 +160,27 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
         const auto viewEnd = viewStart + viewDuration;
         painted_view_start_ns_ = viewStart;
         painted_view_duration_ns_ = viewDuration;
+
+        if (in_point_ns_ >= 0 && out_point_ns_ > in_point_ns_ &&
+            out_point_ns_ > viewStart && in_point_ns_ < viewEnd) {
+            const auto rangeLeft = kHorizontalPadding + contentWidth *
+                static_cast<qreal>(std::max(in_point_ns_, viewStart) - viewStart) /
+                static_cast<qreal>(viewDuration);
+            const auto rangeRight = kHorizontalPadding + contentWidth *
+                static_cast<qreal>(std::min(out_point_ns_, viewEnd) - viewStart) /
+                static_cast<qreal>(viewDuration);
+            QColor rangeColor("#5b8cff");
+            rangeColor.setAlpha(48);
+            contentRoot->appendChildNode(new QSGSimpleRectNode(
+                QRectF(rangeLeft, 8.0, std::max<qreal>(1.0, rangeRight - rangeLeft),
+                       height() - 18.0),
+                rangeColor));
+            const QColor edgeColor("#78a5ff");
+            contentRoot->appendChildNode(new QSGSimpleRectNode(
+                QRectF(rangeLeft, 8.0, 2.0, height() - 18.0), edgeColor));
+            contentRoot->appendChildNode(new QSGSimpleRectNode(
+                QRectF(rangeRight - 2.0, 8.0, 2.0, height() - 18.0), edgeColor));
+        }
 
         int drawableCount = 0;
         for (const auto& value : visibleClips) {

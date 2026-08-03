@@ -211,6 +211,62 @@ void TimelineModel::erase_clips(const std::vector<std::string>& clip_ids) {
     });
 }
 
+void TimelineModel::erase_range(
+    TimeNs timeline_in,
+    TimeNs timeline_out,
+    std::string right_remainder_id) {
+    const auto total = duration();
+    if (timeline_in < 0 || timeline_out > total || timeline_in >= timeline_out) {
+        throw std::invalid_argument("timeline removal range is invalid");
+    }
+
+    std::vector<Clip> candidate;
+    candidate.reserve(clips_.size() + 1);
+    TimeNs cursor = 0;
+    for (const auto& clip : clips_) {
+        const auto clipEnd = checked_add(cursor, clip.duration);
+        if (clipEnd <= timeline_in || cursor >= timeline_out) {
+            candidate.push_back(clip);
+            cursor = clipEnd;
+            continue;
+        }
+
+        const auto leftDuration = timeline_in > cursor ? timeline_in - cursor : TimeNs{0};
+        const auto rightDuration = timeline_out < clipEnd ? clipEnd - timeline_out : TimeNs{0};
+        if (leftDuration > 0) {
+            auto left = clip;
+            left.duration = leftDuration;
+            candidate.push_back(std::move(left));
+        }
+        if (rightDuration > 0) {
+            auto right = clip;
+            right.source_in = checked_add(clip.source_in, clip.duration - rightDuration);
+            right.duration = rightDuration;
+            if (leftDuration > 0) {
+                if (right_remainder_id.empty()) {
+                    throw std::invalid_argument("range split remainder id must not be empty");
+                }
+                right.id = std::move(right_remainder_id);
+            }
+            candidate.push_back(std::move(right));
+        }
+        cursor = clipEnd;
+    }
+
+    std::unordered_set<std::string> ids;
+    for (const auto& clip : candidate) {
+        if (!ids.insert(clip.id).second) {
+            throw std::invalid_argument("range removal produced a duplicate clip id");
+        }
+        const auto* sourceAsset = asset(clip.asset_id);
+        if (sourceAsset == nullptr || !sourceAsset->contains_range(clip.source_in, clip.duration)) {
+            throw std::invalid_argument("range removal produced an invalid source range");
+        }
+    }
+    record_edit();
+    clips_ = std::move(candidate);
+}
+
 void TimelineModel::split_at(
     TimeNs timeline_position,
     std::string left_clip_id,

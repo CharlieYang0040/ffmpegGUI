@@ -76,6 +76,17 @@ int main(int argc, char* argv[]) {
     std::cout << "1000-clip playhead update average: " << average << " ms\n";
     require(average < 16.67, "playhead updates must stay within a 60 FPS frame budget");
 
+    timeline.setInPointNs(2 * clipDuration);
+    timeline.setOutPointNs(5 * clipDuration);
+    root = timeline.render(root);
+    int rangeLayerChildren = 0;
+    for (auto* child = root->firstChild()->firstChild(); child != nullptr;
+         child = child->nextSibling()) {
+        ++rangeLayerChildren;
+    }
+    require(rangeLayerChildren >= 4,
+            "marked range must add a fill and two visible edge nodes to the timeline");
+
     delete root;
     return 0;
 }

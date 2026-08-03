@@ -452,6 +452,65 @@ void EditorController::jumpEditPoint(int direction) {
     }
 }
 
+void EditorController::setInPoint() {
+    if (timeline_.clips().empty() || playhead_ns_ >= durationNs()) return;
+    const auto snapped = timeline_.nearest_frame_time(playhead_ns_).value_or(playhead_ns_);
+    if (out_point_ns_ >= 0 && snapped >= out_point_ns_) {
+        setStatus("시작점은 끝점보다 앞에 있어야 합니다");
+        return;
+    }
+    in_point_ns_ = snapped;
+    emit rangeChanged();
+    setStatus("구간 시작점을 표시했습니다");
+}
+
+void EditorController::setOutPoint() {
+    if (timeline_.clips().empty() || playhead_ns_ <= 0) return;
+    const auto snapped = timeline_.nearest_frame_time(playhead_ns_).value_or(playhead_ns_);
+    if (in_point_ns_ >= 0 && snapped <= in_point_ns_) {
+        setStatus("끝점은 시작점보다 뒤에 있어야 합니다");
+        return;
+    }
+    out_point_ns_ = snapped;
+    emit rangeChanged();
+    setStatus("구간 끝점을 표시했습니다");
+}
+
+void EditorController::clearRange() {
+    if (in_point_ns_ < 0 && out_point_ns_ < 0) return;
+    in_point_ns_ = -1;
+    out_point_ns_ = -1;
+    emit rangeChanged();
+}
+
+void EditorController::extractMarkedRange() {
+    if (in_point_ns_ < 0 || out_point_ns_ <= in_point_ns_) {
+        setStatus("먼저 시작점과 끝점을 표시하세요");
+        return;
+    }
+    try {
+        const auto removalStart = in_point_ns_;
+        timeline_.erase_range(
+            removalStart,
+            out_point_ns_,
+            makeUniqueClipId("clip-range-right"));
+        playhead_ns_ = std::min<qint64>(removalStart, durationNs());
+        clearRange();
+        const auto mapped = timeline_.locate(playhead_ns_);
+        if (mapped.has_value()) {
+            setSingleSelection(QString::fromStdString(mapped->clip_id));
+        } else {
+            setSingleSelection(timeline_.clips().empty()
+                ? QString{}
+                : QString::fromStdString(timeline_.clips().back().id));
+        }
+        publishTimeline();
+        setStatus("표시한 구간을 삭제하고 빈자리를 닫았습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
 void EditorController::stop() {
 #ifdef FFGUI_HAS_GES
     player_->stop();
@@ -984,8 +1043,17 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     preview_snapshot_ = timeline_.snapshot();
     preview_revision_ = timeline_.revision();
     ++preview_generation_;
+    const auto previousIn = in_point_ns_;
+    const auto previousOut = out_point_ns_;
+    if (in_point_ns_ > durationNs()) in_point_ns_ = -1;
+    if (out_point_ns_ > durationNs()) out_point_ns_ = durationNs();
+    if (in_point_ns_ >= 0 && out_point_ns_ >= 0 && in_point_ns_ >= out_point_ns_) {
+        in_point_ns_ = -1;
+        out_point_ns_ = -1;
+    }
     emit timelineChanged();
     emit playheadChanged();
+    if (previousIn != in_point_ns_ || previousOut != out_point_ns_) emit rangeChanged();
     emit selectedClipChanged();
     emit historyChanged();
 #ifdef FFGUI_HAS_GES

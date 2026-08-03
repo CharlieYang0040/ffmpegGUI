@@ -32,6 +32,8 @@ class EditorController final : public QObject {
     Q_PROPERTY(QVariantList mediaAssets READ mediaAssets NOTIFY timelineChanged)
     Q_PROPERTY(qint64 durationNs READ durationNs NOTIFY timelineChanged)
     Q_PROPERTY(qint64 playheadNs READ playheadNs NOTIFY playheadChanged)
+    Q_PROPERTY(qint64 inPointNs READ inPointNs NOTIFY rangeChanged)
+    Q_PROPERTY(qint64 outPointNs READ outPointNs NOTIFY rangeChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString selectedClipId READ selectedClipId NOTIFY selectedClipChanged)
@@ -52,6 +54,8 @@ public:
     [[nodiscard]] QVariantList mediaAssets() const;
     [[nodiscard]] qint64 durationNs() const noexcept;
     [[nodiscard]] qint64 playheadNs() const noexcept { return playhead_ns_; }
+    [[nodiscard]] qint64 inPointNs() const noexcept { return in_point_ns_; }
+    [[nodiscard]] qint64 outPointNs() const noexcept { return out_point_ns_; }
     [[nodiscard]] bool playing() const noexcept { return playing_; }
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] QString selectedClipId() const { return selected_clip_id_; }
@@ -90,6 +94,10 @@ public slots:
     void togglePlayback();
     void stepFrame(int direction);
     void jumpEditPoint(int direction);
+    void setInPoint();
+    void setOutPoint();
+    void clearRange();
+    void extractMarkedRange();
     void stop();
     void selectClip(const QString& clipId, int mode = 0);
     void trimClip(const QString& clipId, qint64 sourceIn, qint64 duration);
@@ -115,6 +123,7 @@ public slots:
 signals:
     void timelineChanged();
     void playheadChanged();
+    void rangeChanged();
     void playingChanged();
     void statusChanged();
     void selectedClipChanged();
@@ -149,6 +158,8 @@ private:
     std::uint64_t video_frames_presented_{};
     std::uint64_t video_frames_delivered_{};
     qint64 playhead_ns_{};
+    qint64 in_point_ns_{-1};
+    qint64 out_point_ns_{-1};
     bool playing_{};
     QString status_{"미디어를 추가하세요"};
     QString selected_clip_id_;
