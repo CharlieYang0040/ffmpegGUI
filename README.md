@@ -34,6 +34,7 @@ cmake --build --preset windows-debug
 ctest --preset windows-debug
 .\scripts\run_ges_smoke.ps1
 .\scripts\run_4k_seek_benchmark.ps1
+.\scripts\run_playback_soak.ps1 -Seconds 60
 .\out\build\windows-msvc\Debug\ffgui_core_benchmark.exe
 .\scripts\run_desktop_smoke.ps1
 ```
@@ -54,6 +55,8 @@ QML 모듈과 필요한 GStreamer 런타임을 함께 포함합니다.
 D3D11 출력 초기화, 프로젝트 왕복과 타임라인 썸네일 캐시 생성을 검사합니다. 기본
 `run_4k_seek_benchmark.ps1`은 실제 3840x2160 H.264/HEVC 개발용 영상을 만들고
 D3D11 하드웨어 디코더의 임의 탐색 후 첫 GPU 프레임 도착 시간을 검사합니다.
+`run_playback_soak.ps1`은 같은 영상이 섞인 타임라인에서 PTS 기반 seek와
+pause/play/stop, 파이프라인 재구축을 반복하며 지연과 private memory 증가를 검사합니다.
 기본
 FFmpeg는 SHA-256 검증 후 `.tools/ffmpeg`에
 설치된 8.1.2이며 `-FFmpegPath`로 바꿀 수 있습니다.

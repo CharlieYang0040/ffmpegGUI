@@ -36,6 +36,10 @@ TimelineModel
 - 디코딩 프레임을 CPU `QImage`로 변환하지 않고 D3D11 텍스처로 전달한다.
 - D3D11 프레임에는 GStreamer PTS를 함께 전달해 seek 이전 큐의 프레임과 현재
   타임라인 위치의 프레임을 구분한다.
+- 파이프라인 상태와 사용자 콜백은 별도 mutex로 보호한다. 따라서 stopped 상태의
+  초기 preroll과 paused seek의 `ASYNC_DONE`을 기다리는 동안에도 D3D11 appsink가
+  프레임을 전달할 수 있다. `seek()`는 paused 화면에 요청 위치의 프레임이 준비되기
+  전에 성공으로 반환하지 않는다.
 
 ## 의존성 원칙
 

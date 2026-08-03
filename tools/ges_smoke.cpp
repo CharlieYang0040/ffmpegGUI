@@ -69,10 +69,14 @@ int main(int argc, char* argv[]) {
             throw std::runtime_error("GES sequence duration does not match TimelineModel");
         }
 
-        player.pause();
         player.seek(milliseconds(1200));
         player.play();
         wait_for_position(player, milliseconds(1450), std::chrono::seconds(8));
+
+        player.pause();
+        player.seek(milliseconds(300));
+        player.play();
+        wait_for_position(player, milliseconds(550), std::chrono::seconds(8));
 
         player.stop();
         player.reset_audio_continuity_metrics();

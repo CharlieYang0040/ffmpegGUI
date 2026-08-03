@@ -78,6 +78,7 @@ private:
     std::string video_sink_factory_;
     std::string audio_sink_factory_;
     mutable std::mutex mutex_;
+    mutable std::mutex callback_mutex_;
     GESPipeline* pipeline_{};
     GESTimeline* timeline_{};
     GstElement* video_sink_{};

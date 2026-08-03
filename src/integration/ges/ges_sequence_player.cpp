@@ -74,15 +74,63 @@ void GesSequencePlayer::set_timeline(std::vector<TimelineSpan> timeline) {
 
 void GesSequencePlayer::seek(TimeNs timeline_position) {
     const auto target = std::max<TimeNs>(0, std::min(timeline_position, duration_ns_.load()));
-    std::scoped_lock lock(mutex_);
+    std::unique_lock lock(mutex_);
     if (pipeline_ == nullptr) {
         return;
     }
+    auto* pipeline = GST_ELEMENT(pipeline_);
+    bool notifyPaused = false;
+    if (state_.load() == PlaybackState::stopped) {
+        auto prepareResult = gst_element_set_state(pipeline, GST_STATE_PAUSED);
+        GstState current = GST_STATE_VOID_PENDING;
+        GstState pending = GST_STATE_VOID_PENDING;
+        if (prepareResult == GST_STATE_CHANGE_ASYNC) {
+            prepareResult = gst_element_get_state(
+                pipeline, &current, &pending, 5 * GST_SECOND);
+        } else if (prepareResult != GST_STATE_CHANGE_FAILURE) {
+            gst_element_get_state(pipeline, &current, &pending, 0);
+        }
+        if (prepareResult == GST_STATE_CHANGE_FAILURE || current != GST_STATE_PAUSED) {
+            throw std::runtime_error("GES timeline failed to prepare for seeking");
+        }
+        state_.store(PlaybackState::paused);
+        notifyPaused = true;
+    }
+    auto* bus = gst_element_get_bus(pipeline);
+    while (auto* stale = gst_bus_pop_filtered(bus, GST_MESSAGE_ASYNC_DONE)) {
+        gst_message_unref(stale);
+    }
+    const auto waitForPreroll = state_.load() == PlaybackState::paused;
     const auto flags = static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE);
-    if (!gst_element_seek_simple(GST_ELEMENT(pipeline_), GST_FORMAT_TIME, flags, target)) {
+    if (!gst_element_seek_simple(pipeline, GST_FORMAT_TIME, flags, target)) {
+        gst_object_unref(bus);
         throw std::runtime_error("GES timeline seek failed");
     }
+    if (waitForPreroll) {
+        auto* message = gst_bus_timed_pop_filtered(
+            bus,
+            5 * GST_SECOND,
+            static_cast<GstMessageType>(GST_MESSAGE_ASYNC_DONE | GST_MESSAGE_ERROR));
+        if (message == nullptr) {
+            gst_object_unref(bus);
+            throw std::runtime_error("GES timeline seek preroll timed out");
+        }
+        if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+            GError* error = nullptr;
+            gchar* debug = nullptr;
+            gst_message_parse_error(message, &error, &debug);
+            const auto failure = glib_error("GES timeline seek preroll failed", error);
+            g_free(debug);
+            gst_message_unref(message);
+            gst_object_unref(bus);
+            throw failure;
+        }
+        gst_message_unref(message);
+    }
+    gst_object_unref(bus);
+    lock.unlock();
     position_ns_.store(target);
+    if (notifyPaused) notify_state(PlaybackState::paused);
 }
 
 void GesSequencePlayer::play() {
@@ -101,17 +149,24 @@ void GesSequencePlayer::play() {
 }
 
 void GesSequencePlayer::pause() {
-    {
-        std::scoped_lock lock(mutex_);
-        if (pipeline_ == nullptr) {
-            return;
-        }
-        const auto result = gst_element_set_state(GST_ELEMENT(pipeline_), GST_STATE_PAUSED);
-        if (result == GST_STATE_CHANGE_FAILURE) {
-            throw std::runtime_error("GES pipeline failed to pause");
-        }
+    std::unique_lock lock(mutex_);
+    if (pipeline_ == nullptr) {
+        return;
+    }
+    auto* pipeline = GST_ELEMENT(pipeline_);
+    auto result = gst_element_set_state(pipeline, GST_STATE_PAUSED);
+    GstState current = GST_STATE_VOID_PENDING;
+    GstState pending = GST_STATE_VOID_PENDING;
+    if (result == GST_STATE_CHANGE_ASYNC) {
+        result = gst_element_get_state(pipeline, &current, &pending, 5 * GST_SECOND);
+    } else if (result != GST_STATE_CHANGE_FAILURE) {
+        gst_element_get_state(pipeline, &current, &pending, 0);
+    }
+    if (result == GST_STATE_CHANGE_FAILURE || current != GST_STATE_PAUSED) {
+        throw std::runtime_error("GES pipeline failed to preroll into paused state");
     }
     state_.store(PlaybackState::paused);
+    lock.unlock();
     notify_state(PlaybackState::paused);
 }
 
@@ -129,17 +184,17 @@ void GesSequencePlayer::stop() {
 }
 
 void GesSequencePlayer::set_position_callback(PositionCallback callback) {
-    std::scoped_lock lock(mutex_);
+    std::scoped_lock lock(callback_mutex_);
     position_callback_ = std::move(callback);
 }
 
 void GesSequencePlayer::set_state_callback(StateCallback callback) {
-    std::scoped_lock lock(mutex_);
+    std::scoped_lock lock(callback_mutex_);
     state_callback_ = std::move(callback);
 }
 
 void GesSequencePlayer::set_error_callback(ErrorCallback callback) {
-    std::scoped_lock lock(mutex_);
+    std::scoped_lock lock(callback_mutex_);
     error_callback_ = std::move(callback);
 }
 
@@ -160,7 +215,7 @@ void GesSequencePlayer::set_d3d11_device(void* device) {
 
 void GesSequencePlayer::set_video_frame_callback(
     std::function<void(D3D11VideoFrame)> callback) {
-    std::scoped_lock lock(mutex_);
+    std::scoped_lock lock(callback_mutex_);
     video_frame_callback_ = std::move(callback);
 }
 
@@ -236,7 +291,7 @@ GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_d
 
     std::function<void(D3D11VideoFrame)> callback;
     {
-        std::scoped_lock lock(player->mutex_);
+        std::scoped_lock lock(player->callback_mutex_);
         callback = player->video_frame_callback_;
     }
     if (callback) {
@@ -426,7 +481,7 @@ void GesSequencePlayer::destroy_pipeline_locked() noexcept {
 void GesSequencePlayer::notify_state(PlaybackState state_value) {
     StateCallback callback;
     {
-        std::scoped_lock lock(mutex_);
+        std::scoped_lock lock(callback_mutex_);
         callback = state_callback_;
     }
     if (callback) {
@@ -442,6 +497,7 @@ void GesSequencePlayer::monitor(std::stop_token stop_token) {
         ErrorCallback error_callback;
         std::string error_message;
         bool state_changed = false;
+        bool position_available = false;
         TimeNs current_position = position_ns_.load();
         {
             std::scoped_lock lock(mutex_);
@@ -478,15 +534,15 @@ void GesSequencePlayer::monitor(std::stop_token stop_token) {
                         current_position = queried;
                         position_ns_.store(current_position);
                     }
-                    callback = position_callback_;
-                }
-                if (state_changed) {
-                    state_callback = state_callback_;
-                }
-                if (!error_message.empty()) {
-                    error_callback = error_callback_;
+                    position_available = true;
                 }
             }
+        }
+        {
+            std::scoped_lock lock(callback_mutex_);
+            if (position_available) callback = position_callback_;
+            if (state_changed) state_callback = state_callback_;
+            if (!error_message.empty()) error_callback = error_callback_;
         }
         if (callback) {
             callback(current_position);

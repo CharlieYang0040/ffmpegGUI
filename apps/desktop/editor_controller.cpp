@@ -753,9 +753,14 @@ void EditorController::finishExport(bool success) {
 }
 
 void EditorController::publishTimeline(bool resetPlayhead) {
+    QString playbackError;
 #ifdef FFGUI_HAS_GES
-    if (playing_) {
-        player_->stop();
+    try {
+        if (playing_) {
+            player_->stop();
+        }
+    } catch (const std::exception& error) {
+        playbackError = QString::fromUtf8(error.what());
     }
 #endif
     if (resetPlayhead) {
@@ -766,9 +771,13 @@ void EditorController::publishTimeline(bool resetPlayhead) {
 #ifdef FFGUI_HAS_GES
     preview_snapshot_ = timeline_.snapshot();
     preview_revision_ = timeline_.revision();
-    player_->set_timeline(preview_snapshot_);
-    if (playhead_ns_ > 0 && playhead_ns_ < durationNs()) {
-        player_->seek(playhead_ns_);
+    try {
+        player_->set_timeline(preview_snapshot_);
+        if (playhead_ns_ > 0 && playhead_ns_ < durationNs()) {
+            player_->seek(playhead_ns_);
+        }
+    } catch (const std::exception& error) {
+        playbackError = QString::fromUtf8(error.what());
     }
 #endif
 #ifndef FFGUI_HAS_GES
@@ -779,7 +788,9 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     emit playheadChanged();
     emit selectedClipChanged();
     emit historyChanged();
-    setStatus(timeline_.clips().empty() ? "미디어를 추가하세요" : "재생 준비 완료");
+    setStatus(!playbackError.isEmpty()
+        ? playbackError
+        : (timeline_.clips().empty() ? "미디어를 추가하세요" : "재생 준비 완료"));
 }
 
 void EditorController::setStatus(QString status) {

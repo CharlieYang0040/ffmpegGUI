@@ -36,6 +36,7 @@
 - [x] MP4/MKV/CFR/VFR 4샷 연속 재생 프로토타입
 - [x] `TimelineSpan` → `GESTimeline` 어댑터
 - [x] 전체 시퀀스 seek와 클립 경계 재생
+- [x] 로드 직후 stopped seek와 paused 역방향 seek의 preroll 완료 보장
 - [x] GStreamer 오류와 EOS 상태를 Qt UI로 전달
 - [ ] D3D11 GPU 텍스처 → Qt Scene Graph 제로카피
 - [x] GStreamer 재생 시계를 단일 타임라인 재생 헤드에 연결
@@ -56,6 +57,7 @@
 - CFR, VFR, MKV, 이미지 시퀀스 실제 미디어 회귀
 - [x] 4K H.264/HEVC 타임라인 탐색 성능 측정
 - [x] 1000클립 타임라인 UI 프레임 시간 측정
+- [x] 4K 혼합 코덱 반복 seek·상태 전환·파이프라인 재구축 120초 soak
 - 공개 산출물 SHA-256 재검증
 
 ## 현재 검증 기준선
@@ -79,4 +81,7 @@
 - 실제 3840x2160 NVENC H.264/HEVC 입력의 PTS 검증 D3D11 하드웨어 탐색 8회에서
   H.264 중앙값 216.047ms·최대 381.205ms, HEVC 중앙값 136.125ms·최대 331.801ms
   (미리보기 출력 프로필 1280x720)
+- 4K H.264/HEVC 혼합 타임라인 120초 soak에서 stopped/paused seek, 역방향 탐색과
+  파이프라인 재구축을 포함한 257회 PTS 일치 프레임 확인, 최대 지연 1151.24ms,
+  측정 구간 private memory 증가 0MiB
 - 다음 구현 순서: D3D11 제로카피 → 4K 탐색과 장시간 안정성 → 편집 기능 확장
