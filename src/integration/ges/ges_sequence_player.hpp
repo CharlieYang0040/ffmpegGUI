@@ -31,6 +31,7 @@ struct D3D11VideoFrame final {
     void* texture{};
     std::uint32_t width{};
     std::uint32_t height{};
+    TimeNs pts{};
     std::uint64_t serial{};
     void* device{};
 };

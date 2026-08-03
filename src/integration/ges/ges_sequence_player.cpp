@@ -246,6 +246,7 @@ GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_d
             texture,
             description.Width,
             description.Height,
+            GST_BUFFER_PTS_IS_VALID(buffer) ? static_cast<TimeNs>(GST_BUFFER_PTS(buffer)) : 0,
             player->video_frame_serial_.fetch_add(1) + 1,
             gst_d3d11_device_get_device_handle(d3dMemory->device)});
     }

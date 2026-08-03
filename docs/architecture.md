@@ -34,6 +34,8 @@ TimelineModel
 - FFmpeg 출력은 별도 프로세스로 실행해 충돌과 취소를 격리한다.
 - 썸네일·파형·PTS 분석은 제한된 작업 큐에서 수행한다.
 - 디코딩 프레임을 CPU `QImage`로 변환하지 않고 D3D11 텍스처로 전달한다.
+- D3D11 프레임에는 GStreamer PTS를 함께 전달해 seek 이전 큐의 프레임과 현재
+  타임라인 위치의 프레임을 구분한다.
 
 ## 의존성 원칙
 
@@ -53,6 +55,12 @@ GStreamer D3D11 appsink, Qt 장치 context와 `QSGD3D11Texture::fromNative`를 �
 실험 경로는 `FFGUI_EXPERIMENTAL_D3D11_QSG=1`에서만 켜진다. appsink GPU 프레임이
 Qt 아이템까지 전달되는 것은 확인했지만 Scene Graph의 반복 texture-node 갱신 회귀가
 아직 통과하지 않아 기본값이나 완료 항목으로 표시하지 않는다.
+
+현재 GES 미리보기 출력 프로필은 1280x720이다. 4K H.264/HEVC 원본은 D3D11
+하드웨어 디코더가 원본 해상도로 디코딩하고, 미리보기 합성 단계에서 1280x720으로
+축소한다. 개발용 4K 탐색 검사는 입력 파일 해상도를 FFprobe로 별도 확인한 뒤 seek부터
+첫 D3D11 프레임 도착까지 측정하므로, 출력 프로필 크기를 4K 입력 검증으로 오인하지
+않는다.
 
 ## 타임라인 시각 캐시
 

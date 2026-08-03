@@ -63,8 +63,12 @@ if(FFGUI_ENABLE_GES)
 
         add_executable(ffgui_ges_smoke tools/ges_smoke.cpp)
         target_link_libraries(ffgui_ges_smoke PRIVATE ffgui::ges)
+        add_executable(ffgui_ges_seek_benchmark tools/ges_seek_benchmark.cpp)
+        target_link_libraries(ffgui_ges_seek_benchmark PRIVATE ffgui::ges)
         if(MSVC)
             target_compile_options(ffgui_ges_smoke PRIVATE /W4 /permissive- /EHsc /utf-8)
+            target_compile_options(
+                ffgui_ges_seek_benchmark PRIVATE /W4 /permissive- /EHsc /utf-8)
         endif()
     else()
         message(STATUS "GStreamer Editing Services 1.28+ was not found; adapter disabled")
