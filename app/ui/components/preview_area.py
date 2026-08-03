@@ -18,7 +18,8 @@ from app.ui.components.timeline import TimelineComponent
 from app.core.events import event_emitter, Events
 from app.core.ffmpeg_manager import FFmpegManager
 from app.core.ffmpeg_process import decode_process_output
-from app.core.process_utils import run_hidden
+from app.core.media_timing import FrameTimeMap
+from app.core.process_utils import probe_video_frame_timestamps, run_hidden
 from PIL import Image # Added for image size reading
 
 # 로깅 서비스 설정
@@ -74,11 +75,18 @@ class MediaInfoFetcherSignals(QObject):
 
 class MediaInfoFetcher(QRunnable):
     """Runnable task to fetch media information in the background."""
-    def __init__(self, request_id: int, file_path: str, ffmpeg_manager: FFmpegManager):
+    def __init__(
+        self,
+        request_id: int,
+        file_path: str,
+        ffmpeg_manager: FFmpegManager,
+        cached_frame_timestamps=None,
+    ):
         super().__init__()
         self.request_id = request_id
         self.file_path = file_path
         self.ffmpeg_manager = ffmpeg_manager
+        self.cached_frame_timestamps = cached_frame_timestamps
         self.signals = MediaInfoFetcherSignals()
         self.logger = LoggingService().get_logger(f"{__name__}.MediaInfoFetcher")
 
@@ -90,6 +98,7 @@ class MediaInfoFetcher(QRunnable):
         media_info = {
             'width': 0, 'height': 0, 'fps': 0,
             'duration': 0, 'frame_count': 0,
+            'frame_timestamps_ms': [],
             'is_image_sequence': False,
             'is_single_image': False,
             'file_path': self.file_path # Include file_path for verification
@@ -192,6 +201,24 @@ class MediaInfoFetcher(QRunnable):
                     else:
                         media_info['frame_count'] = 0
 
+                    try:
+                        if self.cached_frame_timestamps is not None:
+                            media_info['frame_timestamps_ms'] = list(
+                                self.cached_frame_timestamps
+                            )
+                        else:
+                            media_info['frame_timestamps_ms'] = probe_video_frame_timestamps(
+                                self.ffmpeg_manager.get_ffprobe_path(),
+                                self.file_path,
+                            )
+                        if media_info['frame_timestamps_ms']:
+                            media_info['frame_count'] = len(media_info['frame_timestamps_ms'])
+                    except Exception as exc:
+                        self.logger.warning(
+                            "프레임 타임스탬프를 읽지 못해 FPS 기반 탐색을 사용합니다: %s",
+                            exc,
+                        )
+
                     if media_info['width'] <= 0 or media_info['height'] <= 0 or media_info['fps'] <= 0:
                         error_msg = f"필수 비디오 정보 누락/0: W={media_info['width']}, H={media_info['height']}, FPS={media_info['fps']:.2f}"
                 else:
@@ -226,7 +253,7 @@ class MediaInfoFetcher(QRunnable):
                 ffprobe_path,
                 '-v', 'error',
                 '-select_streams', 'v:0',
-                '-show_entries', 'stream=width,height,r_frame_rate,duration,nb_frames',
+                '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate,duration,nb_frames',
                 '-of', 'default=noprint_wrappers=1:nokey=0',
                 input_file
             ]
@@ -249,14 +276,16 @@ class MediaInfoFetcher(QRunnable):
                     key, value = line.split('=', 1)
                     properties[key.strip()] = value.strip()
             
-            # Calculate FPS safely
-            if 'r_frame_rate' in properties:
+            # Average rate is a better fallback for VFR sources. Exact seeking
+            # uses the per-frame presentation timestamps loaded above.
+            rate_value = properties.get('avg_frame_rate') or properties.get('r_frame_rate')
+            if rate_value:
                 try:
-                    num, den = map(int, properties['r_frame_rate'].split('/'))
+                    num, den = map(int, rate_value.split('/'))
                     if den == 0: raise ZeroDivisionError("Denominator is zero")
                     properties['fps'] = num / den
                 except (ValueError, ZeroDivisionError) as e:
-                    self.logger.warning(f"FPS 파싱 오류 '{properties['r_frame_rate']}': {e}. 기본값 30 사용.")
+                    self.logger.warning(f"FPS 파싱 오류 '{rate_value}': {e}. 기본값 30 사용.")
                     properties['fps'] = 30.0
             else:
                  properties['fps'] = 30.0 # Default FPS
@@ -304,6 +333,7 @@ class PreviewAreaComponent:
         self.last_request_id = 0 # 요청 ID 카운터 추가
         self.media_info_loading = False
         self._media_info_tasks = {}
+        self._frame_timestamp_cache = {}
         # self.current_fetcher_task = None # Optional: Keep track of the running task
         self.current_fetcher_task = None # ★ 현재 실행 중인 fetcher 참조
 
@@ -322,6 +352,10 @@ class PreviewAreaComponent:
         self.current_media_fps = 0
         self.current_media_duration_ms = 0
         self.current_media_frame_count = 0
+        self.current_frame_time_map = FrameTimeMap(())
+        self._pending_seek_frame = None
+        self._enforcing_playback_range = False
+        self._video_seek_generation = 0
         self.is_video_mode = False # Determined after info fetch
         self.current_media_start_frame_index = 0 # 이미지 시퀀스 시작 프레임 인덱스 (0-based)
 
@@ -472,7 +506,12 @@ class PreviewAreaComponent:
             logger.debug(f"새 미디어 정보 요청 생성 (ID: {current_request_id}): {os.path.basename(file_path)}")
 
             # 백그라운드에서 미디어 정보 가져오기 시작 (request_id 전달)
-            fetcher = MediaInfoFetcher(current_request_id, file_path, self.ffmpeg_manager) # ID 전달
+            fetcher = MediaInfoFetcher(
+                current_request_id,
+                file_path,
+                self.ffmpeg_manager,
+                self._frame_timestamp_cache.get(file_path),
+            )
             fetcher.signals.result_ready.connect(self.on_media_info_ready)
             fetcher.signals.error.connect(self.on_media_info_error)
             self.current_fetcher_task = fetcher # ★ Keep a reference to the current fetcher
@@ -513,6 +552,19 @@ class PreviewAreaComponent:
             self.current_media_fps = media_info['fps']
             self.current_media_duration_ms = int(media_info['duration'] * 1000)
             self.current_media_frame_count = media_info['frame_count']
+            self.current_frame_time_map = FrameTimeMap.from_timestamps(
+                media_info.get('frame_timestamps_ms', ()),
+                frame_count=self.current_media_frame_count,
+                fps=self.current_media_fps,
+            )
+            if self.current_frame_time_map.frame_count:
+                self.current_media_frame_count = self.current_frame_time_map.frame_count
+                self._frame_timestamp_cache[fetched_file_path] = (
+                    self.current_frame_time_map.timestamps_ms
+                )
+                if len(self._frame_timestamp_cache) > 16:
+                    oldest_path = next(iter(self._frame_timestamp_cache))
+                    self._frame_timestamp_cache.pop(oldest_path, None)
             self.is_video_mode = not media_info['is_image_sequence'] and not media_info['is_single_image']
             self.media_info_loading = False
             is_image_sequence = media_info['is_image_sequence']
@@ -538,7 +590,8 @@ class PreviewAreaComponent:
                 self.timeline.set_video_info(
                     self.current_media_frame_count,
                     self.current_media_fps,
-                    self.current_media_duration_ms / 1000.0
+                    self.current_media_duration_ms / 1000.0,
+                    frame_timestamps_ms=self.current_frame_time_map.timestamps_ms,
                 )
                 self.timeline.reset_in_out_points() # 새 파일 로드 시 In/Out 초기화
                 if hasattr(self.parent, "apply_loaded_media_trim_to_timeline"):
@@ -698,6 +751,8 @@ class PreviewAreaComponent:
 
         self._clear_preview_widgets() # 위젯 숨기기 및 초기화
         self.current_media_path = None # 현재 경로 초기화 (★ 중요: 다음 fetcher 결과 처리를 위해)
+        self.current_frame_time_map = FrameTimeMap(())
+        self._pending_seek_frame = None
         self.is_video_mode = False
         self.image_sequence_playback_state = PlaybackState.STOPPED
         self.media_info_loading = False
@@ -1025,9 +1080,8 @@ class PreviewAreaComponent:
         logger.debug(f"QMediaPlayer durationChanged: {duration_ms} ms")
         
         # ... (rest of the logic is likely fine)
-        old_duration_ms = self.current_media_duration_ms
         self.current_media_duration_ms = duration_ms
-        if self.current_media_fps > 0:
+        if self.current_media_frame_count <= 0 and self.current_media_fps > 0:
             new_frame_count = int((duration_ms / 1000.0) * self.current_media_fps)
             if new_frame_count != self.current_media_frame_count:
                 logger.info(f"Duration 변경으로 frame_count 업데이트: {self.current_media_frame_count} -> {new_frame_count}")
@@ -1036,9 +1090,10 @@ class PreviewAreaComponent:
                     self.timeline.set_video_info(
                         self.current_media_frame_count,
                         self.current_media_fps,
-                        self.current_media_duration_ms / 1000.0
+                        self.current_media_duration_ms / 1000.0,
+                        frame_timestamps_ms=self.current_frame_time_map.timestamps_ms,
                     )
-        else:
+        elif self.current_media_frame_count <= 0:
             logger.warning("FPS 정보가 없어 frame_count를 재계산할 수 없습니다.")
 
     @Slot(int)
@@ -1050,6 +1105,24 @@ class PreviewAreaComponent:
         # logger.debug(f"QMediaPlayer positionChanged: {position_ms} ms") # 너무 빈번하게 로깅됨
         if self.timeline and self.current_media_fps > 0:
             current_frame = self._ms_to_frame(position_ms)
+            timeline_widget = self.timeline.timeline_widget
+            if timeline_widget:
+                in_point = timeline_widget.in_point
+                out_point = timeline_widget.out_point
+                if current_frame < in_point:
+                    current_frame = in_point
+                elif current_frame > out_point:
+                    current_frame = out_point
+                    if (
+                        not self._enforcing_playback_range
+                        and self.media_player.playbackState() == QMediaPlayer.PlayingState
+                    ):
+                        self._enforcing_playback_range = True
+                        try:
+                            self.media_player.pause()
+                            self.media_player.setPosition(self._frame_to_ms(out_point))
+                        finally:
+                            self._enforcing_playback_range = False
             self.timeline.set_current_frame(current_frame, emit_signal=False) # 내부 변경이므로 시그널 발생 방지
 
     @Slot(QMediaPlayer.PlaybackState)
@@ -1078,9 +1151,18 @@ class PreviewAreaComponent:
         if status == QMediaPlayer.LoadedMedia:
             logger.info("미디어 로드 완료, 재생 가능 상태")
             play_button_enabled = True
+            if self._pending_seek_frame is not None:
+                pending_frame = self._pending_seek_frame
+                self._pending_seek_frame = None
+                self.on_timeline_seek_frame(pending_frame)
         elif status == QMediaPlayer.EndOfMedia:
             logger.info("미디어 재생 완료 (EndOfMedia)")
-            self.reset_to_first_frame() # 첫 프레임 이동 및 UI 업데이트
+            timeline_widget = getattr(self.timeline, "timeline_widget", None)
+            if timeline_widget:
+                self.timeline.set_current_frame(
+                    timeline_widget.out_point,
+                    emit_signal=False,
+                )
             play_button_enabled = True # 완료 후 다시 재생 가능
         elif status == QMediaPlayer.InvalidMedia:
             logger.error("잘못된 미디어 파일 (InvalidMedia)")
@@ -1183,6 +1265,17 @@ class PreviewAreaComponent:
                     self.media_player.pause()
                 elif state == QMediaPlayer.PausedState or state == QMediaPlayer.StoppedState:
                     logger.info("QMediaPlayer 재생")
+                    self._video_seek_generation += 1
+                    timeline_widget = getattr(self.timeline, "timeline_widget", None)
+                    if timeline_widget:
+                        frame = max(
+                            timeline_widget.in_point,
+                            min(timeline_widget.current_frame, timeline_widget.out_point),
+                        )
+                        if frame >= timeline_widget.out_point:
+                            frame = timeline_widget.in_point
+                        timeline_widget.set_current_frame(frame, emit_signal=False)
+                        self.media_player.setPosition(self._frame_to_ms(frame))
                     self.media_player.play()
                 else:
                     logger.warning(f"알 수 없는 QMediaPlayer 상태 ({state})에서는 재생/일시정지 불가")
@@ -1221,11 +1314,14 @@ class PreviewAreaComponent:
         logger.debug("첫 프레임으로 리셋 시작")
         if self.is_video_mode:
             if self.media_player:
-                # QMediaPlayer는 stop() 호출 시 자동으로 0으로 이동됨
-                if self.media_player.position() != 0:
-                    self.media_player.setPosition(0) # 명시적으로 0으로 설정 시도
                 if self.media_player.playbackState() != QMediaPlayer.StoppedState:
-                    self.media_player.stop() # 중지 상태가 아니면 중지
+                    self.media_player.stop()
+                timeline_widget = getattr(self.timeline, "timeline_widget", None)
+                first_frame = timeline_widget.in_point if timeline_widget else 1
+                self._set_video_position(
+                    self._frame_to_ms(first_frame),
+                    refresh_stopped_frame=True,
+                )
             # 타임라인 및 버튼 업데이트는 on_media_status_changed(EndOfMedia) 에서 처리됨
             # 또는 여기서 직접 호출 필요 시:
             # if self.timeline: self.timeline.set_current_frame(1)
@@ -1238,6 +1334,8 @@ class PreviewAreaComponent:
 
     def _ms_to_frame(self, ms: int) -> int:
         """밀리초를 프레임 번호로 변환 (1-based)"""
+        if self.current_frame_time_map.frame_count:
+            return self.current_frame_time_map.frame_for_timestamp(ms)
         if self.current_media_fps > 0:
             # + 0.5 는 반올림 효과, int()는 버림
             # frame = int((ms / 1000.0) * self.current_media_fps + 0.5) + 1 
@@ -1249,6 +1347,8 @@ class PreviewAreaComponent:
 
     def _frame_to_ms(self, frame: int) -> int:
         """프레임 번호(1-based)를 밀리초로 변환"""
+        if self.current_frame_time_map.frame_count:
+            return self.current_frame_time_map.timestamp_for_frame(frame)
         if self.current_media_fps > 0:
             # 프레임 번호가 1부터 시작하므로 (frame - 1) 사용
             ms = int(((frame - 1) / self.current_media_fps) * 1000)
@@ -1256,14 +1356,55 @@ class PreviewAreaComponent:
             return max(0, min(ms, self.current_media_duration_ms if self.current_media_duration_ms > 0 else 0))
         return 0 # FPS 모르면 0 반환
 
+    def _set_video_position(self, position_ms: int, *, refresh_stopped_frame: bool):
+        """Seek and wake a player that is parked in EndOfMedia when needed."""
+        if not self.media_player:
+            return
+        position_ms = max(0, int(position_ms))
+        ended = self.media_player.mediaStatus() == QMediaPlayer.EndOfMedia
+        was_playing = self.media_player.playbackState() == QMediaPlayer.PlayingState
+        self._video_seek_generation += 1
+        generation = self._video_seek_generation
+        expected_path = self.current_media_path
+        self.media_player.setPosition(position_ms)
+        if not (refresh_stopped_frame and ended and not was_playing):
+            return
+
+        # Windows Media Foundation can accept setPosition() at EndOfMedia while
+        # leaving the last decoded frame on the video sink. Briefly restarting
+        # decoding makes the requested frame observable, then returns to pause.
+        self.media_player.play()
+
+        def finish_seek_refresh():
+            if generation != self._video_seek_generation or not self.media_player:
+                return
+            source = self.media_player.source().toLocalFile()
+            if expected_path != self.current_media_path or source != expected_path:
+                return
+            self.media_player.pause()
+            self.media_player.setPosition(position_ms)
+
+        QTimer.singleShot(80, finish_seek_refresh)
+
     def on_timeline_seek_frame(self, frame: int):
         """타임라인 프레임 이동 이벤트 처리"""
         logger.debug(f"타임라인 프레임 이동 이벤트 수신: {frame}")
+        if self.media_info_loading:
+            self._pending_seek_frame = int(frame)
+            return
         if self.is_video_mode:
             if self.media_player and self.current_media_fps > 0:
                 position_ms = self._frame_to_ms(frame)
                 logger.debug(f"QMediaPlayer 위치 설정 요청: frame {frame} -> {position_ms} ms")
-                self.media_player.setPosition(position_ms)
+                source = self.media_player.source().toLocalFile()
+                if self.media_info_loading or source != self.current_media_path:
+                    self._pending_seek_frame = int(frame)
+                else:
+                    self._pending_seek_frame = None
+                    self._set_video_position(
+                        position_ms,
+                        refresh_stopped_frame=True,
+                    )
             elif not self.media_player:
                 logger.warning("미디어 플레이어가 없어 탐색할 수 없습니다.")
             else: # fps <= 0

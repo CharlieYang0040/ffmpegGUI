@@ -44,6 +44,7 @@ class CutTimelineWidget(QWidget):
         self._drag_origin = QPoint()
         self._drag_original_range = None
         self._preview_range = None
+        self._move_target_index = None
         self._fit_signature = ()
         self._fit_reference_frames = 1
         self._scaled_thumbnail_cache = {}
@@ -170,6 +171,35 @@ class CutTimelineWidget(QWidget):
 
     def _clip_by_id(self, clip_id):
         return next((clip for clip in self._clips() if clip.clip_id == clip_id), None)
+
+    def _move_target_index_at(self, x: float) -> int:
+        remaining = [
+            clip for clip in self._clips() if clip.clip_id != self._drag_clip_id
+        ]
+        for index, clip in enumerate(remaining):
+            geometry = self._geometry.clip(clip.clip_id)
+            if geometry is None:
+                continue
+            midpoint = (geometry.active_left + geometry.active_right) / 2.0
+            if float(x) < midpoint:
+                return index
+        return len(remaining)
+
+    def _move_indicator_x(self) -> float | None:
+        if self._drag_mode != "move" or self._move_target_index is None:
+            return None
+        remaining = [
+            clip for clip in self._clips() if clip.clip_id != self._drag_clip_id
+        ]
+        if not remaining:
+            geometry = self._geometry.clip(self._drag_clip_id or "")
+            return geometry.active_left if geometry else None
+        target_index = max(0, min(self._move_target_index, len(remaining)))
+        if target_index == len(remaining):
+            geometry = self._geometry.clip(remaining[-1].clip_id)
+            return geometry.active_right + 2 if geometry else None
+        geometry = self._geometry.clip(remaining[target_index].clip_id)
+        return geometry.active_left - 2 if geometry else None
 
     def _activate_clip(self, clip, emit_signal: bool = True):
         changed = clip.clip_id != self.selected_clip_id
@@ -346,6 +376,16 @@ class CutTimelineWidget(QWidget):
                 painter.setFont(QFont("Consolas", 8, QFont.DemiBold))
                 painter.drawText(label_rect, Qt.AlignCenter, label)
 
+        move_indicator_x = self._move_indicator_x()
+        if move_indicator_x is not None:
+            painter.setPen(QPen(QColor("#70a7ff"), 3))
+            painter.drawLine(
+                int(move_indicator_x),
+                self.TRACK_TOP - 4,
+                int(move_indicator_x),
+                self.TRACK_TOP + self.TRACK_HEIGHT + 4,
+            )
+
         selected_clip = self.workspace_state.selected_clip
         selected_geometry = self._geometry.clip(self.selected_clip_id or "")
         if selected_clip is not None and selected_geometry is not None:
@@ -353,7 +393,7 @@ class CutTimelineWidget(QWidget):
                 0,
                 min(
                     selected_clip.source_range.frame_count,
-                    self.current_frame - selected_clip.source_range.source_in,
+                    self.current_frame - selected_clip.source_range.source_in - 1,
                 ),
             )
             playhead_x = self._geometry.x_for_clip_frame(selected_clip.clip_id, local_frame)
@@ -429,6 +469,9 @@ class CutTimelineWidget(QWidget):
         delta_pixels = event.position().x() - self._drag_origin.x()
         if self._drag_mode == "pending_move" and abs(delta_pixels) > 10:
             self._drag_mode = "move"
+            self._move_target_index = self._move_target_index_at(event.position().x())
+        elif self._drag_mode == "move":
+            self._move_target_index = self._move_target_index_at(event.position().x())
         if self._drag_mode == "trim_left":
             delta = self._geometry.frame_delta_for_pixels(
                 delta_pixels,
@@ -460,18 +503,17 @@ class CutTimelineWidget(QWidget):
                 self._preview_range.source_out,
             )
         elif mode == "move":
-            geometry = self._geometry.hit_test(event.position().x())
-            if geometry is not None:
-                target_index = next(
-                    index
-                    for index, clip in enumerate(self._clips())
-                    if clip.clip_id == geometry.clip_id
-                )
-                self.clip_move_committed.emit(clip_id, target_index)
+            target_index = (
+                self._move_target_index
+                if self._move_target_index is not None
+                else self._move_target_index_at(event.position().x())
+            )
+            self.clip_move_committed.emit(clip_id, target_index)
         self._drag_mode = None
         self._drag_clip_id = None
         self._drag_original_range = None
         self._preview_range = None
+        self._move_target_index = None
         self.unsetCursor()
         self.update()
 

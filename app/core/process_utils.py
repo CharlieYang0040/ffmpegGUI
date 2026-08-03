@@ -54,3 +54,38 @@ def probe_media_json(ffprobe_path: str, input_file: str) -> dict:
         message = decode_process_output(result.stderr).strip()
         raise RuntimeError(message or f"FFprobe 실행 실패 (코드 {result.returncode})")
     return json.loads(decode_process_output(result.stdout))
+
+
+def probe_video_frame_timestamps(ffprobe_path: str, input_file: str) -> list[float]:
+    """Return video-frame presentation timestamps in milliseconds."""
+    if not ffprobe_path:
+        raise ValueError("FFprobe 경로가 설정되지 않았습니다.")
+    result = run_hidden(
+        [
+            ffprobe_path,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "frame=best_effort_timestamp_time",
+            "-of",
+            "json",
+            input_file,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = decode_process_output(result.stderr).strip()
+        raise RuntimeError(message or f"FFprobe 프레임 분석 실패 (코드 {result.returncode})")
+    document = json.loads(decode_process_output(result.stdout))
+    timestamps = []
+    for frame in document.get("frames", []):
+        value = frame.get("best_effort_timestamp_time")
+        try:
+            timestamps.append(float(value) * 1000.0)
+        except (TypeError, ValueError):
+            continue
+    return timestamps

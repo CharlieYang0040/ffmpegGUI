@@ -169,6 +169,33 @@ class CutTimelineWidgetTests(unittest.TestCase):
         self.assertEqual(committed[0][2], 110)
         widget.close()
 
+    def test_dragging_clip_body_to_end_emits_move_target(self):
+        from PySide6.QtCore import QPoint
+
+        widget = CutTimelineWidget()
+        widget.resize(800, 118)
+        widget.set_workspace_state(make_workspace())
+        widget.show()
+        self.app.processEvents()
+        moves = []
+        widget.clip_move_committed.connect(
+            lambda clip_id, target_index: moves.append((clip_id, target_index))
+        )
+        first = widget._geometry.clip("clip-a")
+        second = widget._geometry.clip("clip-b")
+        start = QPoint(
+            int((first.active_left + first.active_right) / 2),
+            widget.TRACK_TOP + 25,
+        )
+        end = QPoint(int(second.active_right + 30), widget.TRACK_TOP + 25)
+
+        QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, start)
+        QTest.mouseMove(widget, end, delay=10)
+        QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, end)
+
+        self.assertEqual(moves, [("clip-a", 1)])
+        widget.close()
+
     def test_committed_trim_keeps_single_clip_edge_at_trimmed_position(self):
         clip = EditClip(
             clip_id="clip-a",

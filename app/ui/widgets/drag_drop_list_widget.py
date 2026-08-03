@@ -3,7 +3,7 @@
 import logging
 import os
 
-from PySide6.QtCore import QMimeData, Qt
+from PySide6.QtCore import QMimeData, QModelIndex, Qt
 from PySide6.QtGui import QColor, QDrag, QDragEnterEvent, QDropEvent, QPainter
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QListWidget, QListWidgetItem
 
@@ -234,7 +234,7 @@ class DragDropListWidget(QListWidget):
         self._refresh_parent_inspector()
 
     def reorder_existing_items(self, states):
-        """Reorder current clips without constructing new media widgets."""
+        """Reorder rows through the Qt model without deleting item widgets."""
         desired_ids = [
             str(self._coerce_item_state(state).get("clip_id", "") or "")
             for state in states
@@ -256,14 +256,41 @@ class DragDropListWidget(QListWidget):
             str(getattr(self.itemWidget(item), "clip_id", "") or "")
             for item in self.selectedItems()
         }
-        bundles = {clip_id: (item, widget) for clip_id, item, widget in current}
         previous_blocked = self.blockSignals(True)
         try:
-            for row in range(self.count() - 1, -1, -1):
-                self.detach_item_at(row)
-            for row, clip_id in enumerate(desired_ids):
-                item, widget = bundles[clip_id]
-                self.attach_item_at(row, item, widget)
+            model = self.model()
+            for target_row, clip_id in enumerate(desired_ids):
+                current_row = next(
+                    (
+                        row
+                        for row in range(self.count())
+                        if str(
+                            getattr(
+                                self.itemWidget(self.item(row)),
+                                "clip_id",
+                                "",
+                            )
+                            or ""
+                        )
+                        == clip_id
+                    ),
+                    -1,
+                )
+                if current_row < 0:
+                    return False
+                if current_row != target_row:
+                    destination = target_row if current_row > target_row else target_row + 1
+                    if not model.moveRow(
+                        QModelIndex(),
+                        current_row,
+                        QModelIndex(),
+                        destination,
+                    ):
+                        return False
+            for row in range(self.count()):
+                item = self.item(row)
+                widget = self.itemWidget(item)
+                clip_id = str(getattr(widget, "clip_id", "") or "")
                 item.setSelected(clip_id in selected_ids)
                 if clip_id == current_id:
                     self.setCurrentItem(item)
