@@ -377,6 +377,42 @@ void EditorController::togglePlayback() {
 #endif
 }
 
+void EditorController::stepFrame(int direction) {
+    if (direction == 0 || timeline_.clips().empty()) return;
+#ifdef FFGUI_HAS_GES
+    try {
+        if (playing_) player_->pause();
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+        return;
+    }
+#endif
+    const auto target = direction > 0
+        ? timeline_.next_frame_time(playhead_ns_)
+        : timeline_.previous_frame_time(playhead_ns_);
+    if (target.has_value()) seek(target.value());
+}
+
+void EditorController::jumpEditPoint(int direction) {
+    if (direction == 0 || timeline_.clips().empty()) return;
+    const auto spans = timeline_.snapshot();
+    if (direction > 0) {
+        for (const auto& span : spans) {
+            if (span.timeline_out > playhead_ns_) {
+                seek(span.timeline_out);
+                return;
+            }
+        }
+        return;
+    }
+    for (auto span = spans.rbegin(); span != spans.rend(); ++span) {
+        if (span->timeline_in < playhead_ns_) {
+            seek(span->timeline_in);
+            return;
+        }
+    }
+}
+
 void EditorController::stop() {
 #ifdef FFGUI_HAS_GES
     player_->stop();

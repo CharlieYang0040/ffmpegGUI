@@ -194,6 +194,59 @@ std::optional<TimeNs> TimelineModel::timeline_time_for_source(
     return std::nullopt;
 }
 
+std::optional<TimeNs> TimelineModel::next_frame_time(TimeNs timeline_position) const {
+    const auto total = duration();
+    if (clips_.empty() || timeline_position < 0 || timeline_position >= total) {
+        return std::nullopt;
+    }
+    TimeNs cursor = 0;
+    for (const auto& clip : clips_) {
+        const auto clipEnd = checked_add(cursor, clip.duration);
+        if (timeline_position < clipEnd) {
+            const auto* sourceAsset = asset(clip.asset_id);
+            if (sourceAsset == nullptr) return std::nullopt;
+            const auto sourceTime = checked_add(
+                clip.source_in, timeline_position - cursor);
+            const auto& framePts = sourceAsset->frame_pts();
+            const auto next = std::upper_bound(framePts.begin(), framePts.end(), sourceTime);
+            if (next != framePts.end() && *next < clip.source_out()) {
+                return checked_add(cursor, *next - clip.source_in);
+            }
+            return clipEnd;
+        }
+        cursor = clipEnd;
+    }
+    return std::nullopt;
+}
+
+std::optional<TimeNs> TimelineModel::previous_frame_time(TimeNs timeline_position) const {
+    const auto total = duration();
+    if (clips_.empty() || timeline_position <= 0 || timeline_position > total) {
+        return std::nullopt;
+    }
+    TimeNs cursor = 0;
+    for (const auto& clip : clips_) {
+        const auto clipEnd = checked_add(cursor, clip.duration);
+        if (timeline_position <= clipEnd) {
+            const auto* sourceAsset = asset(clip.asset_id);
+            if (sourceAsset == nullptr) return std::nullopt;
+            const auto localTime = std::min(timeline_position - cursor, clip.duration);
+            const auto sourceTime = checked_add(clip.source_in, localTime);
+            const auto& framePts = sourceAsset->frame_pts();
+            auto previous = std::lower_bound(framePts.begin(), framePts.end(), sourceTime);
+            if (previous != framePts.begin()) {
+                --previous;
+                if (*previous >= clip.source_in) {
+                    return checked_add(cursor, *previous - clip.source_in);
+                }
+            }
+            return cursor;
+        }
+        cursor = clipEnd;
+    }
+    return std::nullopt;
+}
+
 std::size_t TimelineModel::index_of(const std::string& clip_id) const {
     const auto found = std::find_if(
         clips_.begin(), clips_.end(), [&clip_id](const Clip& clip) { return clip.id == clip_id; });

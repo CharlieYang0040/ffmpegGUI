@@ -94,6 +94,29 @@ void test_sequence_to_source_mapping() {
     require(!timeline.locate(seconds(10)).has_value(), "timeline end is half-open");
 }
 
+void test_vfr_frame_stepping_respects_trims_and_clip_boundaries() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"first", "asset-a", seconds(1), seconds(3)});
+    timeline.append_clip(Clip{"second", "asset-a", seconds(4), seconds(4)});
+
+    require(timeline.next_frame_time(0) == seconds(1), "next step must follow VFR PTS");
+    require(timeline.next_frame_time(seconds(1)) == seconds(3),
+            "next step must land on the magnetic clip boundary");
+    require(timeline.next_frame_time(seconds(3)) == seconds(6),
+            "next step in the second clip must use its source in-point");
+    require(timeline.next_frame_time(seconds(6)) == seconds(7),
+            "last frame step must reach the sequence end");
+    require(!timeline.next_frame_time(seconds(7)).has_value(), "cannot step past the end");
+
+    require(timeline.previous_frame_time(seconds(7)) == seconds(6),
+            "previous step from the end must reach the last visible frame");
+    require(timeline.previous_frame_time(seconds(6)) == seconds(3),
+            "previous VFR step must reach the second clip in-point");
+    require(timeline.previous_frame_time(seconds(3)) == seconds(1),
+            "previous step at a cut must enter the preceding clip");
+    require(!timeline.previous_frame_time(0).has_value(), "cannot step before the start");
+}
+
 void test_split_preserves_duration_and_source_boundary() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"original", "asset-a", seconds(1), seconds(6)});
@@ -268,6 +291,7 @@ int main() {
         {"vfr_frame_lookup", test_vfr_frame_lookup},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},
         {"sequence_to_source_mapping", test_sequence_to_source_mapping},
+        {"vfr_frame_stepping_respects_trims_and_clip_boundaries", test_vfr_frame_stepping_respects_trims_and_clip_boundaries},
         {"split_preserves_duration_and_source_boundary", test_split_preserves_duration_and_source_boundary},
         {"reorder_uses_insertion_index_after_removal", test_reorder_uses_insertion_index_after_removal},
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},

@@ -24,6 +24,13 @@ ApplicationWindow {
 
     Shortcut { sequences: [StandardKey.Undo]; enabled: EditorController.canUndo; onActivated: EditorController.undo() }
     Shortcut { sequences: [StandardKey.Redo]; enabled: EditorController.canRedo; onActivated: EditorController.redo() }
+    Shortcut { sequence: "Space"; onActivated: EditorController.togglePlayback() }
+    Shortcut { sequence: "Left"; autoRepeat: true; onActivated: EditorController.stepFrame(-1) }
+    Shortcut { sequence: "Right"; autoRepeat: true; onActivated: EditorController.stepFrame(1) }
+    Shortcut { sequence: "Up"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(-1) }
+    Shortcut { sequence: "Down"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(1) }
+    Shortcut { sequence: "Ctrl+K"; onActivated: EditorController.splitAtPlayhead() }
+    Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipId.length > 0; onActivated: EditorController.deleteSelectedClip() }
 
     FileDialog {
         id: mediaDialog

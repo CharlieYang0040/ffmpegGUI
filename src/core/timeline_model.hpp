@@ -63,6 +63,8 @@ public:
     [[nodiscard]] TimeNs duration() const;
     [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
     [[nodiscard]] std::optional<MappedPosition> locate(TimeNs timeline_position) const;
+    [[nodiscard]] std::optional<TimeNs> next_frame_time(TimeNs timeline_position) const;
+    [[nodiscard]] std::optional<TimeNs> previous_frame_time(TimeNs timeline_position) const;
     [[nodiscard]] std::optional<TimeNs> timeline_time_for_source(
         const std::string& clip_id,
         TimeNs source_time) const;

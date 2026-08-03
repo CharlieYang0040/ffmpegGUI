@@ -80,6 +80,8 @@ public:
 public slots:
     void seek(qint64 timelinePosition);
     void togglePlayback();
+    void stepFrame(int direction);
+    void jumpEditPoint(int direction);
     void stop();
     void selectClip(const QString& clipId);
     void trimClip(const QString& clipId, qint64 sourceIn, qint64 duration);
