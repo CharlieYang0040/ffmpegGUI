@@ -168,6 +168,15 @@ void test_ffprobe_timestamp_parser_preserves_vfr() {
     require(ffgui::estimated_media_end(pts) == 500'000'000, "last frame duration estimate");
 }
 
+void test_ffprobe_frame_timeline_preserves_keyframes() {
+    const auto timeline = ffgui::parse_ffprobe_frame_timeline(
+        "1,-0.100000,\r\n0,-0.066000\n0,0.000000\n1,0.200000\n");
+    require(timeline.frame_pts == std::vector<TimeNs>{0, 34'000'000, 100'000'000, 300'000'000},
+            "combined frame parser must share the normalized PTS origin");
+    require(timeline.keyframe_pts == std::vector<TimeNs>{0, 300'000'000},
+            "keyframe flags must remain attached after normalization");
+}
+
 void test_ffmpeg_export_plan_preserves_clip_ranges_and_audio() {
     const auto plan = ffgui::compile_ffmpeg_export(ffgui::ExportRequest{
         {
@@ -207,6 +216,33 @@ void test_ffmpeg_export_plan_rejects_invalid_requests() {
         "zero-duration export clip must fail");
 }
 
+void test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts() {
+    auto request = ffgui::ExportRequest{
+        {
+            {std::filesystem::path{"same.mp4"}, 0, seconds(1), true,
+             seconds(3), {0, seconds(1), seconds(2)}},
+            {std::filesystem::path{"same.mp4"}, seconds(2), seconds(1), true,
+             seconds(3), {0, seconds(1), seconds(2)}},
+        },
+        std::filesystem::path{"result.mp4"},
+        ffgui::ExportVideoEncoder::h264_nvenc};
+    request.concat_script_path = std::filesystem::path{"job.ffconcat"};
+    const auto copied = ffgui::compile_ffmpeg_export(request);
+    require(copied.mode == ffgui::ExportMode::stream_copy, "safe same-source GOP cuts should copy");
+    require(copied.concat_script.contains("inpoint 0.000000000") &&
+            copied.concat_script.contains("outpoint 3.000000000"),
+            "concat script must preserve every source range");
+    std::string arguments;
+    for (const auto& argument : copied.arguments) arguments += argument + '\n';
+    require(arguments.contains("copy") && !arguments.contains("h264_nvenc"),
+            "stream-copy plan must avoid video encoding");
+
+    request.clips[0].duration = 500'000'000;
+    const auto transcoded = ffgui::compile_ffmpeg_export(request);
+    require(transcoded.mode == ffgui::ExportMode::transcode,
+            "non-keyframe boundary must fall back to transcoding");
+}
+
 }  // namespace
 
 int main() {
@@ -219,8 +255,10 @@ int main() {
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"ffprobe_timestamp_parser_preserves_vfr", test_ffprobe_timestamp_parser_preserves_vfr},
+        {"ffprobe_frame_timeline_preserves_keyframes", test_ffprobe_frame_timeline_preserves_keyframes},
         {"ffmpeg_export_plan_preserves_clip_ranges_and_audio", test_ffmpeg_export_plan_preserves_clip_ranges_and_audio},
         {"ffmpeg_export_plan_rejects_invalid_requests", test_ffmpeg_export_plan_rejects_invalid_requests},
+        {"ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts", test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts},
     };
 
     int failed = 0;

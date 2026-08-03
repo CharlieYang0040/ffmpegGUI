@@ -15,6 +15,9 @@ $clipB = Join-Path $mediaDir "shot-b.mkv"
 $clipVfr = Join-Path $mediaDir "shot-vfr.mkv"
 $roundtripProject = Join-Path $mediaDir "roundtrip.ffnext"
 $exportOutput = Join-Path $mediaDir "export-smoke.mp4"
+$copySource = Join-Path $mediaDir "stream-copy-source.mp4"
+$copyProject = Join-Path $mediaDir "stream-copy.ffnext"
+$copyOutput = Join-Path $mediaDir "stream-copy-output.mp4"
 
 foreach ($required in @($application, $clipA, $clipB, $clipVfr)) {
     if (-not (Test-Path -LiteralPath $required)) {
@@ -67,6 +70,49 @@ if ($streams -notcontains "video" -or $streams -notcontains "audio") {
     throw "exported timeline must contain both video and audio streams"
 }
 Write-Output "Timeline export passed: NVENC/CPU pipeline produced a $exportDuration second MP4"
+
+if (-not (Test-Path -LiteralPath $copySource -PathType Leaf)) {
+    & (Join-Path $root ".tools\ffmpeg\bin\ffmpeg.exe") -hide_banner -loglevel error -y `
+        -f lavfi -i "testsrc2=size=640x360:rate=30:duration=4" `
+        -f lavfi -i "sine=frequency=550:sample_rate=48000:duration=4" `
+        -c:v libx264 -pix_fmt yuv420p -g 30 -keyint_min 30 -sc_threshold 0 `
+        -c:a aac -shortest $copySource
+    if ($LASTEXITCODE -ne 0) { throw "failed to create stream-copy fixture" }
+}
+$copyAnalysis = Start-Process -FilePath $application `
+    -ArgumentList @("--project-roundtrip", $copyProject, $copySource) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($copyAnalysis.ExitCode -ne 0) { throw "stream-copy fixture analysis failed" }
+$copyData = Get-Content -LiteralPath $copyProject -Raw | ConvertFrom-Json
+if ($copyData.assets[0].keyframePtsNs.Count -lt 4) {
+    throw "stream-copy fixture keyframes were not preserved"
+}
+$assetId = $copyData.assets[0].id
+$copyTailDuration = ([Int64]$copyData.assets[0].durationNs - 2000000000).ToString()
+$copyData.clips = @(
+    [pscustomobject]@{ id = "copy-a"; assetId = $assetId; sourceInNs = "0"; durationNs = "1000000000" },
+    [pscustomobject]@{ id = "copy-b"; assetId = $assetId; sourceInNs = "2000000000"; durationNs = $copyTailDuration }
+)
+[IO.File]::WriteAllText(
+    $copyProject,
+    ($copyData | ConvertTo-Json -Depth 8),
+    [Text.UTF8Encoding]::new($false))
+if (Test-Path -LiteralPath $copyOutput -PathType Leaf) {
+    Remove-Item -LiteralPath $copyOutput -Force
+}
+$copyExport = Start-Process -FilePath $application `
+    -ArgumentList @("--export-project-smoke", $copyProject, $copyOutput) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($copyExport.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $copyOutput -PathType Leaf)) {
+    throw "keyframe-aligned stream-copy export failed"
+}
+$copyDurationText = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
+    -v error -show_entries format=duration -of default=nw=1:nk=1 $copyOutput
+$copyDuration = [double]::Parse($copyDurationText, [Globalization.CultureInfo]::InvariantCulture)
+if ($copyDuration -lt 2.9 -or $copyDuration -gt 3.2) {
+    throw "stream-copy output duration is outside the expected range: $copyDuration"
+}
+Write-Output "Stream-copy passed: two keyframe-aligned cuts were remuxed without re-encoding"
 
 $process = Start-Process -FilePath $application `
     -ArgumentList @($clipA, $clipB, $clipVfr) `

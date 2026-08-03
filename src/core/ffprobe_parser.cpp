@@ -105,6 +105,59 @@ std::vector<TimeNs> parse_ffprobe_frame_pts(std::string_view output) {
     return result;
 }
 
+ParsedFrameTimeline parse_ffprobe_frame_timeline(std::string_view output) {
+    struct FrameRecord final {
+        TimeNs pts{};
+        bool keyframe{};
+    };
+    std::vector<FrameRecord> records;
+    std::size_t cursor = 0;
+    while (cursor <= output.size()) {
+        const auto end = output.find_first_of("\r\n", cursor);
+        auto line = trim(output.substr(cursor, end == std::string_view::npos
+            ? output.size() - cursor
+            : end - cursor));
+        if (!line.empty()) {
+            const auto firstComma = line.find(',');
+            if (firstComma != std::string_view::npos) {
+                const auto key = trim(line.substr(0, firstComma));
+                auto timestamp = line.substr(firstComma + 1);
+                const auto secondComma = timestamp.find(',');
+                if (secondComma != std::string_view::npos) {
+                    timestamp = timestamp.substr(0, secondComma);
+                }
+                timestamp = trim(timestamp);
+                if ((key == "0" || key == "1") && !timestamp.empty() && timestamp != "N/A") {
+                    records.push_back(FrameRecord{parse_ffprobe_seconds(timestamp), key == "1"});
+                }
+            }
+        }
+        if (end == std::string_view::npos) break;
+        cursor = end + 1;
+        if (output[end] == '\r' && cursor < output.size() && output[cursor] == '\n') ++cursor;
+    }
+    if (records.empty()) return {};
+
+    const auto origin = std::min_element(
+        records.begin(), records.end(), [](const FrameRecord& left, const FrameRecord& right) {
+            return left.pts < right.pts;
+        })->pts;
+    ParsedFrameTimeline result;
+    result.frame_pts.reserve(records.size());
+    for (const auto& record : records) {
+        const auto normalized = record.pts - origin;
+        result.frame_pts.push_back(normalized);
+        if (record.keyframe) result.keyframe_pts.push_back(normalized);
+    }
+    const auto normalize = [](std::vector<TimeNs>& values) {
+        std::sort(values.begin(), values.end());
+        values.erase(std::unique(values.begin(), values.end()), values.end());
+    };
+    normalize(result.frame_pts);
+    normalize(result.keyframe_pts);
+    return result;
+}
+
 TimeNs estimated_media_end(const std::vector<TimeNs>& frame_pts) {
     if (frame_pts.empty()) {
         return 0;

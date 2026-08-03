@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <algorithm>
 
 namespace ffgui {
 namespace {
@@ -22,6 +23,35 @@ std::string path_string(const std::filesystem::path& path) {
     return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
 }
 
+bool is_boundary(const ExportClipInput& clip, TimeNs value) {
+    return value == clip.asset_duration ||
+           std::binary_search(clip.keyframe_pts.begin(), clip.keyframe_pts.end(), value);
+}
+
+bool can_stream_copy(const ExportRequest& request) {
+    if (!request.prefer_stream_copy || request.concat_script_path.empty() ||
+        request.clips.empty()) {
+        return false;
+    }
+    const auto& source = request.clips.front().source_path;
+    return std::all_of(request.clips.begin(), request.clips.end(), [&](const auto& clip) {
+        return clip.source_path == source && clip.asset_duration > 0 &&
+               is_boundary(clip, clip.source_in) &&
+               is_boundary(clip, checked_add(clip.source_in, clip.duration));
+    });
+}
+
+std::string concat_path(const std::filesystem::path& path) {
+    auto value = path_string(path);
+    std::replace(value.begin(), value.end(), '\\', '/');
+    std::string escaped;
+    for (const auto character : value) {
+        if (character == '\'') escaped += "'\\''";
+        else escaped += character;
+    }
+    return escaped;
+}
+
 }  // namespace
 
 FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
@@ -34,14 +64,32 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
 
     FfmpegExportPlan plan;
     plan.arguments = {"-hide_banner", "-y", "-progress", "pipe:2", "-nostats"};
-    std::string filter;
-    std::string concatInputs;
-    for (std::size_t index = 0; index < request.clips.size(); ++index) {
-        const auto& clip = request.clips[index];
+    for (const auto& clip : request.clips) {
         if (clip.source_path.empty() || clip.duration <= 0 || clip.source_in < 0) {
             throw std::invalid_argument("export clip has an invalid source range");
         }
         plan.duration = checked_add(plan.duration, clip.duration);
+    }
+    if (can_stream_copy(request)) {
+        plan.mode = ExportMode::stream_copy;
+        plan.concat_script = "ffconcat version 1.0\n";
+        for (const auto& clip : request.clips) {
+            plan.concat_script += "file '" + concat_path(clip.source_path) + "'\n";
+            plan.concat_script += "inpoint " + seconds(clip.source_in) + "\n";
+            plan.concat_script += "outpoint " + seconds(checked_add(clip.source_in, clip.duration)) + "\n";
+        }
+        plan.arguments.insert(
+            plan.arguments.end(),
+            {"-f", "concat", "-safe", "0", "-i", path_string(request.concat_script_path),
+             "-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero",
+             "-movflags", "+faststart", path_string(request.output_path)});
+        return plan;
+    }
+
+    std::string filter;
+    std::string concatInputs;
+    for (std::size_t index = 0; index < request.clips.size(); ++index) {
+        const auto& clip = request.clips[index];
         plan.arguments.insert(
             plan.arguments.end(),
             {"-ss", seconds(clip.source_in), "-t", seconds(clip.duration),

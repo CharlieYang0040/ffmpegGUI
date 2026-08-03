@@ -13,22 +13,33 @@ enum class ExportVideoEncoder {
     libx264,
 };
 
+enum class ExportMode {
+    stream_copy,
+    transcode,
+};
+
 struct ExportClipInput final {
     std::filesystem::path source_path;
     TimeNs source_in{};
     TimeNs duration{};
     bool has_audio{};
+    TimeNs asset_duration{};
+    std::vector<TimeNs> keyframe_pts;
 };
 
 struct ExportRequest final {
     std::vector<ExportClipInput> clips;
     std::filesystem::path output_path;
     ExportVideoEncoder video_encoder{ExportVideoEncoder::h264_nvenc};
+    bool prefer_stream_copy{true};
+    std::filesystem::path concat_script_path;
 };
 
 struct FfmpegExportPlan final {
     std::vector<std::string> arguments;
     TimeNs duration{};
+    ExportMode mode{ExportMode::transcode};
+    std::string concat_script;
 };
 
 [[nodiscard]] FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request);

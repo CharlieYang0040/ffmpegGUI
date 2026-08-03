@@ -162,19 +162,20 @@ AnalyzedMedia analyze_media(
     const auto frameOutput = run_tool(
         ffprobe_path,
         {"-v", "error", "-select_streams", "v:0", "-show_entries",
-         "frame=best_effort_timestamp_time", "-of", "csv=p=0", absolutePath});
-    auto framePts = parse_ffprobe_frame_pts(to_utf8(QString::fromUtf8(frameOutput)));
+         "frame=key_frame,best_effort_timestamp_time", "-of", "csv=p=0", absolutePath});
+    auto frameTimeline = parse_ffprobe_frame_timeline(to_utf8(QString::fromUtf8(frameOutput)));
     const auto audioPcm = run_tool(
         ffmpeg_path,
         {"-v", "error", "-i", absolutePath, "-map", "0:a:0?", "-vn",
          "-ac", "1", "-ar", "200", "-f", "f32le", "pipe:1"},
         true);
     auto audioPeaks = build_peaks(audioPcm);
-    duration = std::max(duration, estimated_media_end(framePts));
+    duration = std::max(duration, estimated_media_end(frameTimeline.frame_pts));
     auto atlas = build_thumbnail_atlas(ffmpeg_path, absolutePath, duration);
     return AnalyzedMedia{
         MediaAsset{std::move(asset_id), std::filesystem::path(absolutePath.toStdWString()),
-                   duration, std::move(framePts), std::move(audioPeaks)},
+                   duration, std::move(frameTimeline.frame_pts), std::move(audioPeaks),
+                   std::move(frameTimeline.keyframe_pts)},
         std::move(atlas)};
 }
 

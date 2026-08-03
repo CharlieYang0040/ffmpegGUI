@@ -2,6 +2,7 @@
 #include "ffprobe_analyzer.hpp"
 
 #include <QFile>
+#include <QCoreApplication>
 #include <QFileInfo>
 #include <QDir>
 #include <QJsonArray>
@@ -11,6 +12,8 @@
 #include <QJSEngine>
 #include <QSaveFile>
 #include <QRegularExpression>
+#include <QStandardPaths>
+#include <QDateTime>
 #include <QtConcurrentRun>
 
 #include <algorithm>
@@ -128,6 +131,14 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 finishExport(true);
                 return;
             }
+            if (!export_cancelled_ && export_stream_copy_active_) {
+                export_request_->prefer_stream_copy = false;
+                QFile::remove(QString::fromStdWString(export_request_->output_path.wstring()));
+                QFile::remove(export_concat_path_);
+                setStatus("무손실 복사를 적용할 수 없어 NVENC로 다시 시도합니다");
+                startExportProcess(ffgui::ExportVideoEncoder::h264_nvenc);
+                return;
+            }
             if (!export_cancelled_ && !export_cpu_fallback_) {
                 export_cpu_fallback_ = true;
                 QFile::remove(QString::fromStdWString(export_request_->output_path.wstring()));
@@ -183,6 +194,7 @@ EditorController::~EditorController() {
         export_process_.kill();
         export_process_.waitForFinished(3'000);
     }
+    QFile::remove(export_concat_path_);
 }
 
 QVariantList EditorController::clips() const {
@@ -429,12 +441,17 @@ void EditorController::saveProject(const QString& path) {
             for (const auto peak : asset.audio_peaks()) {
                 audioPeaks.push_back(peak);
             }
+            QJsonArray keyframePts;
+            for (const auto pts : asset.keyframe_pts()) {
+                keyframePts.push_back(timeString(pts));
+            }
             assets.push_back(QJsonObject{
                 {"id", QString::fromStdString(id)},
                 {"path", QString::fromStdWString(asset.path().wstring())},
                 {"durationNs", timeString(asset.duration())},
                 {"framePtsNs", framePts},
                 {"audioPeaks", audioPeaks},
+                {"keyframePtsNs", keyframePts},
                 {"thumbnailAtlas", thumbnail_atlases_.value(QString::fromStdString(id))}});
         }
 
@@ -494,12 +511,17 @@ void EditorController::loadProject(const QString& path) {
             for (const auto peak : object.value("audioPeaks").toArray()) {
                 audioPeaks.push_back(static_cast<float>(peak.toDouble()));
             }
+            std::vector<ffgui::TimeNs> keyframePts;
+            for (const auto pts : object.value("keyframePtsNs").toArray()) {
+                keyframePts.push_back(parseTime(pts, "keyframePtsNs"));
+            }
             loaded.add_asset(ffgui::MediaAsset{
                 assetId.toStdString(),
                 std::filesystem::path(object.value("path").toString().toStdWString()),
                 parseTime(object.value("durationNs"), "durationNs"),
                 std::move(framePts),
-                std::move(audioPeaks)});
+                std::move(audioPeaks),
+                std::move(keyframePts)});
             const auto atlas = object.value("thumbnailAtlas").toString();
             if (QFileInfo(atlas).isFile()) {
                 loadedAtlases.insert(assetId, atlas);
@@ -585,11 +607,21 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             span.source_path,
             span.clip.source_in,
             span.clip.duration,
-            asset != nullptr && !asset->audio_peaks().empty()});
+            asset != nullptr && !asset->audio_peaks().empty(),
+            asset != nullptr ? asset->duration() : 0,
+            asset != nullptr ? asset->keyframe_pts() : std::vector<ffgui::TimeNs>{}});
     }
+    const auto exportCache = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+        .filePath("export-jobs");
+    QDir().mkpath(exportCache);
+    export_concat_path_ = QDir(exportCache).filePath(QStringLiteral("%1-%2.ffconcat")
+        .arg(QCoreApplication::applicationPid())
+        .arg(QDateTime::currentMSecsSinceEpoch()));
+    request.concat_script_path = std::filesystem::path(export_concat_path_.toStdWString());
     export_request_ = std::move(request);
     export_cpu_fallback_ = false;
     export_cancelled_ = false;
+    last_export_stream_copy_ = false;
     export_progress_ = 0;
     exporting_ = true;
     emit exportProgressChanged();
@@ -605,6 +637,15 @@ void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
         export_request_->video_encoder = encoder;
         const auto plan = ffgui::compile_ffmpeg_export(*export_request_);
         export_duration_ns_ = plan.duration;
+        export_stream_copy_active_ = plan.mode == ffgui::ExportMode::stream_copy;
+        if (export_stream_copy_active_) {
+            QSaveFile script(export_concat_path_);
+            const auto contents = QByteArray::fromStdString(plan.concat_script);
+            if (!script.open(QIODevice::WriteOnly) || script.write(contents) != contents.size() ||
+                !script.commit()) {
+                throw std::runtime_error("stream-copy concat script could not be written");
+            }
+        }
         QStringList arguments;
         arguments.reserve(static_cast<qsizetype>(plan.arguments.size()));
         for (const auto& argument : plan.arguments) {
@@ -613,9 +654,11 @@ void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
         export_stderr_.clear();
         export_process_.setProgram(ffgui::locate_ffmpeg());
         export_process_.setArguments(arguments);
-        setStatus(encoder == ffgui::ExportVideoEncoder::h264_nvenc
-            ? "내보내는 중 · NVENC"
-            : "내보내는 중 · CPU");
+        setStatus(export_stream_copy_active_
+            ? "내보내는 중 · 무손실 복사"
+            : (encoder == ffgui::ExportVideoEncoder::h264_nvenc
+                ? "내보내는 중 · NVENC"
+                : "내보내는 중 · CPU"));
         export_process_.start();
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -636,6 +679,7 @@ void EditorController::finishExport(bool success) {
         ? QString::fromStdWString(export_request_->output_path.wstring())
         : QString{};
     if (success) {
+        last_export_stream_copy_ = export_stream_copy_active_;
         export_progress_ = 1;
         setStatus(QStringLiteral("내보내기 완료 · %1").arg(QFileInfo(output).fileName()));
     } else {
@@ -650,6 +694,9 @@ void EditorController::finishExport(bool success) {
                 : QStringLiteral("내보내기 실패 · %1").arg(detail));
         }
     }
+    QFile::remove(export_concat_path_);
+    export_concat_path_.clear();
+    export_stream_copy_active_ = false;
     exporting_ = false;
     emit exportProgressChanged();
     emit exportingChanged();

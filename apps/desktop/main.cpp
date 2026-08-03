@@ -48,6 +48,8 @@ int main(int argc, char* argv[]) {
     QStringList mediaFiles;
     QString roundtripProject;
     QString exportSmokeOutput;
+    QString exportProjectSmoke;
+    QString exportProjectOutput;
     bool playbackSmoke = false;
     const auto arguments = application.arguments();
     for (int index = 1; index < arguments.size(); ++index) {
@@ -63,6 +65,11 @@ int main(int argc, char* argv[]) {
             exportSmokeOutput = arguments[++index];
             continue;
         }
+        if (arguments[index] == "--export-project-smoke" && index + 2 < arguments.size()) {
+            exportProjectSmoke = arguments[++index];
+            exportProjectOutput = arguments[++index];
+            continue;
+        }
         mediaFiles.push_back(arguments[index]);
     }
 
@@ -76,6 +83,10 @@ int main(int argc, char* argv[]) {
     engine.loadFromModule("FFGuiNext", "Main");
     if (!mediaFiles.isEmpty()) {
         controller.loadFiles(mediaFiles);
+    }
+    if (!exportProjectSmoke.isEmpty()) {
+        controller.loadProject(exportProjectSmoke);
+        if (controller.durationNs() <= 0) return EXIT_FAILURE;
     }
     if ((!roundtripProject.isEmpty() || !exportSmokeOutput.isEmpty() || playbackSmoke) &&
         controller.importing()) {
@@ -120,6 +131,28 @@ int main(int argc, char* argv[]) {
         exportTimeout.start(120'000);
         exportLoop.exec();
         return exportSucceeded && QFileInfo(exportSmokeOutput).isFile()
+            ? EXIT_SUCCESS
+            : EXIT_FAILURE;
+    }
+    if (!exportProjectOutput.isEmpty()) {
+        bool exportSucceeded = false;
+        QEventLoop exportLoop;
+        QTimer exportTimeout;
+        exportTimeout.setSingleShot(true);
+        QObject::connect(
+            &controller,
+            &EditorController::exportFinished,
+            &exportLoop,
+            [&exportSucceeded, &exportLoop](bool success, const QUrl&) {
+                exportSucceeded = success;
+                exportLoop.quit();
+            });
+        QObject::connect(&exportTimeout, &QTimer::timeout, &exportLoop, &QEventLoop::quit);
+        controller.exportTimelineUrl(QUrl::fromLocalFile(exportProjectOutput));
+        exportTimeout.start(120'000);
+        exportLoop.exec();
+        return exportSucceeded && controller.lastExportUsedStreamCopy() &&
+               QFileInfo(exportProjectOutput).isFile()
             ? EXIT_SUCCESS
             : EXIT_FAILURE;
     }

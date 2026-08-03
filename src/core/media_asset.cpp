@@ -11,12 +11,14 @@ MediaAsset::MediaAsset(
     std::filesystem::path path,
     TimeNs duration,
     std::vector<TimeNs> frame_pts,
-    std::vector<float> audio_peaks)
+    std::vector<float> audio_peaks,
+    std::vector<TimeNs> keyframe_pts)
     : id_(std::move(id)),
       path_(std::move(path)),
       duration_(duration),
       frame_pts_(std::move(frame_pts)),
-      audio_peaks_(std::move(audio_peaks)) {
+      audio_peaks_(std::move(audio_peaks)),
+      keyframe_pts_(std::move(keyframe_pts)) {
     if (id_.empty()) {
         throw std::invalid_argument("asset id must not be empty");
     }
@@ -44,6 +46,14 @@ MediaAsset::MediaAsset(
             return peak < 0.0F || peak > 1.0F;
         })) {
         throw std::invalid_argument("audio peaks must be normalized between zero and one");
+    }
+    if (!std::is_sorted(keyframe_pts_.begin(), keyframe_pts_.end()) ||
+        std::adjacent_find(keyframe_pts_.begin(), keyframe_pts_.end()) != keyframe_pts_.end() ||
+        std::any_of(keyframe_pts_.begin(), keyframe_pts_.end(), [this](TimeNs pts) {
+            return pts < 0 || pts >= duration_ ||
+                   !std::binary_search(frame_pts_.begin(), frame_pts_.end(), pts);
+        })) {
+        throw std::invalid_argument("keyframe timestamps must be unique source frame timestamps");
     }
 }
 

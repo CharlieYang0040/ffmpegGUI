@@ -56,6 +56,9 @@ public:
     [[nodiscard]] bool importing() const noexcept { return importing_; }
     [[nodiscard]] bool exporting() const noexcept { return exporting_; }
     [[nodiscard]] qreal exportProgress() const noexcept { return export_progress_; }
+    [[nodiscard]] bool lastExportUsedStreamCopy() const noexcept {
+        return last_export_stream_copy_;
+    }
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);
 
@@ -125,8 +128,11 @@ private:
     bool exporting_{};
     bool export_cpu_fallback_{};
     bool export_cancelled_{};
+    bool export_stream_copy_active_{};
+    bool last_export_stream_copy_{};
     qreal export_progress_{};
     ffgui::TimeNs export_duration_ns_{};
+    QString export_concat_path_;
     static EditorController* singleton_instance_;
 #ifdef FFGUI_HAS_GES
     std::unique_ptr<ffgui::GesSequencePlayer> player_;
