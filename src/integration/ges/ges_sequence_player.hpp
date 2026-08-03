@@ -7,6 +7,10 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <functional>
+#include <memory>
+
+#include <gst/app/gstappsink.h>
 
 typedef struct _GESPipeline GESPipeline;
 typedef struct _GESTimeline GESTimeline;
@@ -19,6 +23,16 @@ namespace ffgui {
 struct AudioContinuityMetrics final {
     std::uint64_t buffer_count{};
     TimeNs maximum_positive_gap{};
+};
+
+struct D3D11VideoFrame final {
+    std::shared_ptr<void> sample;
+    std::shared_ptr<void> texture_owner;
+    void* texture{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint64_t serial{};
+    void* device{};
 };
 
 class GesSequencePlayer final : public SequencePlayer {
@@ -40,12 +54,17 @@ public:
     void set_state_callback(StateCallback callback) override;
     void set_error_callback(ErrorCallback callback) override;
     void set_video_window_handle(std::uintptr_t window_handle);
+    void set_d3d11_device(void* device);
+    void set_video_frame_callback(std::function<void(D3D11VideoFrame)> callback);
 
     [[nodiscard]] TimeNs duration() const noexcept;
     [[nodiscard]] TimeNs position() const noexcept;
     [[nodiscard]] PlaybackState state() const noexcept;
     void reset_audio_continuity_metrics() noexcept;
     [[nodiscard]] AudioContinuityMetrics audio_continuity_metrics() const noexcept;
+    [[nodiscard]] std::uint64_t video_frames_received() const noexcept {
+        return video_frame_serial_.load();
+    }
 
 private:
     void rebuild_pipeline_locked(const std::vector<TimelineSpan>& timeline);
@@ -53,6 +72,7 @@ private:
     void notify_state(PlaybackState state_value);
     void monitor(std::stop_token stop_token);
     static void audio_handoff(GstElement*, GstBuffer*, GstPad*, void* user_data);
+    static GstFlowReturn new_video_sample(GstAppSink* sink, void* user_data);
 
     std::string video_sink_factory_;
     std::string audio_sink_factory_;
@@ -64,6 +84,9 @@ private:
     PositionCallback position_callback_;
     StateCallback state_callback_;
     ErrorCallback error_callback_;
+    std::function<void(D3D11VideoFrame)> video_frame_callback_;
+    void* d3d11_device_handle_{};
+    std::atomic<std::uint64_t> video_frame_serial_{0};
     std::atomic<TimeNs> duration_ns_{0};
     std::atomic<TimeNs> position_ns_{0};
     std::atomic<PlaybackState> state_{PlaybackState::stopped};

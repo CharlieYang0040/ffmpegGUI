@@ -1,5 +1,6 @@
 #include "editor_controller.hpp"
 #include "ffprobe_analyzer.hpp"
+#include "d3d11_video_item.hpp"
 
 #include <QFile>
 #include <QCoreApplication>
@@ -154,7 +155,21 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         }
     });
 #ifdef FFGUI_HAS_GES
-    player_ = std::make_unique<ffgui::GesSequencePlayer>("d3d11videosink", "wasapi2sink");
+    use_d3d_scene_graph_ = qEnvironmentVariableIntValue("FFGUI_EXPERIMENTAL_D3D11_QSG") == 1;
+    player_ = std::make_unique<ffgui::GesSequencePlayer>(
+        use_d3d_scene_graph_ ? "appsink" : "d3d11videosink",
+        "wasapi2sink");
+    player_->set_video_frame_callback([this](ffgui::D3D11VideoFrame frame) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, frame = std::move(frame)]() mutable {
+                if (auto* item = qobject_cast<D3D11VideoItem*>(video_item_)) {
+                    ++video_frames_delivered_;
+                    item->submitFrame(std::move(frame));
+                }
+            },
+            Qt::QueuedConnection);
+    });
     player_->set_position_callback([this](ffgui::TimeNs position) {
         QMetaObject::invokeMethod(
             this,
@@ -189,12 +204,29 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
 #endif
 }
 
+void EditorController::setVideoWindow(QWindow* window) {
+    video_window_ = window;
+    if (video_window_ == nullptr || use_d3d_scene_graph_) return;
+    video_window_->create();
+#ifdef FFGUI_HAS_GES
+    player_->set_video_window_handle(static_cast<std::uintptr_t>(video_window_->winId()));
+#endif
+}
+
 EditorController::~EditorController() {
     if (export_process_.state() != QProcess::NotRunning) {
         export_process_.kill();
         export_process_.waitForFinished(3'000);
     }
-    QFile::remove(export_concat_path_);
+    if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
+}
+
+std::uint64_t EditorController::videoFramesReceived() const noexcept {
+#ifdef FFGUI_HAS_GES
+    return player_ ? player_->video_frames_received() : 0;
+#else
+    return 0;
+#endif
 }
 
 QVariantList EditorController::clips() const {
@@ -231,14 +263,24 @@ qint64 EditorController::durationNs() const noexcept {
     return static_cast<qint64>(timeline_.duration());
 }
 
-void EditorController::setVideoWindow(QWindow* window) {
-    video_window_ = window;
-    if (video_window_ == nullptr) {
+void EditorController::attachVideoItem(QObject* item) {
+    auto* videoItem = qobject_cast<D3D11VideoItem*>(item);
+    if (videoItem == nullptr) {
+        setStatus("D3D11 미리보기 화면을 연결할 수 없습니다");
         return;
     }
-    video_window_->create();
+    video_item_ = videoItem;
+    connect(videoItem, &D3D11VideoItem::framePresented, this, [this](quint64) {
+        ++video_frames_presented_;
+    });
 #ifdef FFGUI_HAS_GES
-    player_->set_video_window_handle(static_cast<std::uintptr_t>(video_window_->winId()));
+    connect(videoItem, &D3D11VideoItem::d3d11DeviceReady, this, [this](quintptr device) {
+        player_->set_d3d11_device(reinterpret_cast<void*>(device));
+        if (!preview_snapshot_.empty()) player_->set_timeline(preview_snapshot_);
+    });
+    if (videoItem->devicePointer() != 0) {
+        player_->set_d3d11_device(reinterpret_cast<void*>(videoItem->devicePointer()));
+    }
 #endif
 }
 
@@ -700,7 +742,7 @@ void EditorController::finishExport(bool success) {
                 : QStringLiteral("내보내기 실패 · %1").arg(detail));
         }
     }
-    QFile::remove(export_concat_path_);
+    if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
     export_concat_path_.clear();
     export_stream_copy_active_ = false;
     exporting_ = false;

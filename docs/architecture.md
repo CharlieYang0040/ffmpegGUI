@@ -48,9 +48,11 @@ TimelineModel
 클립 하나가 아니라 편집 결과 전체가 재생된다. Qt의 재생 헤드는 GStreamer 재생
 시계를 따라가며 seek 또한 항상 시퀀스 나노초 좌표를 사용한다.
 
-현재 영상 출력은 별도 네이티브 `QWindow`에 `d3d11videosink`를 연결한 단계다.
-Qt Scene Graph 텍스처로 직접 공유하는 최종 제로카피 경로는 후속 단계이며, 완료로
-표시하지 않는다.
+현재 기본 영상 출력은 별도 네이티브 `QWindow`에 `d3d11videosink`를 연결한다.
+GStreamer D3D11 appsink, Qt 장치 context와 `QSGD3D11Texture::fromNative`를 연결한
+실험 경로는 `FFGUI_EXPERIMENTAL_D3D11_QSG=1`에서만 켜진다. appsink GPU 프레임이
+Qt 아이템까지 전달되는 것은 확인했지만 Scene Graph의 반복 texture-node 갱신 회귀가
+아직 통과하지 않아 기본값이나 완료 항목으로 표시하지 않는다.
 
 ## 타임라인 시각 캐시
 

@@ -75,7 +75,7 @@ ApplicationWindow {
             width: 420
             wrapMode: Text.WordWrap
             text: "기존 파일은 유지하고 새 번호를 붙여 저장합니다.\n\n"
-                  + suggestedUrl.toString().split('/').pop()
+                  + overwriteDialog.suggestedUrl.toString().split('/').pop()
         }
     }
 
@@ -125,8 +125,22 @@ ApplicationWindow {
                 SplitView.fillWidth: true
                 background: Rectangle { color: "#080a0d" }
 
+                D3D11VideoItem {
+                    id: videoPreview
+                    anchors.fill: parent
+                    visible: EditorController.gpuSceneGraphPreview
+                    Component.onCompleted: EditorController.attachVideoItem(videoPreview)
+
+                    Label {
+                        anchors.centerIn: parent
+                        visible: !videoPreview.gpuReady
+                        text: "GPU 미리보기 초기화 중"
+                        color: "#8994a3"
+                    }
+                }
                 WindowContainer {
                     anchors.fill: parent
+                    visible: !EditorController.gpuSceneGraphPreview
                     window: EditorController.videoWindow
                 }
             }

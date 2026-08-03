@@ -13,8 +13,8 @@
 #include <QProcess>
 #include <QStringList>
 #include <QVariantList>
-#include <QWindow>
 #include <QUrl>
+#include <QWindow>
 #include <QtQml/qqmlregistration.h>
 
 #include <memory>
@@ -35,8 +35,9 @@ class EditorController final : public QObject {
     Q_PROPERTY(QString selectedClipId READ selectedClipId NOTIFY selectedClipChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
-    Q_PROPERTY(QWindow* videoWindow READ videoWindow CONSTANT)
     Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
+    Q_PROPERTY(QWindow* videoWindow READ videoWindow CONSTANT)
+    Q_PROPERTY(bool gpuSceneGraphPreview READ gpuSceneGraphPreview CONSTANT)
     Q_PROPERTY(bool exporting READ exporting NOTIFY exportingChanged)
     Q_PROPERTY(qreal exportProgress READ exportProgress NOTIFY exportProgressChanged)
 
@@ -52,8 +53,9 @@ public:
     [[nodiscard]] QString selectedClipId() const { return selected_clip_id_; }
     [[nodiscard]] bool canUndo() const noexcept { return timeline_.can_undo(); }
     [[nodiscard]] bool canRedo() const noexcept { return timeline_.can_redo(); }
-    [[nodiscard]] QWindow* videoWindow() const noexcept { return video_window_; }
     [[nodiscard]] bool importing() const noexcept { return importing_; }
+    [[nodiscard]] QWindow* videoWindow() const noexcept { return video_window_; }
+    [[nodiscard]] bool gpuSceneGraphPreview() const noexcept { return use_d3d_scene_graph_; }
     [[nodiscard]] bool exporting() const noexcept { return exporting_; }
     [[nodiscard]] qreal exportProgress() const noexcept { return export_progress_; }
     [[nodiscard]] bool lastExportUsedStreamCopy() const noexcept {
@@ -62,11 +64,18 @@ public:
     [[nodiscard]] bool lastExportMatchedPreview() const noexcept {
         return last_export_matched_preview_;
     }
+    [[nodiscard]] std::uint64_t videoFramesPresented() const noexcept {
+        return video_frames_presented_;
+    }
+    [[nodiscard]] std::uint64_t videoFramesDelivered() const noexcept {
+        return video_frames_delivered_;
+    }
+    [[nodiscard]] std::uint64_t videoFramesReceived() const noexcept;
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);
 
-    void setVideoWindow(QWindow* window);
     void loadFiles(const QStringList& paths);
+    void setVideoWindow(QWindow* window);
 
 public slots:
     void seek(qint64 timelinePosition);
@@ -88,6 +97,7 @@ public slots:
     void cancelExport();
     [[nodiscard]] bool outputExists(const QUrl& url) const;
     [[nodiscard]] QUrl uniqueOutputUrl(const QUrl& url) const;
+    void attachVideoItem(QObject* item);
 
 signals:
     void timelineChanged();
@@ -117,13 +127,17 @@ private:
     ffgui::TimelineModel timeline_;
     std::vector<ffgui::TimelineSpan> preview_snapshot_;
     std::uint64_t preview_revision_{};
+    std::uint64_t video_frames_presented_{};
+    std::uint64_t video_frames_delivered_{};
     qint64 playhead_ns_{};
     bool playing_{};
     QString status_{"미디어를 추가하세요"};
     QString selected_clip_id_;
     std::uint64_t generated_clip_id_{};
     std::uint64_t generated_asset_id_{};
+    QObject* video_item_{};
     QWindow* video_window_{};
+    bool use_d3d_scene_graph_{};
     bool importing_{};
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
     QHash<QString, QString> thumbnail_atlases_;

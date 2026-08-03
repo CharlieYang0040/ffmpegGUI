@@ -40,6 +40,8 @@ if(FFGUI_ENABLE_GES)
         pkg_check_modules(GES QUIET IMPORTED_TARGET
             gstreamer-1.0>=1.28
             gstreamer-video-1.0>=1.28
+            gstreamer-app-1.0>=1.28
+            gstreamer-d3d11-1.0>=1.28
             gst-editing-services-1.0>=1.28
         )
     endif()
@@ -100,6 +102,8 @@ if(FFGUI_BUILD_DESKTOP)
             SOURCES
                 apps/desktop/editor_controller.cpp
                 apps/desktop/editor_controller.hpp
+                apps/desktop/d3d11_video_item.cpp
+                apps/desktop/d3d11_video_item.hpp
                 apps/desktop/ffprobe_analyzer.cpp
                 apps/desktop/ffprobe_analyzer.hpp
                 apps/desktop/timeline_view.cpp

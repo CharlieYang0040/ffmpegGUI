@@ -161,7 +161,11 @@ int main(int argc, char* argv[]) {
     if (playbackSmoke) {
         QTimer::singleShot(100, &controller, &EditorController::togglePlayback);
         QTimer::singleShot(5000, &application, [&application, &controller] {
-            application.exit(controller.playheadNs() >= 500'000'000 ? EXIT_SUCCESS : EXIT_FAILURE);
+            if (controller.playheadNs() < 500'000'000) application.exit(10);
+            else if (controller.gpuSceneGraphPreview() && controller.videoFramesReceived() < 10) application.exit(11);
+            else if (controller.gpuSceneGraphPreview() && controller.videoFramesDelivered() < 10) application.exit(12);
+            else if (controller.gpuSceneGraphPreview() && controller.videoFramesPresented() < 10) application.exit(13);
+            else application.exit(EXIT_SUCCESS);
         });
     }
     return application.exec();
