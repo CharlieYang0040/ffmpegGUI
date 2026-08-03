@@ -206,6 +206,32 @@ void test_time_insert_splits_once_and_is_single_step_undoable() {
     require(timeline.clips().back().id == "tail", "inserting at the end must append");
 }
 
+void test_multi_clip_delete_is_atomic_magnetic_and_undoable() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"a", "asset-a", 0, seconds(1)});
+    timeline.append_clip(Clip{"b", "asset-a", seconds(1), seconds(1)});
+    timeline.append_clip(Clip{"c", "asset-b", 0, seconds(2)});
+    timeline.append_clip(Clip{"d", "asset-b", seconds(2), seconds(1)});
+    timeline.clear_history();
+
+    timeline.erase_clips({"b", "d"});
+    const auto spans = timeline.snapshot();
+    require(spans.size() == 2, "multi-delete must remove every selected clip");
+    require(spans[0].clip.id == "a" && spans[1].clip.id == "c",
+            "multi-delete must preserve the order of remaining clips");
+    require(spans[1].timeline_in == seconds(1),
+            "remaining clips must close all deleted gaps magnetically");
+    require(timeline.undo(), "multi-delete must be a single undo step");
+    require(timeline.clips().size() == 4, "one undo must restore all deleted clips");
+
+    const auto revision = timeline.revision();
+    require_throws<std::invalid_argument>(
+        [&] { timeline.erase_clips({"a", "missing"}); },
+        "unknown selection member must reject the whole delete");
+    require(timeline.clips().size() == 4 && timeline.revision() == revision,
+            "rejected multi-delete must not mutate timeline or history");
+}
+
 void test_invalid_edits_are_rejected_without_mutation() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"a", "asset-a", 0, seconds(2)});
@@ -359,6 +385,7 @@ int main() {
         {"reorder_uses_insertion_index_after_removal", test_reorder_uses_insertion_index_after_removal},
         {"duplicate_style_insert_is_magnetic_and_undoable", test_duplicate_style_insert_is_magnetic_and_undoable},
         {"time_insert_splits_once_and_is_single_step_undoable", test_time_insert_splits_once_and_is_single_step_undoable},
+        {"multi_clip_delete_is_atomic_magnetic_and_undoable", test_multi_clip_delete_is_atomic_magnetic_and_undoable},
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},

@@ -127,6 +127,15 @@ int main(int argc, char* argv[]) {
         controller.insertAssetAtTime(
             importedAssets.front().toMap().value("id").toString(),
             100'000'000);
+        const auto beforeMultiDelete = controller.clips();
+        if (beforeMultiDelete.size() < 2) return EXIT_FAILURE;
+        controller.selectClip(beforeMultiDelete.front().toMap().value("id").toString());
+        controller.selectClip(beforeMultiDelete.back().toMap().value("id").toString(), 1);
+        if (controller.selectedClipIds().size() != 2) return EXIT_FAILURE;
+        controller.deleteSelectedClip();
+        if (controller.clips().size() != beforeMultiDelete.size() - 2) return EXIT_FAILURE;
+        controller.undo();
+        if (controller.clips().size() != beforeMultiDelete.size()) return EXIT_FAILURE;
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);

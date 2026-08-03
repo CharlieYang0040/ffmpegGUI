@@ -81,7 +81,8 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                     timeline_.append_clip(ffgui::Clip{
                         std::move(item.clip_id), assetId, 0, duration});
                     if (selected_clip_id_.isEmpty()) {
-                        selected_clip_id_ = QString::fromStdString(timeline_.clips().back().id);
+                        setSingleSelection(
+                            QString::fromStdString(timeline_.clips().back().id));
                     }
                 }
                 timeline_.clear_history();
@@ -451,18 +452,58 @@ void EditorController::stop() {
     emit playheadChanged();
 }
 
-void EditorController::selectClip(const QString& clipId) {
-    if (selected_clip_id_ == clipId) {
-        return;
+void EditorController::setSingleSelection(QString clipId) {
+    selected_clip_id_ = std::move(clipId);
+    selected_clip_ids_.clear();
+    if (!selected_clip_id_.isEmpty()) selected_clip_ids_.push_back(selected_clip_id_);
+    selection_anchor_id_ = selected_clip_id_;
+}
+
+void EditorController::selectClip(const QString& clipId, int mode) {
+    const auto& clips = timeline_.clips();
+    const auto target = std::find_if(clips.begin(), clips.end(), [&clipId](const auto& clip) {
+        return QString::fromStdString(clip.id) == clipId;
+    });
+    if (target == clips.end()) return;
+
+    if (mode == 1) {
+        const auto index = selected_clip_ids_.indexOf(clipId);
+        if (index >= 0) {
+            selected_clip_ids_.removeAt(index);
+            selected_clip_id_ = selected_clip_ids_.isEmpty() ? QString{} : selected_clip_ids_.back();
+        } else {
+            selected_clip_ids_.push_back(clipId);
+            selected_clip_id_ = clipId;
+        }
+        selection_anchor_id_ = clipId;
+    } else if (mode == 2 && !selection_anchor_id_.isEmpty()) {
+        const auto anchor = std::find_if(
+            clips.begin(), clips.end(), [this](const auto& clip) {
+                return QString::fromStdString(clip.id) == selection_anchor_id_;
+            });
+        if (anchor == clips.end()) {
+            setSingleSelection(clipId);
+        } else {
+            auto first = std::distance(clips.begin(), anchor);
+            auto last = std::distance(clips.begin(), target);
+            if (first > last) std::swap(first, last);
+            selected_clip_ids_.clear();
+            for (auto index = first; index <= last; ++index) {
+                selected_clip_ids_.push_back(
+                    QString::fromStdString(clips[static_cast<std::size_t>(index)].id));
+            }
+            selected_clip_id_ = clipId;
+        }
+    } else {
+        setSingleSelection(clipId);
     }
-    selected_clip_id_ = clipId;
     emit selectedClipChanged();
 }
 
 void EditorController::trimClip(const QString& clipId, qint64 sourceIn, qint64 duration) {
     try {
         timeline_.trim_clip_to_frame_boundaries(clipId.toStdString(), sourceIn, duration);
-        selected_clip_id_ = clipId;
+        setSingleSelection(clipId);
         publishTimeline();
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -472,7 +513,7 @@ void EditorController::trimClip(const QString& clipId, qint64 sourceIn, qint64 d
 void EditorController::moveClip(const QString& clipId, int insertionIndex) {
     try {
         timeline_.move_clip(clipId.toStdString(), static_cast<std::size_t>(std::max(0, insertionIndex)));
-        selected_clip_id_ = clipId;
+        setSingleSelection(clipId);
         publishTimeline();
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -505,7 +546,7 @@ void EditorController::insertAssetAtTime(const QString& assetId, qint64 timeline
             ffgui::Clip{insertedId, id, 0, asset->duration()},
             leftId,
             rightId);
-        selected_clip_id_ = QString::fromStdString(insertedId);
+        setSingleSelection(QString::fromStdString(insertedId));
         playhead_ns_ = insertionTime;
         publishTimeline();
         setStatus("미디어를 타임라인에 삽입했습니다");
@@ -525,7 +566,7 @@ void EditorController::splitAtPlayhead() {
         const auto splitPosition = timeline_.nearest_frame_time(playhead_ns_).value_or(playhead_ns_);
         timeline_.split_at(splitPosition, left, right);
         playhead_ns_ = splitPosition;
-        selected_clip_id_ = QString::fromStdString(right);
+        setSingleSelection(QString::fromStdString(right));
         publishTimeline();
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -533,14 +574,17 @@ void EditorController::splitAtPlayhead() {
 }
 
 void EditorController::deleteSelectedClip() {
-    if (selected_clip_id_.isEmpty()) {
+    if (selected_clip_ids_.isEmpty()) {
         return;
     }
     try {
-        timeline_.erase_clip(selected_clip_id_.toStdString());
-        selected_clip_id_ = timeline_.clips().empty()
+        std::vector<std::string> selectedIds;
+        selectedIds.reserve(static_cast<std::size_t>(selected_clip_ids_.size()));
+        for (const auto& id : selected_clip_ids_) selectedIds.push_back(id.toStdString());
+        timeline_.erase_clips(selectedIds);
+        setSingleSelection(timeline_.clips().empty()
             ? QString{}
-            : QString::fromStdString(timeline_.clips().front().id);
+            : QString::fromStdString(timeline_.clips().front().id));
         publishTimeline();
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -563,7 +607,7 @@ void EditorController::duplicateSelectedClip() {
         duplicate.id = makeUniqueClipId(duplicate.id + "-copy");
         const auto duplicateId = duplicate.id;
         timeline_.insert_clip(insertionIndex, std::move(duplicate));
-        selected_clip_id_ = QString::fromStdString(duplicateId);
+        setSingleSelection(QString::fromStdString(duplicateId));
         publishTimeline();
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -572,18 +616,18 @@ void EditorController::duplicateSelectedClip() {
 
 void EditorController::undo() {
     if (timeline_.undo()) {
-        selected_clip_id_ = timeline_.clips().empty()
+        setSingleSelection(timeline_.clips().empty()
             ? QString{}
-            : QString::fromStdString(timeline_.clips().front().id);
+            : QString::fromStdString(timeline_.clips().front().id));
         publishTimeline();
     }
 }
 
 void EditorController::redo() {
     if (timeline_.redo()) {
-        selected_clip_id_ = timeline_.clips().empty()
+        setSingleSelection(timeline_.clips().empty()
             ? QString{}
-            : QString::fromStdString(timeline_.clips().front().id);
+            : QString::fromStdString(timeline_.clips().front().id));
         publishTimeline();
     }
 }
@@ -705,9 +749,9 @@ void EditorController::loadProject(const QString& path) {
         loaded.clear_history();
         timeline_ = std::move(loaded);
         thumbnail_atlases_ = std::move(loadedAtlases);
-        selected_clip_id_ = timeline_.clips().empty()
+        setSingleSelection(timeline_.clips().empty()
             ? QString{}
-            : QString::fromStdString(timeline_.clips().front().id);
+            : QString::fromStdString(timeline_.clips().front().id));
         publishTimeline(true);
         setStatus("프로젝트 불러오기 완료");
     } catch (const std::exception& error) {

@@ -103,6 +103,14 @@ void TimelineView::setSelectedClipId(QString clipId) {
     update();
 }
 
+void TimelineView::setSelectedClipIds(QStringList clipIds) {
+    if (selected_clip_ids_ == clipIds) return;
+    selected_clip_ids_ = std::move(clipIds);
+    timeline_geometry_dirty_ = true;
+    emit selectedClipIdsChanged();
+    update();
+}
+
 QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     auto* root = oldNode != nullptr ? oldNode : new QSGNode();
     auto* contentRoot = root->firstChild();
@@ -166,7 +174,7 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                 contentWidth * static_cast<qreal>(std::min(start + duration, viewEnd) - viewStart) /
                     static_cast<qreal>(viewDuration);
             QColor color(clip.value("color", index % 2 == 0 ? "#315a94" : "#3f6b9f").toString());
-            if (clip.value("id").toString() == selected_clip_id_) {
+            if (selected_clip_ids_.contains(clip.value("id").toString())) {
                 color = color.lighter(125);
             }
             color.setAlpha(145);
@@ -302,8 +310,16 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
     }
 
     const auto clip = clips_[drag_clip_index_].toMap();
-    setSelectedClipId(clip.value("id").toString());
-    emit clipSelected(selected_clip_id_);
+    const auto clipId = clip.value("id").toString();
+    const auto modifiers = event->modifiers();
+    const int selectionMode = modifiers.testFlag(Qt::ControlModifier)
+        ? 1
+        : (modifiers.testFlag(Qt::ShiftModifier) ? 2 : 0);
+    if (selectionMode == 0) {
+        setSelectedClipId(clipId);
+        setSelectedClipIds(QStringList{clipId});
+    }
+    emit clipSelected(clipId, selectionMode);
     drag_origin_x_ = event->position().x();
     drag_delta_ns_ = 0;
     move_target_index_ = drag_clip_index_;

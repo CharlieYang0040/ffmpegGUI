@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 
 namespace ffgui {
@@ -160,6 +161,18 @@ void TimelineModel::erase_clip(const std::string& clip_id) {
     const auto index = index_of(clip_id);
     record_edit();
     clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(index));
+}
+
+void TimelineModel::erase_clips(const std::vector<std::string>& clip_ids) {
+    if (clip_ids.empty()) return;
+    const std::unordered_set<std::string> uniqueIds(clip_ids.begin(), clip_ids.end());
+    for (const auto& id : uniqueIds) {
+        static_cast<void>(index_of(id));
+    }
+    record_edit();
+    std::erase_if(clips_, [&uniqueIds](const Clip& clip) {
+        return uniqueIds.contains(clip.id);
+    });
 }
 
 void TimelineModel::split_at(

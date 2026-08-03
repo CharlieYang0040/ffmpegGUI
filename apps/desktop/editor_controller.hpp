@@ -34,6 +34,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString selectedClipId READ selectedClipId NOTIFY selectedClipChanged)
+    Q_PROPERTY(QStringList selectedClipIds READ selectedClipIds NOTIFY selectedClipChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
@@ -53,6 +54,7 @@ public:
     [[nodiscard]] bool playing() const noexcept { return playing_; }
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] QString selectedClipId() const { return selected_clip_id_; }
+    [[nodiscard]] QStringList selectedClipIds() const { return selected_clip_ids_; }
     [[nodiscard]] bool canUndo() const noexcept { return timeline_.can_undo(); }
     [[nodiscard]] bool canRedo() const noexcept { return timeline_.can_redo(); }
     [[nodiscard]] bool importing() const noexcept { return importing_; }
@@ -85,7 +87,7 @@ public slots:
     void stepFrame(int direction);
     void jumpEditPoint(int direction);
     void stop();
-    void selectClip(const QString& clipId);
+    void selectClip(const QString& clipId, int mode = 0);
     void trimClip(const QString& clipId, qint64 sourceIn, qint64 duration);
     void moveClip(const QString& clipId, int insertionIndex);
     void insertAssetAtTime(const QString& assetId, qint64 timelinePosition);
@@ -130,6 +132,7 @@ private:
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
     void finishExport(bool success);
     [[nodiscard]] std::string makeUniqueClipId(const std::string& prefix);
+    void setSingleSelection(QString clipId);
 
     ffgui::TimelineModel timeline_;
     std::vector<ffgui::TimelineSpan> preview_snapshot_;
@@ -140,6 +143,8 @@ private:
     bool playing_{};
     QString status_{"미디어를 추가하세요"};
     QString selected_clip_id_;
+    QStringList selected_clip_ids_;
+    QString selection_anchor_id_;
     std::uint64_t generated_clip_id_{};
     std::uint64_t generated_asset_id_{};
     QObject* video_item_{};

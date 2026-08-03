@@ -55,6 +55,7 @@ public:
         const std::string& clip_id, TimeNs source_in, TimeNs duration);
     void move_clip(const std::string& clip_id, std::size_t insertion_index);
     void erase_clip(const std::string& clip_id);
+    void erase_clips(const std::vector<std::string>& clip_ids);
     void split_at(
         TimeNs timeline_position,
         std::string left_clip_id,

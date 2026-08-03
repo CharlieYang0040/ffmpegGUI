@@ -39,8 +39,8 @@ ApplicationWindow {
     Shortcut { sequence: "Up"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(-1) }
     Shortcut { sequence: "Down"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(1) }
     Shortcut { sequence: "Ctrl+K"; onActivated: EditorController.splitAtPlayhead() }
-    Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipId.length > 0; onActivated: EditorController.duplicateSelectedClip() }
-    Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipId.length > 0; onActivated: EditorController.deleteSelectedClip() }
+    Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length === 1; onActivated: EditorController.duplicateSelectedClip() }
+    Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.deleteSelectedClip() }
 
     FileDialog {
         id: mediaDialog
@@ -337,13 +337,15 @@ ApplicationWindow {
                         onClicked: EditorController.splitAtPlayhead()
                     }
                     Button {
-                        text: "삭제"
-                        enabled: EditorController.selectedClipId.length > 0
+                        text: EditorController.selectedClipIds.length > 1
+                              ? EditorController.selectedClipIds.length + "개 삭제"
+                              : "삭제"
+                        enabled: EditorController.selectedClipIds.length > 0
                         onClicked: EditorController.deleteSelectedClip()
                     }
                     Button {
                         text: "복제"
-                        enabled: EditorController.selectedClipId.length > 0
+                        enabled: EditorController.selectedClipIds.length === 1
                         onClicked: EditorController.duplicateSelectedClip()
                     }
                     Label {
@@ -419,8 +421,10 @@ ApplicationWindow {
                         playheadNs: EditorController.playheadNs
                         clips: EditorController.clips
                         selectedClipId: EditorController.selectedClipId
+                        selectedClipIds: EditorController.selectedClipIds
                         onSeekRequested: position => EditorController.seek(position)
-                        onClipSelected: clipId => EditorController.selectClip(clipId)
+                        onClipSelected: (clipId, selectionMode) =>
+                            EditorController.selectClip(clipId, selectionMode)
                         onTrimCommitted: (clipId, sourceIn, duration) =>
                             EditorController.trimClip(clipId, sourceIn, duration)
                         onMoveCommitted: (clipId, insertionIndex) =>
