@@ -1,6 +1,7 @@
 #include "core/timeline_model.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -32,6 +33,25 @@ void TimelineModel::insert_clip(std::size_t index, Clip clip) {
     validate_clip(clip);
     record_edit();
     clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), std::move(clip));
+}
+
+void TimelineModel::insert_clips(std::size_t index, std::vector<Clip> clips) {
+    if (index > clips_.size()) {
+        throw std::out_of_range("clip insertion index is outside the timeline");
+    }
+    if (clips.empty()) return;
+    std::unordered_set<std::string> batchIds;
+    for (const auto& clip : clips) {
+        validate_clip(clip);
+        if (!batchIds.insert(clip.id).second) {
+            throw std::invalid_argument("duplicate clip id in insertion batch: " + clip.id);
+        }
+    }
+    record_edit();
+    clips_.insert(
+        clips_.begin() + static_cast<std::ptrdiff_t>(index),
+        std::make_move_iterator(clips.begin()),
+        std::make_move_iterator(clips.end()));
 }
 
 void TimelineModel::insert_clip_at(

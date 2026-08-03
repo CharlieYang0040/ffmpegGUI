@@ -232,6 +232,32 @@ void test_multi_clip_delete_is_atomic_magnetic_and_undoable() {
             "rejected multi-delete must not mutate timeline or history");
 }
 
+void test_multi_clip_insert_is_atomic_ordered_and_undoable() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"base", "asset-a", 0, seconds(1)});
+    timeline.clear_history();
+
+    timeline.insert_clips(1, {
+        Clip{"copy-a", "asset-a", seconds(1), seconds(1)},
+        Clip{"copy-b", "asset-b", 0, seconds(2)}});
+    require(timeline.clips().size() == 3, "batch insert must add every clip");
+    require(timeline.clips()[1].id == "copy-a" && timeline.clips()[2].id == "copy-b",
+            "batch insert must preserve selection timeline order");
+    require(timeline.undo(), "batch insert must be one undo step");
+    require(timeline.clips().size() == 1, "one undo must remove the whole inserted batch");
+
+    const auto revision = timeline.revision();
+    require_throws<std::invalid_argument>(
+        [&] {
+            timeline.insert_clips(1, {
+                Clip{"same", "asset-a", 0, seconds(1)},
+                Clip{"same", "asset-b", 0, seconds(1)}});
+        },
+        "duplicate id inside insert batch must reject the whole batch");
+    require(timeline.clips().size() == 1 && timeline.revision() == revision,
+            "rejected batch insert must not mutate timeline or history");
+}
+
 void test_invalid_edits_are_rejected_without_mutation() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"a", "asset-a", 0, seconds(2)});
@@ -386,6 +412,7 @@ int main() {
         {"duplicate_style_insert_is_magnetic_and_undoable", test_duplicate_style_insert_is_magnetic_and_undoable},
         {"time_insert_splits_once_and_is_single_step_undoable", test_time_insert_splits_once_and_is_single_step_undoable},
         {"multi_clip_delete_is_atomic_magnetic_and_undoable", test_multi_clip_delete_is_atomic_magnetic_and_undoable},
+        {"multi_clip_insert_is_atomic_ordered_and_undoable", test_multi_clip_insert_is_atomic_ordered_and_undoable},
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},

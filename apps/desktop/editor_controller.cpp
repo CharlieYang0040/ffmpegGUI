@@ -592,22 +592,26 @@ void EditorController::deleteSelectedClip() {
 }
 
 void EditorController::duplicateSelectedClip() {
-    if (selected_clip_id_.isEmpty()) return;
+    if (selected_clip_ids_.isEmpty()) return;
     try {
-        const auto selectedId = selected_clip_id_.toStdString();
         const auto& clips = timeline_.clips();
-        const auto selected = std::find_if(
-            clips.begin(), clips.end(), [&selectedId](const ffgui::Clip& clip) {
-                return clip.id == selectedId;
-            });
-        if (selected == clips.end()) return;
-        const auto insertionIndex = static_cast<std::size_t>(
-            std::distance(clips.begin(), selected) + 1);
-        auto duplicate = *selected;
-        duplicate.id = makeUniqueClipId(duplicate.id + "-copy");
-        const auto duplicateId = duplicate.id;
-        timeline_.insert_clip(insertionIndex, std::move(duplicate));
-        setSingleSelection(QString::fromStdString(duplicateId));
+        std::vector<ffgui::Clip> duplicates;
+        QStringList duplicateIds;
+        std::size_t insertionIndex = 0;
+        for (std::size_t index = 0; index < clips.size(); ++index) {
+            const auto clipId = QString::fromStdString(clips[index].id);
+            if (!selected_clip_ids_.contains(clipId)) continue;
+            insertionIndex = index + 1;
+            auto duplicate = clips[index];
+            duplicate.id = makeUniqueClipId(duplicate.id + "-copy");
+            duplicateIds.push_back(QString::fromStdString(duplicate.id));
+            duplicates.push_back(std::move(duplicate));
+        }
+        if (duplicates.empty()) return;
+        timeline_.insert_clips(insertionIndex, std::move(duplicates));
+        selected_clip_ids_ = std::move(duplicateIds);
+        selected_clip_id_ = selected_clip_ids_.back();
+        selection_anchor_id_ = selected_clip_ids_.front();
         publishTimeline();
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));

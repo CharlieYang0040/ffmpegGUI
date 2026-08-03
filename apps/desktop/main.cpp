@@ -136,6 +136,16 @@ int main(int argc, char* argv[]) {
         if (controller.clips().size() != beforeMultiDelete.size() - 2) return EXIT_FAILURE;
         controller.undo();
         if (controller.clips().size() != beforeMultiDelete.size()) return EXIT_FAILURE;
+        const auto beforeMultiDuplicate = controller.clips();
+        controller.selectClip(beforeMultiDuplicate.front().toMap().value("id").toString());
+        controller.selectClip(beforeMultiDuplicate.back().toMap().value("id").toString(), 1);
+        controller.duplicateSelectedClip();
+        if (controller.clips().size() != beforeMultiDuplicate.size() + 2 ||
+            controller.selectedClipIds().size() != 2) {
+            return EXIT_FAILURE;
+        }
+        controller.undo();
+        if (controller.clips().size() != beforeMultiDuplicate.size()) return EXIT_FAILURE;
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);

@@ -39,7 +39,7 @@ ApplicationWindow {
     Shortcut { sequence: "Up"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(-1) }
     Shortcut { sequence: "Down"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(1) }
     Shortcut { sequence: "Ctrl+K"; onActivated: EditorController.splitAtPlayhead() }
-    Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length === 1; onActivated: EditorController.duplicateSelectedClip() }
+    Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.duplicateSelectedClip() }
     Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.deleteSelectedClip() }
 
     FileDialog {
@@ -344,8 +344,10 @@ ApplicationWindow {
                         onClicked: EditorController.deleteSelectedClip()
                     }
                     Button {
-                        text: "복제"
-                        enabled: EditorController.selectedClipIds.length === 1
+                        text: EditorController.selectedClipIds.length > 1
+                              ? EditorController.selectedClipIds.length + "개 복제"
+                              : "복제"
+                        enabled: EditorController.selectedClipIds.length > 0
                         onClicked: EditorController.duplicateSelectedClip()
                     }
                     Label {

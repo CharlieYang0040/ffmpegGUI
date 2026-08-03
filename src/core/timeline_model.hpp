@@ -45,6 +45,7 @@ public:
 
     void append_clip(Clip clip);
     void insert_clip(std::size_t index, Clip clip);
+    void insert_clips(std::size_t index, std::vector<Clip> clips);
     void insert_clip_at(
         TimeNs timeline_position,
         Clip clip,
