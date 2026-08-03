@@ -52,7 +52,7 @@ signals:
     void seekRequested(qint64 timelineTime);
     void clipSelected(QString clipId, int selectionMode);
     void trimCommitted(QString clipId, qint64 sourceIn, qint64 duration);
-    void moveCommitted(QString clipId, int insertionIndex);
+    void moveCommitted(QStringList clipIds, int insertionIndex);
 
 protected:
     QSGNode* updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) override;
@@ -66,6 +66,7 @@ private:
     void seekAt(qreal x);
     [[nodiscard]] QVariantList previewClips() const;
     [[nodiscard]] int clipIndexAt(qreal x) const;
+    [[nodiscard]] int insertionIndexAt(qreal x) const;
     [[nodiscard]] qint64 timeAt(qreal x) const;
     void clampViewport();
 
@@ -80,7 +81,7 @@ private:
     int drag_clip_index_{-1};
     qreal drag_origin_x_{};
     qint64 drag_delta_ns_{};
-    int move_target_index_{};
+    int move_target_index_{-1};
     qreal zoom_level_{1.0};
     qint64 viewport_start_ns_{};
     bool timeline_geometry_dirty_{true};

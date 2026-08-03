@@ -16,6 +16,8 @@ struct Clip final {
     TimeNs source_in{};
     TimeNs duration{};
 
+    bool operator==(const Clip&) const = default;
+
     [[nodiscard]] TimeNs source_out() const { return checked_add(source_in, duration); }
 };
 
@@ -55,6 +57,7 @@ public:
     void trim_clip_to_frame_boundaries(
         const std::string& clip_id, TimeNs source_in, TimeNs duration);
     void move_clip(const std::string& clip_id, std::size_t insertion_index);
+    void move_clips(const std::vector<std::string>& clip_ids, std::size_t insertion_index);
     void erase_clip(const std::string& clip_id);
     void erase_clips(const std::vector<std::string>& clip_ids);
     void split_at(

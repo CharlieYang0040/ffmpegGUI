@@ -90,6 +90,7 @@ public slots:
     void selectClip(const QString& clipId, int mode = 0);
     void trimClip(const QString& clipId, qint64 sourceIn, qint64 duration);
     void moveClip(const QString& clipId, int insertionIndex);
+    void moveClips(const QStringList& clipIds, int insertionIndex);
     void insertAssetAtTime(const QString& assetId, qint64 timelinePosition);
     void splitAtPlayhead();
     void duplicateSelectedClip();

@@ -511,9 +511,18 @@ void EditorController::trimClip(const QString& clipId, qint64 sourceIn, qint64 d
 }
 
 void EditorController::moveClip(const QString& clipId, int insertionIndex) {
+    moveClips(QStringList{clipId}, insertionIndex);
+}
+
+void EditorController::moveClips(const QStringList& clipIds, int insertionIndex) {
     try {
-        timeline_.move_clip(clipId.toStdString(), static_cast<std::size_t>(std::max(0, insertionIndex)));
-        setSingleSelection(clipId);
+        std::vector<std::string> ids;
+        ids.reserve(static_cast<std::size_t>(clipIds.size()));
+        for (const auto& id : clipIds) ids.push_back(id.toStdString());
+        timeline_.move_clips(ids, static_cast<std::size_t>(std::max(0, insertionIndex)));
+        selected_clip_ids_ = clipIds;
+        selected_clip_id_ = selected_clip_ids_.isEmpty() ? QString{} : selected_clip_ids_.back();
+        selection_anchor_id_ = selected_clip_ids_.isEmpty() ? QString{} : selected_clip_ids_.front();
         publishTimeline();
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));

@@ -315,14 +315,16 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
     const int selectionMode = modifiers.testFlag(Qt::ControlModifier)
         ? 1
         : (modifiers.testFlag(Qt::ShiftModifier) ? 2 : 0);
-    if (selectionMode == 0) {
+    const bool preserveGroup = selectionMode == 0 &&
+        selected_clip_ids_.size() > 1 && selected_clip_ids_.contains(clipId);
+    if (selectionMode == 0 && !preserveGroup) {
         setSelectedClipId(clipId);
         setSelectedClipIds(QStringList{clipId});
     }
-    emit clipSelected(clipId, selectionMode);
+    if (!preserveGroup) emit clipSelected(clipId, selectionMode);
     drag_origin_x_ = event->position().x();
     drag_delta_ns_ = 0;
-    move_target_index_ = drag_clip_index_;
+    move_target_index_ = insertionIndexAt(event->position().x());
 
     const auto contentWidth = std::max<qreal>(1.0, width() - kHorizontalPadding * 2.0);
     const auto start = clip.value("timelineInNs").toLongLong();
@@ -340,6 +342,7 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
     } else {
         drag_mode_ = DragMode::move;
     }
+    if (selectionMode != 0) drag_mode_ = DragMode::none;
     event->accept();
 }
 
@@ -364,7 +367,7 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
                     drag_delta_ns_, -(duration - kMinimumClipDuration),
                     assetDuration - sourceIn - duration);
             } else {
-                move_target_index_ = clipIndexAt(event->position().x());
+                move_target_index_ = insertionIndexAt(event->position().x());
             }
             timeline_geometry_dirty_ = true;
             update();
@@ -385,8 +388,12 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
             emit trimCommitted(clipId, sourceIn + drag_delta_ns_, duration - drag_delta_ns_);
         } else if (drag_mode_ == DragMode::trim_right && drag_delta_ns_ != 0) {
             emit trimCommitted(clipId, sourceIn, duration + drag_delta_ns_);
-        } else if (drag_mode_ == DragMode::move && move_target_index_ != drag_clip_index_) {
-            emit moveCommitted(clipId, move_target_index_);
+        } else if (drag_mode_ == DragMode::move && drag_delta_ns_ != 0 &&
+                   move_target_index_ >= 0) {
+            const auto movingIds = selected_clip_ids_.contains(clipId)
+                ? selected_clip_ids_
+                : QStringList{clipId};
+            emit moveCommitted(movingIds, move_target_index_);
         } else {
             seekAt(event->position().x());
         }
@@ -438,9 +445,16 @@ QVariantList TimelineView::previewClips() const {
         return result;
     }
     if (drag_mode_ == DragMode::move) {
-        const auto moving = result.takeAt(drag_clip_index_);
-        result.insert(
-            std::clamp(move_target_index_, 0, static_cast<int>(result.size())), moving);
+        QVariantList moving;
+        for (auto index = result.size() - 1; index >= 0; --index) {
+            const auto id = result[index].toMap().value("id").toString();
+            if (selected_clip_ids_.contains(id)) moving.prepend(result.takeAt(index));
+        }
+        const auto insertionIndex = std::clamp(
+            move_target_index_, 0, static_cast<int>(result.size()));
+        for (auto index = 0; index < moving.size(); ++index) {
+            result.insert(insertionIndex + index, moving[index]);
+        }
     } else if (drag_mode_ == DragMode::trim_left || drag_mode_ == DragMode::trim_right) {
         auto clip = result[drag_clip_index_].toMap();
         if (drag_mode_ == DragMode::trim_left) {
@@ -475,6 +489,20 @@ int TimelineView::clipIndexAt(qreal x) const {
         }
     }
     return clips_.size() - 1;
+}
+
+int TimelineView::insertionIndexAt(qreal x) const {
+    const auto timelineTime = timeAt(x);
+    int remainingIndex = 0;
+    for (const auto& value : clips_) {
+        const auto clip = value.toMap();
+        if (selected_clip_ids_.contains(clip.value("id").toString())) continue;
+        const auto start = clip.value("timelineInNs").toLongLong();
+        const auto midpoint = start + clip.value("durationNs").toLongLong() / 2;
+        if (timelineTime < midpoint) return remainingIndex;
+        ++remainingIndex;
+    }
+    return remainingIndex;
 }
 
 qint64 TimelineView::visibleDurationNs() const {

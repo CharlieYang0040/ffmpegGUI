@@ -38,7 +38,7 @@ $roundtrip = Start-Process -FilePath $application `
 if ($roundtrip.ExitCode -ne 0) {
     throw "project save/load roundtrip failed"
 }
-Write-Output "Project roundtrip passed: frame edits, media insert, multi-delete/duplicate and undo saved without duration drift"
+Write-Output "Project roundtrip passed: frame edits, media insert, multi-delete/duplicate/move and undo saved without duration drift"
 
 $savedProject = Get-Content -LiteralPath $roundtripProject -Raw | ConvertFrom-Json
 foreach ($asset in $savedProject.assets) {

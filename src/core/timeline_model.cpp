@@ -161,20 +161,36 @@ void TimelineModel::trim_clip_to_frame_boundaries(
 }
 
 void TimelineModel::move_clip(const std::string& clip_id, std::size_t insertion_index) {
-    const auto old_index = index_of(clip_id);
-    if (insertion_index >= clips_.size()) {
-        throw std::out_of_range("clip move index is outside the remaining timeline");
-    }
+    move_clips({clip_id}, insertion_index);
+}
 
-    record_edit();
-    Clip moving = std::move(clips_[old_index]);
-    clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(old_index));
-    if (insertion_index > clips_.size()) {
+void TimelineModel::move_clips(
+    const std::vector<std::string>& clip_ids,
+    std::size_t insertion_index) {
+    if (clip_ids.empty()) return;
+    const std::unordered_set<std::string> selected(clip_ids.begin(), clip_ids.end());
+    if (selected.size() != clip_ids.size()) {
+        throw std::invalid_argument("clip move selection contains duplicate ids");
+    }
+    for (const auto& id : selected) static_cast<void>(index_of(id));
+
+    std::vector<Clip> moving;
+    std::vector<Clip> remaining;
+    moving.reserve(selected.size());
+    remaining.reserve(clips_.size() - selected.size());
+    for (const auto& clip : clips_) {
+        (selected.contains(clip.id) ? moving : remaining).push_back(clip);
+    }
+    if (insertion_index > remaining.size()) {
         throw std::out_of_range("clip move index is outside the remaining timeline");
     }
-    clips_.insert(
-        clips_.begin() + static_cast<std::ptrdiff_t>(insertion_index),
-        std::move(moving));
+    remaining.insert(
+        remaining.begin() + static_cast<std::ptrdiff_t>(insertion_index),
+        moving.begin(),
+        moving.end());
+    if (remaining == clips_) return;
+    record_edit();
+    clips_ = std::move(remaining);
 }
 
 void TimelineModel::erase_clip(const std::string& clip_id) {

@@ -429,8 +429,8 @@ ApplicationWindow {
                             EditorController.selectClip(clipId, selectionMode)
                         onTrimCommitted: (clipId, sourceIn, duration) =>
                             EditorController.trimClip(clipId, sourceIn, duration)
-                        onMoveCommitted: (clipId, insertionIndex) =>
-                            EditorController.moveClip(clipId, insertionIndex)
+                        onMoveCommitted: (clipIds, insertionIndex) =>
+                            EditorController.moveClips(clipIds, insertionIndex)
                     }
 
                     DropArea {

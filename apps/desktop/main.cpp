@@ -146,6 +146,18 @@ int main(int argc, char* argv[]) {
         }
         controller.undo();
         if (controller.clips().size() != beforeMultiDuplicate.size()) return EXIT_FAILURE;
+        const auto beforeGroupMove = controller.clips();
+        const auto moveFirst = beforeGroupMove[0].toMap().value("id").toString();
+        const auto moveSecond = beforeGroupMove[1].toMap().value("id").toString();
+        controller.selectClip(moveFirst);
+        controller.selectClip(moveSecond, 1);
+        controller.moveClips(controller.selectedClipIds(), beforeGroupMove.size() - 2);
+        const auto afterGroupMove = controller.clips();
+        if (afterGroupMove[afterGroupMove.size() - 2].toMap().value("id").toString() != moveFirst ||
+            afterGroupMove.back().toMap().value("id").toString() != moveSecond) {
+            return EXIT_FAILURE;
+        }
+        controller.undo();
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);
