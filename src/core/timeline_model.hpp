@@ -52,6 +52,7 @@ struct TimelineSpan final {
     std::filesystem::path source_path;
     TimeNs timeline_in{};
     TimeNs timeline_out{};
+    bool has_audio{};
 };
 
 struct MappedPosition final {

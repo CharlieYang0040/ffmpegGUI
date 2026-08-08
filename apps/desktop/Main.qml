@@ -448,17 +448,17 @@ ApplicationWindow {
 
                         Loader {
                             anchors.fill: parent
-                            active: EditorController.gpuSceneGraphPreview
-                            sourceComponent: D3D11VideoItem {
-                                id: experimentalVideoPreview
+                            active: EditorController.inProcessPreview
+                            sourceComponent: VideoPreviewItem {
+                                id: inProcessVideoPreview
                                 Component.onCompleted:
-                                    EditorController.attachVideoItem(experimentalVideoPreview)
+                                    EditorController.attachVideoItem(inProcessVideoPreview)
                             }
                         }
                         WindowContainer {
                             id: nativePreviewContainer
                             anchors.fill: parent
-                            visible: !EditorController.gpuSceneGraphPreview
+                            visible: !EditorController.inProcessPreview
                             window: EditorController.videoWindow
                             Component.onCompleted: Qt.callLater(
                                 EditorController.refreshVideoWindowHandle)

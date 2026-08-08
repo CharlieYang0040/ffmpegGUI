@@ -9,6 +9,7 @@
 #include <thread>
 #include <functional>
 #include <memory>
+#include <vector>
 
 #include <gst/app/gstappsink.h>
 
@@ -25,7 +26,7 @@ struct AudioContinuityMetrics final {
     TimeNs maximum_positive_gap{};
 };
 
-struct D3D11VideoFrame final {
+struct PreviewVideoFrame final {
     std::shared_ptr<void> sample;
     std::shared_ptr<void> texture_owner;
     void* texture{};
@@ -34,6 +35,8 @@ struct D3D11VideoFrame final {
     TimeNs pts{};
     std::uint64_t serial{};
     void* device{};
+    std::shared_ptr<std::vector<std::uint8_t>> cpu_pixels;
+    std::uint32_t cpu_stride{};
 };
 
 class GesSequencePlayer final : public SequencePlayer {
@@ -59,7 +62,7 @@ public:
     void set_error_callback(ErrorCallback callback) override;
     void set_video_window_handle(std::uintptr_t window_handle);
     void set_d3d11_device(void* device);
-    void set_video_frame_callback(std::function<void(D3D11VideoFrame)> callback);
+    void set_video_frame_callback(std::function<void(PreviewVideoFrame)> callback);
 
     [[nodiscard]] TimeNs duration() const noexcept;
     [[nodiscard]] TimeNs position() const noexcept;
@@ -91,7 +94,7 @@ private:
     PositionCallback position_callback_;
     StateCallback state_callback_;
     ErrorCallback error_callback_;
-    std::function<void(D3D11VideoFrame)> video_frame_callback_;
+    std::function<void(PreviewVideoFrame)> video_frame_callback_;
     std::atomic<void*> d3d11_device_handle_{nullptr};
     std::atomic<std::uint64_t> video_frame_serial_{0};
     std::atomic<TimeNs> duration_ns_{0};

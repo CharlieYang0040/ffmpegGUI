@@ -1,6 +1,8 @@
 #include "d3d11_video_item.hpp"
 
 #include <QMetaObject>
+#include <QImage>
+#include <QDebug>
 #include <QQuickWindow>
 #include <QSGSimpleTextureNode>
 #include <QSGRendererInterface>
@@ -11,7 +13,7 @@
 #include <algorithm>
 #include <utility>
 
-D3D11VideoItem::D3D11VideoItem(QQuickItem* parent) : QQuickItem(parent) {
+VideoPreviewItem::VideoPreviewItem(QQuickItem* parent) : QQuickItem(parent) {
     setFlag(ItemHasContents, true);
     connect(this, &QQuickItem::windowChanged, this, [this](QQuickWindow* itemWindow) {
         if (itemWindow == nullptr) return;
@@ -19,32 +21,32 @@ D3D11VideoItem::D3D11VideoItem(QQuickItem* parent) : QQuickItem(parent) {
             itemWindow,
             &QQuickWindow::beforeSynchronizing,
             this,
-            &D3D11VideoItem::initializeGraphics,
+            &VideoPreviewItem::initializeGraphics,
             Qt::DirectConnection);
         connect(
             itemWindow,
             &QQuickWindow::sceneGraphInvalidated,
             this,
-            &D3D11VideoItem::invalidateGraphics,
+            &VideoPreviewItem::invalidateGraphics,
             Qt::DirectConnection);
     });
 }
 
-D3D11VideoItem::~D3D11VideoItem() {
+VideoPreviewItem::~VideoPreviewItem() {
     invalidateGraphics();
 }
 
-bool D3D11VideoItem::gpuReady() const noexcept {
+bool VideoPreviewItem::gpuReady() const noexcept {
     std::scoped_lock lock(device_mutex_);
     return device_ != nullptr;
 }
 
-quintptr D3D11VideoItem::devicePointer() const noexcept {
+quintptr VideoPreviewItem::devicePointer() const noexcept {
     std::scoped_lock lock(device_mutex_);
     return reinterpret_cast<quintptr>(device_);
 }
 
-void D3D11VideoItem::submitFrame(ffgui::D3D11VideoFrame frame) {
+void VideoPreviewItem::submitFrame(ffgui::PreviewVideoFrame frame) {
     {
         std::scoped_lock lock(frame_mutex_);
         pending_frame_ = std::move(frame);
@@ -56,23 +58,41 @@ void D3D11VideoItem::submitFrame(ffgui::D3D11VideoFrame frame) {
     }
 }
 
-QSGNode* D3D11VideoItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
+QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     auto* root = oldNode != nullptr ? oldNode : new QSGNode();
     auto* node = static_cast<QSGSimpleTextureNode*>(root->firstChild());
-    ffgui::D3D11VideoFrame next;
+    ffgui::PreviewVideoFrame next;
     {
         std::scoped_lock lock(frame_mutex_);
         if (pending_frame_.serial != 0 && pending_frame_.serial != rendered_serial_) {
             next = pending_frame_;
         }
     }
-    if (next.serial != 0 && next.texture != nullptr && window() != nullptr) {
-        const auto qtDevice = reinterpret_cast<void*>(devicePointer());
-        if (next.device != qtDevice) return root;
-        auto* texture = QNativeInterface::QSGD3D11Texture::fromNative(
-            next.texture,
-            window(),
-            QSize(static_cast<int>(next.width), static_cast<int>(next.height)));
+    if (next.serial != 0 && window() != nullptr) {
+        if (rendered_serial_ == 0) {
+            qInfo().noquote() << "first in-process preview render attempt"
+                              << "serial=" << next.serial
+                              << "cpu=" << (next.cpu_pixels != nullptr)
+                              << "size=" << next.width << "x" << next.height;
+        }
+        QSGTexture* texture = nullptr;
+        if (next.cpu_pixels != nullptr && !next.cpu_pixels->empty() &&
+            next.width > 0 && next.height > 0 && next.cpu_stride >= next.width * 4) {
+            const QImage image(
+                next.cpu_pixels->data(),
+                static_cast<int>(next.width),
+                static_cast<int>(next.height),
+                static_cast<qsizetype>(next.cpu_stride),
+                QImage::Format_ARGB32);
+            texture = window()->createTextureFromImage(image);
+        } else if (next.texture != nullptr) {
+            const auto qtDevice = reinterpret_cast<void*>(devicePointer());
+            if (next.device != qtDevice) return root;
+            texture = QNativeInterface::QSGD3D11Texture::fromNative(
+                next.texture,
+                window(),
+                QSize(static_cast<int>(next.width), static_cast<int>(next.height)));
+        }
         if (texture != nullptr) {
             if (node != nullptr) {
                 root->removeChildNode(node);
@@ -85,6 +105,13 @@ QSGNode* D3D11VideoItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
             render_frame_ = std::move(next);
             rendered_serial_ = render_frame_.serial;
             emit framePresented(rendered_serial_);
+            if (rendered_serial_ == next.serial && next.serial <= 2) {
+                qInfo().noquote() << "in-process preview frame presented"
+                                  << "serial=" << rendered_serial_;
+            }
+        } else if (rendered_serial_ == 0) {
+            qWarning().noquote() << "in-process preview texture creation failed"
+                                 << "serial=" << next.serial;
         }
     }
 
@@ -107,14 +134,14 @@ QSGNode* D3D11VideoItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
     return root;
 }
 
-void D3D11VideoItem::releaseResources() {
+void VideoPreviewItem::releaseResources() {
     std::scoped_lock lock(frame_mutex_);
     pending_frame_ = {};
     render_frame_ = {};
     rendered_serial_ = 0;
 }
 
-void D3D11VideoItem::initializeGraphics() {
+void VideoPreviewItem::initializeGraphics() {
     auto* itemWindow = window();
     if (itemWindow == nullptr ||
         itemWindow->rendererInterface()->graphicsApi() != QSGRendererInterface::Direct3D11) {
@@ -136,7 +163,7 @@ void D3D11VideoItem::initializeGraphics() {
     }, Qt::QueuedConnection);
 }
 
-void D3D11VideoItem::invalidateGraphics() {
+void VideoPreviewItem::invalidateGraphics() {
     ID3D11Device* oldDevice = nullptr;
     {
         std::scoped_lock lock(device_mutex_);

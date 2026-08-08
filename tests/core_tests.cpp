@@ -79,6 +79,18 @@ void test_magnetic_trim_closes_space() {
     require(timeline.duration() == seconds(6), "timeline duration must be the active clip sum");
 }
 
+void test_snapshot_preserves_asset_audio_presence() {
+    TimelineModel timeline;
+    timeline.add_asset(MediaAsset{"silent", "silent.mp4", seconds(2)});
+    timeline.add_asset(MediaAsset{
+        "audio", "audio.mp4", seconds(2), {}, {0.25F, 0.5F}});
+    timeline.append_clip(Clip{"silent-clip", "silent", 0, seconds(1)});
+    timeline.append_clip(Clip{"audio-clip", "audio", 0, seconds(1)});
+    const auto spans = timeline.snapshot();
+    require(!spans[0].has_audio, "silent asset span must not advertise an audio stream");
+    require(spans[1].has_audio, "audio asset span must preserve audio presence");
+}
+
 void test_sequence_to_source_mapping() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"clip-a", "asset-a", seconds(1), seconds(6)});
@@ -665,6 +677,7 @@ int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests{
         {"vfr_frame_lookup", test_vfr_frame_lookup},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},
+        {"snapshot_preserves_asset_audio_presence", test_snapshot_preserves_asset_audio_presence},
         {"sequence_to_source_mapping", test_sequence_to_source_mapping},
         {"vfr_frame_stepping_respects_trims_and_clip_boundaries", test_vfr_frame_stepping_respects_trims_and_clip_boundaries},
         {"trim_and_split_snap_to_vfr_frame_boundaries", test_trim_and_split_snap_to_vfr_frame_boundaries},

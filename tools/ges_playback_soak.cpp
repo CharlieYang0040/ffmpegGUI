@@ -24,7 +24,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 using ffgui::Clip;
-using ffgui::D3D11VideoFrame;
+using ffgui::PreviewVideoFrame;
 using ffgui::GesSequencePlayer;
 using ffgui::MediaAsset;
 using ffgui::TimeNs;
@@ -87,10 +87,14 @@ int main(int argc, char* argv[]) {
         const auto spans = make_timeline(h264, hevc);
 
         Probe probe;
-        GesSequencePlayer player{"appsink", "fakesink"};
-        player.set_video_frame_callback([&probe](D3D11VideoFrame frame) {
+        GesSequencePlayer player{"cpu-appsink", "fakesink"};
+        player.set_video_frame_callback([&probe](PreviewVideoFrame frame) {
             {
                 std::scoped_lock lock(probe.mutex);
+                if (frame.cpu_pixels == nullptr || frame.width != 1280 ||
+                    frame.height != 720 || frame.cpu_stride != frame.width * 4) {
+                    probe.error = "invalid CPU BGRA preview frame";
+                }
                 probe.serial = frame.serial;
                 probe.pts = frame.pts;
             }
@@ -172,7 +176,7 @@ int main(int argc, char* argv[]) {
                 " MiB, exceeding the 128 MiB budget");
         }
 
-        std::cout << "4K playback soak passed: " << cycle << " PTS-matched seeks in "
+        std::cout << "4K CPU BGRA playback soak passed: " << cycle << " PTS-matched seeks in "
                   << seconds << " s, max latency " << maximumLatency << " ms, private growth "
                   << static_cast<double>(memoryGrowth) / 1024.0 / 1024.0 << " MiB\n";
         return 0;

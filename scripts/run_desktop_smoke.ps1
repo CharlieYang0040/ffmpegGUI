@@ -130,7 +130,7 @@ try {
     if ($process.WaitForExit($Seconds * 1000)) {
         throw "desktop application exited early with code $($process.ExitCode)"
     }
-    Write-Output "Desktop smoke passed: native window remained responsive for $Seconds seconds"
+    Write-Output "Desktop smoke passed: in-process preview application remained responsive for $Seconds seconds"
 } finally {
     if (-not $process.HasExited) {
         Stop-Process -Id $process.Id -Force

@@ -16,7 +16,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 using ffgui::Clip;
-using ffgui::D3D11VideoFrame;
+using ffgui::PreviewVideoFrame;
 using ffgui::GesSequencePlayer;
 using ffgui::MediaAsset;
 using ffgui::TimeNs;
@@ -40,7 +40,7 @@ double benchmark_file(const std::filesystem::path& path) {
 
     FrameProbe probe;
     GesSequencePlayer player{"appsink", "fakesink"};
-    player.set_video_frame_callback([&probe](D3D11VideoFrame frame) {
+    player.set_video_frame_callback([&probe](PreviewVideoFrame frame) {
         {
             std::scoped_lock lock(probe.mutex);
             probe.serial = frame.serial;

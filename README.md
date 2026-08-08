@@ -51,8 +51,9 @@ ctest --preset windows-debug
 QML 모듈과 필요한 GStreamer 런타임을 함께 포함합니다.
 
 `run_ges_smoke.ps1`은 CFR MP4, CFR MKV, VFR MKV를 생성해 트림된 4개 샷을 하나의
-타임라인으로 연속 재생합니다. `run_desktop_smoke.ps1`은 같은 파일로 네이티브 창,
-D3D11 출력 초기화, 프로젝트 왕복과 타임라인 썸네일 캐시 생성을 검사합니다. 기본
+타임라인으로 연속 재생하고 1280x720 CPU BGRA 미리보기 프레임을 검증합니다.
+`run_desktop_smoke.ps1`은 같은 파일로 인프로세스 미리보기, 프로젝트 왕복과 타임라인
+썸네일 캐시 생성을 검사합니다. 기본
 `run_4k_seek_benchmark.ps1`은 실제 3840x2160 H.264/HEVC 개발용 영상을 만들고
 D3D11 하드웨어 디코더의 임의 탐색 후 첫 GPU 프레임 도착 시간을 검사합니다.
 `run_playback_soak.ps1`은 같은 영상이 섞인 타임라인에서 PTS 기반 seek와
@@ -101,6 +102,10 @@ FFmpeg가 끝난 뒤 FFprobe로 영상 스트림과 예상 재생시간을 다�
 GES 타임라인 준비와 seek는 UI 스레드 밖에서 직렬 처리합니다. 빠르게 여러 위치를
 scrub하거나 연속 편집하면 오래된 요청을 차례로 화면에 반영하지 않고 마지막 요청으로
 수렴하며, 프로그램 모니터 헤더에서 준비·재생·오류 상태를 색으로 확인할 수 있습니다.
+기본 영상 출력은 GStreamer `d3d11videosink`의 외부 HWND를 사용하지 않습니다.
+GES의 1280x720 BGRA appsink 프레임을 앱 내부 `VideoPreviewItem`으로 전달해 Qt Scene
+Graph에서 표시하며, UI가 밀릴 때는 아직 표시하지 않은 프레임을 최신 한 장으로 합쳐
+프레임 복사 작업과 메모리가 무제한 쌓이지 않게 합니다.
 타임라인의 클립·파형·hover는 C++ Scene Graph에서 그리고, 캐시된 12프레임 아틀라스는
 현재 viewport 좌표와 트림된 원본 범위에 맞춰 이미지 계층에서 표시합니다.
 앱 시작과 미리보기/GStreamer 오류는

@@ -514,7 +514,12 @@ std::vector<TimelineSpan> TimelineModel::snapshot() const {
         if (source_asset == nullptr) {
             throw std::logic_error("timeline references a missing asset: " + clip.asset_id);
         }
-        spans.push_back(TimelineSpan{clip, source_asset->path(), cursor, end});
+        spans.push_back(TimelineSpan{
+            clip,
+            source_asset->path(),
+            cursor,
+            end,
+            !source_asset->audio_peaks().empty()});
         cursor = end;
     }
     return spans;

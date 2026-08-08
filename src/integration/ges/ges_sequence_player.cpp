@@ -8,6 +8,7 @@
 #include <ges/ges.h>
 #include <gst/gst.h>
 #include <gst/video/videooverlay.h>
+#include <gst/video/video.h>
 #include <gst/d3d11/gstd3d11.h>
 #include <gst/controller/gstinterpolationcontrolsource.h>
 #include <gst/controller/gsttimedvaluecontrolsource.h>
@@ -20,6 +21,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#include <cstring>
 
 namespace ffgui {
 namespace {
@@ -93,15 +95,21 @@ void add_audio_effect(GESUriClip* uri_clip, const Clip& clip, TimeNs timeline_du
     }
 }
 
-void add_speed_effect(GESUriClip* uri_clip, double playback_rate) {
+void add_speed_effect(GESUriClip* uri_clip, double playback_rate, bool has_audio) {
     if (std::abs(playback_rate - 1.0) < 0.0000005) return;
-    std::ostringstream description;
-    description << "pitch tempo=" << std::fixed << std::setprecision(6) << playback_rate;
-    auto* effect = ges_effect_new(description.str().c_str());
-    if (effect == nullptr ||
-        !ges_container_add(GES_CONTAINER(uri_clip), GES_TIMELINE_ELEMENT(effect))) {
-        if (effect != nullptr) gst_object_unref(effect);
-        throw std::runtime_error("failed to attach clip playback-rate effect");
+    const auto attach = [uri_clip](const std::string& description, const char* failure) {
+        auto* effect = ges_effect_new(description.c_str());
+        if (effect == nullptr ||
+            !ges_container_add(GES_CONTAINER(uri_clip), GES_TIMELINE_ELEMENT(effect))) {
+            if (effect != nullptr) gst_object_unref(effect);
+            throw std::runtime_error(failure);
+        }
+    };
+    std::ostringstream rate;
+    rate << std::fixed << std::setprecision(6) << playback_rate;
+    attach("videorate rate=" + rate.str(), "failed to attach video playback-rate effect");
+    if (has_audio) {
+        attach("pitch tempo=" + rate.str(), "failed to attach audio playback-rate effect");
     }
 }
 
@@ -336,7 +344,7 @@ void GesSequencePlayer::set_d3d11_device(void* device) {
 }
 
 void GesSequencePlayer::set_video_frame_callback(
-    std::function<void(D3D11VideoFrame)> callback) {
+    std::function<void(PreviewVideoFrame)> callback) {
     std::scoped_lock lock(callback_mutex_);
     video_frame_callback_ = std::move(callback);
 }
@@ -395,38 +403,71 @@ GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_d
     auto* memory = buffer != nullptr && gst_buffer_n_memory(buffer) > 0
         ? gst_buffer_peek_memory(buffer, 0)
         : nullptr;
-    if (memory == nullptr || !gst_is_d3d11_memory(memory)) return GST_FLOW_OK;
-    auto* d3dMemory = GST_D3D11_MEMORY_CAST(memory);
-    D3D11_TEXTURE2D_DESC description{};
-    if (!gst_d3d11_memory_get_texture_desc(d3dMemory, &description)) return GST_FLOW_OK;
-    auto* resource = gst_d3d11_memory_get_resource_handle(d3dMemory);
-    if (resource == nullptr) return GST_FLOW_OK;
-    ID3D11Texture2D* texture = nullptr;
-    if (FAILED(resource->QueryInterface(__uuidof(ID3D11Texture2D),
-                                        reinterpret_cast<void**>(&texture))) ||
-        texture == nullptr) {
-        return GST_FLOW_OK;
-    }
-    auto textureOwner = std::shared_ptr<void>(texture, [](void* value) {
-        static_cast<ID3D11Texture2D*>(value)->Release();
-    });
-
-    std::function<void(D3D11VideoFrame)> callback;
+    std::function<void(PreviewVideoFrame)> callback;
     {
         std::scoped_lock lock(player->callback_mutex_);
         callback = player->video_frame_callback_;
     }
-    if (callback) {
-        callback(D3D11VideoFrame{
-            std::move(holder),
-            std::move(textureOwner),
-            texture,
-            description.Width,
-            description.Height,
-            GST_BUFFER_PTS_IS_VALID(buffer) ? static_cast<TimeNs>(GST_BUFFER_PTS(buffer)) : 0,
-            player->video_frame_serial_.fetch_add(1) + 1,
-            gst_d3d11_device_get_device_handle(d3dMemory->device)});
+    if (!callback || buffer == nullptr || memory == nullptr) return GST_FLOW_OK;
+
+    PreviewVideoFrame frame;
+    frame.sample = std::move(holder);
+    frame.pts = GST_BUFFER_PTS_IS_VALID(buffer)
+        ? static_cast<TimeNs>(GST_BUFFER_PTS(buffer))
+        : 0;
+    if (gst_is_d3d11_memory(memory)) {
+        auto* d3dMemory = GST_D3D11_MEMORY_CAST(memory);
+        D3D11_TEXTURE2D_DESC description{};
+        if (!gst_d3d11_memory_get_texture_desc(d3dMemory, &description)) return GST_FLOW_OK;
+        auto* resource = gst_d3d11_memory_get_resource_handle(d3dMemory);
+        if (resource == nullptr) return GST_FLOW_OK;
+        ID3D11Texture2D* texture = nullptr;
+        if (FAILED(resource->QueryInterface(__uuidof(ID3D11Texture2D),
+                                            reinterpret_cast<void**>(&texture))) ||
+            texture == nullptr) {
+            return GST_FLOW_OK;
+        }
+        frame.texture_owner = std::shared_ptr<void>(texture, [](void* value) {
+            static_cast<ID3D11Texture2D*>(value)->Release();
+        });
+        frame.texture = texture;
+        frame.width = description.Width;
+        frame.height = description.Height;
+        frame.device = gst_d3d11_device_get_device_handle(d3dMemory->device);
+    } else {
+        GstVideoInfo videoInfo{};
+        auto* caps = gst_sample_get_caps(sample);
+        if (caps == nullptr || !gst_video_info_from_caps(&videoInfo, caps) ||
+            GST_VIDEO_INFO_FORMAT(&videoInfo) != GST_VIDEO_FORMAT_BGRA) {
+            return GST_FLOW_OK;
+        }
+        GstMapInfo map{};
+        if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) return GST_FLOW_OK;
+        frame.width = GST_VIDEO_INFO_WIDTH(&videoInfo);
+        frame.height = GST_VIDEO_INFO_HEIGHT(&videoInfo);
+        frame.cpu_stride = frame.width * 4;
+        const auto sourceStride = GST_VIDEO_INFO_PLANE_STRIDE(&videoInfo, 0);
+        const auto rowBytes = static_cast<std::size_t>(frame.cpu_stride);
+        if (sourceStride < 0 || static_cast<std::size_t>(sourceStride) < rowBytes ||
+            map.size < static_cast<std::size_t>(sourceStride) * frame.height) {
+            gst_buffer_unmap(buffer, &map);
+            return GST_FLOW_OK;
+        }
+        frame.cpu_pixels = std::make_shared<std::vector<std::uint8_t>>(
+            rowBytes * frame.height);
+        for (std::uint32_t row = 0; row < frame.height; ++row) {
+            std::memcpy(
+                frame.cpu_pixels->data() + static_cast<std::size_t>(row) * rowBytes,
+                map.data + static_cast<std::size_t>(row) * sourceStride,
+                rowBytes);
+        }
+        gst_buffer_unmap(buffer, &map);
+        // CPU pixels are now independent; release the decoder sample immediately instead of
+        // pinning a GStreamer buffer until Qt replaces the displayed frame.
+        frame.sample.reset();
     }
+    frame.serial = player->video_frame_serial_.fetch_add(1) + 1;
+    callback(std::move(frame));
     return GST_FLOW_OK;
 }
 
@@ -486,8 +527,10 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 ges_timeline_element_set_start(element, span.timeline_in) &&
                 ges_timeline_element_set_inpoint(element, span.clip.source_in) &&
                 ges_timeline_element_set_duration(element, timelineDuration);
-            if (configured) add_speed_effect(uri_clip, span.clip.playback_rate);
-            if (configured && span.clip.audio != ClipAudio{}) {
+            if (configured) {
+                add_speed_effect(uri_clip, span.clip.playback_rate, span.has_audio);
+            }
+            if (configured && span.has_audio && span.clip.audio != ClipAudio{}) {
                 add_audio_effect(uri_clip, span.clip, timelineDuration);
             }
             if (!configured || !ges_layer_add_clip(layer, GES_CLIP(uri_clip))) {
@@ -541,7 +584,23 @@ void GesSequencePlayer::rebuild_pipeline_locked(
         if (!video_sink_factory_.empty()) {
             GstElement* sink = nullptr;
             GstElement* appSink = nullptr;
-            if (video_sink_factory_ == "appsink") {
+            const bool cpuAppSink = video_sink_factory_ == "cpu-appsink";
+            const bool d3d11AppSink = video_sink_factory_ == "d3d11-appsink" ||
+                video_sink_factory_ == "appsink";
+            if (cpuAppSink) {
+                GError* parseError = nullptr;
+                sink = gst_parse_bin_from_description(
+                    "videoconvert ! videoscale add-borders=true ! "
+                    "video/x-raw,format=BGRA,width=1280,height=720,pixel-aspect-ratio=1/1 ! "
+                    "appsink name=qtappsink max-buffers=2 drop=true sync=true "
+                    "enable-last-sample=false",
+                    TRUE,
+                    &parseError);
+                if (sink == nullptr) {
+                    throw glib_error("failed to create CPU appsink bin", parseError);
+                }
+                appSink = gst_bin_get_by_name(GST_BIN(sink), "qtappsink");
+            } else if (d3d11AppSink) {
                 GError* parseError = nullptr;
                 sink = gst_parse_bin_from_description(
                     "d3d11upload ! d3d11convert ! "
@@ -572,11 +631,11 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                     gst_object_unref(wrappedDevice);
                 }
             }
-            if (video_sink_factory_ == "appsink") {
+            if (cpuAppSink || d3d11AppSink) {
                 if (appSink == nullptr) {
                     gst_object_unref(sink);
                     gst_object_unref(new_pipeline);
-                    throw std::runtime_error("D3D11 appsink bin has no qtappsink element");
+                    throw std::runtime_error("appsink bin has no qtappsink element");
                 }
                 GstAppSinkCallbacks callbacks{};
                 callbacks.new_sample = GesSequencePlayer::new_video_sample;

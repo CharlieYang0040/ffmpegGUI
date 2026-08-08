@@ -19,6 +19,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <memory>
+#include <mutex>
 #include <optional>
 
 class QQmlEngine;
@@ -55,6 +56,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
     Q_PROPERTY(QWindow* videoWindow READ videoWindow CONSTANT)
     Q_PROPERTY(bool gpuSceneGraphPreview READ gpuSceneGraphPreview CONSTANT)
+    Q_PROPERTY(bool inProcessPreview READ inProcessPreview CONSTANT)
     Q_PROPERTY(bool exporting READ exporting NOTIFY exportingChanged)
     Q_PROPERTY(qreal exportProgress READ exportProgress NOTIFY exportProgressChanged)
     Q_PROPERTY(QString exportStage READ exportStage NOTIFY exportProgressChanged)
@@ -90,6 +92,7 @@ public:
     [[nodiscard]] bool importing() const noexcept { return importing_; }
     [[nodiscard]] QWindow* videoWindow() const noexcept { return video_window_; }
     [[nodiscard]] bool gpuSceneGraphPreview() const noexcept { return use_d3d_scene_graph_; }
+    [[nodiscard]] bool inProcessPreview() const noexcept { return in_process_preview_; }
     [[nodiscard]] bool exporting() const noexcept { return exporting_; }
     [[nodiscard]] qreal exportProgress() const noexcept { return export_progress_; }
     [[nodiscard]] QString exportStage() const { return export_stage_; }
@@ -110,6 +113,7 @@ public:
     [[nodiscard]] std::uint64_t previewRebuildCount() const noexcept {
         return preview_rebuild_count_;
     }
+    [[nodiscard]] bool videoSurfaceExposed() const noexcept;
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);
 
@@ -229,6 +233,7 @@ private:
     QObject* video_item_{};
     QWindow* video_window_{};
     bool use_d3d_scene_graph_{};
+    bool in_process_preview_{};
     bool importing_{};
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
     QTimer preview_update_timer_;
@@ -238,6 +243,9 @@ private:
     bool preview_operation_pending_{};
     bool preview_should_play_{};
     bool preview_stop_requested_{};
+    mutable std::mutex pending_video_frame_mutex_;
+    std::optional<ffgui::PreviewVideoFrame> pending_video_frame_;
+    bool video_frame_delivery_queued_{};
 #endif
     QHash<QString, QString> thumbnail_atlases_;
     mutable std::optional<QVariantList> clips_cache_;

@@ -9,18 +9,18 @@
 
 struct ID3D11Device;
 
-class D3D11VideoItem : public QQuickItem {
+class VideoPreviewItem : public QQuickItem {
     Q_OBJECT
     QML_ELEMENT
     Q_PROPERTY(bool gpuReady READ gpuReady NOTIFY gpuReadyChanged)
 
 public:
-    explicit D3D11VideoItem(QQuickItem* parent = nullptr);
-    ~D3D11VideoItem() override;
+    explicit VideoPreviewItem(QQuickItem* parent = nullptr);
+    ~VideoPreviewItem() override;
 
     [[nodiscard]] bool gpuReady() const noexcept;
     [[nodiscard]] quintptr devicePointer() const noexcept;
-    void submitFrame(ffgui::D3D11VideoFrame frame);
+    void submitFrame(ffgui::PreviewVideoFrame frame);
 
 signals:
     void gpuReadyChanged();
@@ -36,8 +36,8 @@ private:
     void invalidateGraphics();
 
     mutable std::mutex frame_mutex_;
-    ffgui::D3D11VideoFrame pending_frame_;
-    ffgui::D3D11VideoFrame render_frame_;
+    ffgui::PreviewVideoFrame pending_frame_;
+    ffgui::PreviewVideoFrame render_frame_;
     std::uint64_t rendered_serial_{};
     mutable std::mutex device_mutex_;
     ID3D11Device* device_{};

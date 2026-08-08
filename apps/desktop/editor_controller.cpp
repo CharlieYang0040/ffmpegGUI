@@ -19,6 +19,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QDesktopServices>
+#include <QQuickWindow>
 #include <QtConcurrentRun>
 
 #include <algorithm>
@@ -222,19 +223,40 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         });
 #ifdef FFGUI_HAS_GES
     use_d3d_scene_graph_ = qEnvironmentVariableIntValue("FFGUI_EXPERIMENTAL_D3D11_QSG") == 1;
+    in_process_preview_ = true;
     player_ = std::make_unique<ffgui::GesSequencePlayer>(
-        use_d3d_scene_graph_ ? "appsink" : "d3d11videosink",
+        use_d3d_scene_graph_ ? "d3d11-appsink" : "cpu-appsink",
         "wasapi2sink");
-    player_->set_video_frame_callback([this](ffgui::D3D11VideoFrame frame) {
-        QMetaObject::invokeMethod(
-            this,
-            [this, frame = std::move(frame)]() mutable {
-                if (auto* item = qobject_cast<D3D11VideoItem*>(video_item_)) {
-                    ++video_frames_delivered_;
-                    item->submitFrame(std::move(frame));
+    player_->set_video_frame_callback([this](ffgui::PreviewVideoFrame frame) {
+        bool scheduleDelivery = false;
+        {
+            std::scoped_lock lock(pending_video_frame_mutex_);
+            pending_video_frame_ = std::move(frame);
+            if (!video_frame_delivery_queued_) {
+                video_frame_delivery_queued_ = true;
+                scheduleDelivery = true;
+            }
+        }
+        if (!scheduleDelivery) return;
+        QMetaObject::invokeMethod(this, [this] {
+            std::optional<ffgui::PreviewVideoFrame> frame;
+            {
+                std::scoped_lock lock(pending_video_frame_mutex_);
+                frame = std::move(pending_video_frame_);
+                pending_video_frame_.reset();
+                video_frame_delivery_queued_ = false;
+            }
+            if (!frame.has_value()) return;
+            if (auto* item = qobject_cast<VideoPreviewItem*>(video_item_)) {
+                ++video_frames_delivered_;
+                if (video_frames_delivered_ == 1) {
+                    qInfo().noquote() << "first preview frame delivered to Qt item"
+                                      << "cpu=" << (frame->cpu_pixels != nullptr)
+                                      << "size=" << frame->width << "x" << frame->height;
                 }
-            },
-            Qt::QueuedConnection);
+                item->submitFrame(std::move(frame.value()));
+            }
+        }, Qt::QueuedConnection);
     });
     player_->set_position_callback([this](ffgui::TimeNs position) {
         QMetaObject::invokeMethod(
@@ -328,7 +350,7 @@ void EditorController::setVideoWindow(QWindow* window) {
 }
 
 void EditorController::refreshVideoWindowHandle() {
-    if (video_window_ == nullptr || use_d3d_scene_graph_) return;
+    if (video_window_ == nullptr || in_process_preview_) return;
     video_window_->create();
 #ifdef FFGUI_HAS_GES
     const auto handle = static_cast<std::uintptr_t>(video_window_->winId());
@@ -367,6 +389,11 @@ std::uint64_t EditorController::videoFramesReceived() const noexcept {
 #else
     return 0;
 #endif
+}
+
+bool EditorController::videoSurfaceExposed() const noexcept {
+    const auto* item = qobject_cast<const VideoPreviewItem*>(video_item_);
+    return item != nullptr && item->window() != nullptr && item->window()->isExposed();
 }
 
 QVariantList EditorController::clips() const {
@@ -536,23 +563,25 @@ int EditorController::selectedCaptionDurationMs() const noexcept {
 }
 
 void EditorController::attachVideoItem(QObject* item) {
-    auto* videoItem = qobject_cast<D3D11VideoItem*>(item);
+    auto* videoItem = qobject_cast<VideoPreviewItem*>(item);
     if (videoItem == nullptr) {
-        setStatus("D3D11 미리보기 화면을 연결할 수 없습니다");
+        setStatus("인프로세스 미리보기 화면을 연결할 수 없습니다");
         return;
     }
     video_item_ = videoItem;
-    connect(videoItem, &D3D11VideoItem::framePresented, this, [this](quint64) {
+    connect(videoItem, &VideoPreviewItem::framePresented, this, [this](quint64) {
         ++video_frames_presented_;
     });
 #ifdef FFGUI_HAS_GES
-    connect(videoItem, &D3D11VideoItem::d3d11DeviceReady, this, [this](quintptr device) {
-        player_->set_d3d11_device(reinterpret_cast<void*>(device));
-        preview_applied_generation_.reset();
-        if (!preview_snapshot_.empty()) queuePreviewOperation(true);
-    });
-    if (videoItem->devicePointer() != 0) {
-        player_->set_d3d11_device(reinterpret_cast<void*>(videoItem->devicePointer()));
+    if (use_d3d_scene_graph_) {
+        connect(videoItem, &VideoPreviewItem::d3d11DeviceReady, this, [this](quintptr device) {
+            player_->set_d3d11_device(reinterpret_cast<void*>(device));
+            preview_applied_generation_.reset();
+            if (!preview_snapshot_.empty()) queuePreviewOperation(true);
+        });
+        if (videoItem->devicePointer() != 0) {
+            player_->set_d3d11_device(reinterpret_cast<void*>(videoItem->devicePointer()));
+        }
     }
 #endif
 }

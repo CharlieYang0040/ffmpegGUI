@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <atomic>
 
 namespace {
 
@@ -64,7 +65,18 @@ int main(int argc, char* argv[]) {
         timeline.append_clip(Clip{"shot-vfr", "asset-c", milliseconds(300), milliseconds(900)});
         timeline.append_clip(Clip{"shot-c", "asset-a", milliseconds(1000), milliseconds(500)});
 
-        GesSequencePlayer player;
+        std::atomic<std::uint64_t> videoFrames{0};
+        std::atomic<bool> invalidCpuFrame{false};
+        GesSequencePlayer player{"cpu-appsink", "fakesink"};
+        player.set_video_frame_callback([&](ffgui::PreviewVideoFrame frame) {
+            if (frame.cpu_pixels == nullptr || frame.width != 1280 || frame.height != 720 ||
+                frame.cpu_stride != frame.width * 4 ||
+                frame.cpu_pixels->size() !=
+                    static_cast<std::size_t>(frame.cpu_stride) * frame.height) {
+                invalidCpuFrame.store(true);
+            }
+            videoFrames.fetch_add(1);
+        });
         player.set_timeline(timeline.snapshot());
         if (player.duration() != milliseconds(2425)) {
             throw std::runtime_error("GES sequence duration does not match TimelineModel");
@@ -94,11 +106,17 @@ int main(int argc, char* argv[]) {
                 "GES audio gap exceeded 2 ms: " +
                 std::to_string(audio.maximum_positive_gap) + " ns");
         }
+        if (invalidCpuFrame.load() || videoFrames.load() < 20) {
+            throw std::runtime_error(
+                "CPU appsink did not deliver enough valid 1280x720 BGRA frames: " +
+                std::to_string(videoFrames.load()));
+        }
 
         std::cout << "GES continuous playback passed: 4 shots including VFR and 2x speed, "
                   << player.duration() / 1'000'000 << " ms; "
                   << audio.buffer_count << " audio buffers, max gap "
-                  << audio.maximum_positive_gap << " ns\n";
+                  << audio.maximum_positive_gap << " ns; "
+                  << videoFrames.load() << " CPU BGRA frames\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "GES smoke failed: " << error.what() << '\n';
