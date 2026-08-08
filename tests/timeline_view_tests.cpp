@@ -48,6 +48,10 @@ int main(int argc, char* argv[]) {
     }
     timeline.setClips(clips);
     timeline.setDurationNs(static_cast<qint64>(clipCount) * clipDuration);
+    timeline.setInteractionMode(1);
+    require(timeline.interactionMode() == 1, "scrub interaction mode must be selectable");
+    timeline.setInteractionMode(0);
+    require(timeline.interactionMode() == 0, "clip editing mode must be restorable");
     require(timeline.timelineTimeAt(12) == 0, "left track edge must map to sequence start");
     require(
         timeline.timelineTimeAt(1908) == static_cast<qint64>(clipCount) * clipDuration,

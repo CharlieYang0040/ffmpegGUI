@@ -20,6 +20,7 @@ class TimelineView : public QQuickItem {
     Q_PROPERTY(qreal zoomLevel READ zoomLevel WRITE setZoomLevel NOTIFY zoomLevelChanged)
     Q_PROPERTY(qint64 viewportStartNs READ viewportStartNs NOTIFY viewportChanged)
     Q_PROPERTY(qint64 viewportDurationNs READ visibleDurationNs NOTIFY viewportChanged)
+    Q_PROPERTY(int interactionMode READ interactionMode WRITE setInteractionMode NOTIFY interactionModeChanged)
 
 public:
     explicit TimelineView(QQuickItem* parent = nullptr);
@@ -46,6 +47,8 @@ public:
     void setZoomLevel(qreal zoom);
     [[nodiscard]] qint64 viewportStartNs() const noexcept { return viewport_start_ns_; }
     [[nodiscard]] qint64 visibleDurationNs() const;
+    [[nodiscard]] int interactionMode() const noexcept { return interaction_mode_; }
+    void setInteractionMode(int mode);
     Q_INVOKABLE qint64 timelineTimeAt(qreal x) const;
 
 signals:
@@ -57,6 +60,7 @@ signals:
     void selectedClipIdsChanged();
     void zoomLevelChanged();
     void viewportChanged();
+    void interactionModeChanged();
     void seekRequested(qint64 timelineTime);
     void clipSelected(QString clipId, int selectionMode);
     void trimCommitted(QString clipId, qint64 sourceIn, qint64 duration);
@@ -100,4 +104,5 @@ private:
     bool timeline_geometry_dirty_{true};
     qint64 painted_view_start_ns_{};
     qint64 painted_view_duration_ns_{1};
+    int interaction_mode_{};
 };

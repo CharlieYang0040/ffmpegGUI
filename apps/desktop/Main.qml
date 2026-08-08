@@ -15,6 +15,7 @@ ApplicationWindow {
     minimumHeight: 700
     title: "ffmpegGUI Next"
     color: "#111419"
+    property int timelineTool: 0 // 0: select/move, 1: scrub/seek
 
     function durationText(nanoseconds) {
         const totalSeconds = Math.max(0, Math.floor(nanoseconds / 1000000000))
@@ -85,6 +86,8 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.duplicateSelectedClip() }
     Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.deleteSelectedClip() }
     Shortcut { sequence: "M"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted) }
+    Shortcut { sequence: "V"; onActivated: root.timelineTool = 0 }
+    Shortcut { sequence: "A"; onActivated: root.timelineTool = 1 }
     FileDialog {
         id: mediaDialog
         title: "영상 추가"
@@ -154,6 +157,35 @@ ApplicationWindow {
         }
     }
 
+    DropArea {
+        id: externalFileDrop
+        anchors.fill: parent
+        z: 100
+        keys: ["text/uri-list"]
+        onDropped: drop => {
+            if (drop.hasUrls) {
+                EditorController.loadUrls(drop.urls)
+                drop.acceptProposedAction()
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 10
+            visible: externalFileDrop.containsDrag
+            color: "#705b8cff"
+            border.width: 2
+            border.color: "#8eb4ff"
+            radius: 10
+            Label {
+                anchors.centerIn: parent
+                text: "놓아서 미디어 추가"
+                font.pixelSize: 22
+                font.bold: true
+            }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 1
@@ -176,11 +208,64 @@ ApplicationWindow {
                     enabled: EditorController.durationNs > 0
                     onClicked: saveProjectDialog.open()
                 }
+                AppButton {
+                    text: "로그"
+                    compact: true
+                    onClicked: EditorController.openLogFolder()
+                    ToolTip.visible: hovered
+                    ToolTip.text: "진단 로그 폴더 열기"
+                }
                 Item { Layout.fillWidth: true }
                 AppButton {
                     text: EditorController.exporting ? "내보내는 중…" : "내보내기"
                     enabled: EditorController.durationNs > 0 && !EditorController.exporting
                     onClicked: exportDialog.open()
+                }
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: EditorController.exporting ? 46 : 0
+            visible: EditorController.exporting
+            color: "#182333"
+            border.color: "#304a70"
+            clip: true
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                spacing: 12
+                ColumnLayout {
+                    Layout.preferredWidth: 260
+                    spacing: 1
+                    Label { text: EditorController.exportStage; font.bold: true }
+                    Label {
+                        Layout.fillWidth: true
+                        text: EditorController.exportOutputName
+                        color: "#9eabbc"
+                        elide: Text.ElideMiddle
+                    }
+                }
+                ProgressBar {
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 1
+                    value: EditorController.exportProgress
+                }
+                Label {
+                    text: Math.round(EditorController.exportProgress * 100) + "%"
+                    font.pixelSize: 14
+                    font.bold: true
+                    Layout.preferredWidth: 48
+                    horizontalAlignment: Text.AlignRight
+                }
+                AppButton {
+                    text: "취소"
+                    danger: true
+                    compact: true
+                    onClicked: EditorController.cancelExport()
                 }
             }
         }
@@ -529,6 +614,23 @@ ApplicationWindow {
                     Layout.rightMargin: 8
                     spacing: 5
                     AppButton {
+                        text: "V  선택"
+                        compact: true
+                        highlighted: root.timelineTool === 0
+                        onClicked: root.timelineTool = 0
+                        ToolTip.visible: hovered
+                        ToolTip.text: "클립 선택·이동·트림"
+                    }
+                    AppButton {
+                        text: "A  탐색"
+                        compact: true
+                        highlighted: root.timelineTool === 1
+                        onClicked: root.timelineTool = 1
+                        ToolTip.visible: hovered
+                        ToolTip.text: "타임라인을 드래그하며 미리보기 탐색"
+                    }
+                    ToolDivider { }
+                    AppButton {
                         text: EditorController.playing ? "Ⅱ  일시정지" : "▶  재생"
                         enabled: EditorController.durationNs > 0
                         highlighted: EditorController.playing
@@ -644,6 +746,52 @@ ApplicationWindow {
                         color: "#11161c"
                     }
 
+                    Item {
+                        id: timelineThumbnails
+                        anchors.fill: parent
+                        clip: true
+                        readonly property real contentWidth: Math.max(1, width - 24)
+                        readonly property var visibleThumbnailClips: EditorController.clips.filter(
+                            function(clip) {
+                                const clipWidth = timelineThumbnails.contentWidth * clip.durationNs /
+                                                  Math.max(1, timeline.viewportDurationNs)
+                                return clip.thumbnailAtlas.length > 0 && clipWidth >= 28 &&
+                                       clip.timelineInNs + clip.durationNs > timeline.viewportStartNs &&
+                                       clip.timelineInNs < timeline.viewportStartNs +
+                                                           timeline.viewportDurationNs
+                            })
+                        Repeater {
+                            model: timelineThumbnails.visibleThumbnailClips
+                            delegate: Image {
+                                required property var modelData
+                                x: 12 + timelineThumbnails.contentWidth *
+                                   (modelData.timelineInNs - timeline.viewportStartNs) /
+                                   Math.max(1, timeline.viewportDurationNs)
+                                y: 30
+                                width: timelineThumbnails.contentWidth * modelData.durationNs /
+                                       Math.max(1, timeline.viewportDurationNs)
+                                height: Math.max(1, timelineThumbnails.height - 44)
+                                visible: modelData.thumbnailAtlas.length > 0 &&
+                                         x + width > 12 && x < timelineThumbnails.width - 12
+                                source: modelData.thumbnailAtlas.length > 0
+                                    ? "file:///" + modelData.thumbnailAtlas.replace(/\\/g, "/")
+                                    : ""
+                                sourceClipRect: modelData.assetDurationNs > 0
+                                    ? Qt.rect(
+                                        1920 * modelData.sourceInNs / modelData.assetDurationNs,
+                                        0,
+                                        Math.max(1, 1920 * modelData.sourceDurationNs /
+                                                     modelData.assetDurationNs),
+                                        90)
+                                    : Qt.rect(0, 0, 1920, 90)
+                                fillMode: Image.Stretch
+                                asynchronous: true
+                                cache: true
+                                opacity: 0.58
+                            }
+                        }
+                    }
+
                     TimelineView {
                         id: timeline
                         anchors.fill: parent
@@ -654,6 +802,7 @@ ApplicationWindow {
                         clips: EditorController.clips
                         selectedClipId: EditorController.selectedClipId
                         selectedClipIds: EditorController.selectedClipIds
+                        interactionMode: root.timelineTool
                         onSeekRequested: position => EditorController.seek(position)
                         onClipSelected: (clipId, selectionMode) =>
                             EditorController.selectClip(clipId, selectionMode)

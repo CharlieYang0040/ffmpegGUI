@@ -9,6 +9,8 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QCryptographicHash>
+#include <QElapsedTimer>
+#include <QDebug>
 #include <QStandardPaths>
 
 #ifdef Q_OS_WIN
@@ -31,7 +33,18 @@ namespace {
 QByteArray run_tool(
     const QString& executable,
     const QStringList& arguments,
-    bool allow_failure = false) {
+    const QString& stage,
+    bool allow_failure = false,
+    int timeout_ms = 180'000) {
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const auto inputIndex = arguments.indexOf("-i");
+    const auto input = inputIndex >= 0 && inputIndex + 1 < arguments.size()
+        ? arguments[inputIndex + 1]
+        : arguments.value(arguments.size() - 1);
+    qInfo().noquote() << "media analysis stage started"
+                      << "stage=" << stage
+                      << "input=" << input;
     QProcess process;
     process.setProgram(executable);
     process.setArguments(arguments);
@@ -45,20 +58,31 @@ QByteArray run_tool(
     if (!process.waitForStarted(10'000)) {
         throw std::runtime_error("media analysis tool could not be started");
     }
-    if (!process.waitForFinished(600'000)) {
+    if (!process.waitForFinished(timeout_ms)) {
         process.kill();
         process.waitForFinished();
-        throw std::runtime_error("media analysis timed out");
+        qWarning().noquote() << "media analysis stage timed out"
+                             << "stage=" << stage
+                             << "elapsed_ms=" << elapsed.elapsed();
+        throw std::runtime_error((stage + " timed out").toStdString());
     }
     if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
         if (allow_failure) {
+            qWarning().noquote() << "optional media analysis stage failed"
+                                 << "stage=" << stage
+                                 << "elapsed_ms=" << elapsed.elapsed();
             return {};
         }
         const auto message = QString::fromUtf8(process.readAllStandardError()).trimmed();
         throw std::runtime_error(
             message.isEmpty() ? "media analysis failed" : message.toStdString());
     }
-    return process.readAllStandardOutput();
+    auto output = process.readAllStandardOutput();
+    qInfo().noquote() << "media analysis stage finished"
+                      << "stage=" << stage
+                      << "elapsed_ms=" << elapsed.elapsed()
+                      << "output_bytes=" << output.size();
+    return output;
 }
 
 QString locate_tool(const QString& name, const char* override_name) {
@@ -124,7 +148,7 @@ QString build_thumbnail_atlas(const QString& ffmpeg, const QString& media, TimeN
                             .arg(interval, 0, 'f', 6);
     try {
         run_tool(ffmpeg, {"-v", "error", "-y", "-i", media, "-vf", filter,
-                          "-frames:v", "1", temporary});
+                          "-frames:v", "1", temporary}, "thumbnail", false, 120'000);
         QFile::remove(target);
         if (QFile::rename(temporary, target)) return target;
     } catch (...) {
@@ -154,24 +178,46 @@ AnalyzedMedia analyze_media(
     const QString& media_path,
     std::string asset_id) {
     const auto absolutePath = QFileInfo(media_path).absoluteFilePath();
+    qInfo().noquote() << "media import started" << "path=" << absolutePath;
     const auto durationOutput = run_tool(
         ffprobe_path,
-        {"-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", absolutePath});
-    auto duration = parse_ffprobe_seconds(to_utf8(QString::fromUtf8(durationOutput).trimmed()));
+        {"-v", "error", "-show_entries", "format=duration:stream=duration",
+         "-of", "default=nw=1:nk=1", absolutePath},
+        "duration probe");
+    TimeNs duration = 0;
+    for (const auto& line : QString::fromUtf8(durationOutput).split('\n')) {
+        const auto candidate = line.trimmed();
+        if (candidate.isEmpty() || candidate.compare("N/A", Qt::CaseInsensitive) == 0) continue;
+        try {
+            duration = std::max(duration, parse_ffprobe_seconds(to_utf8(candidate)));
+        } catch (const std::exception&) {
+        }
+    }
 
     const auto frameOutput = run_tool(
         ffprobe_path,
         {"-v", "error", "-select_streams", "v:0", "-show_entries",
-         "frame=key_frame,best_effort_timestamp_time", "-of", "csv=p=0", absolutePath});
+         "frame=key_frame,best_effort_timestamp_time", "-of", "csv=p=0", absolutePath},
+        "frame timeline", false, 300'000);
     auto frameTimeline = parse_ffprobe_frame_timeline(to_utf8(QString::fromUtf8(frameOutput)));
     const auto audioPcm = run_tool(
         ffmpeg_path,
         {"-v", "error", "-i", absolutePath, "-map", "0:a:0?", "-vn",
          "-ac", "1", "-ar", "200", "-f", "f32le", "pipe:1"},
-        true);
+        "audio waveform", true, 300'000);
     auto audioPeaks = build_peaks(audioPcm);
     duration = std::max(duration, estimated_media_end(frameTimeline.frame_pts));
+    if (duration <= 0 || frameTimeline.frame_pts.empty()) {
+        throw std::runtime_error("video duration or frame timeline could not be read");
+    }
     auto atlas = build_thumbnail_atlas(ffmpeg_path, absolutePath, duration);
+    qInfo().noquote() << "media import finished"
+                      << "path=" << absolutePath
+                      << "duration_ns=" << duration
+                      << "frames=" << frameTimeline.frame_pts.size()
+                      << "keyframes=" << frameTimeline.keyframe_pts.size()
+                      << "waveform_samples=" << audioPeaks.size()
+                      << "thumbnail=" << atlas;
     return AnalyzedMedia{
         MediaAsset{std::move(asset_id), std::filesystem::path(absolutePath.toStdWString()),
                    duration, std::move(frameTimeline.frame_pts), std::move(audioPeaks),

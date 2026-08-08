@@ -59,6 +59,12 @@ QString initializeApplicationLog() {
         QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
     QDir().mkpath(directory.filePath("logs"));
     const auto path = directory.filePath("logs/editor.log");
+    const QFileInfo existing(path);
+    if (existing.isFile() && existing.size() > 10 * 1024 * 1024) {
+        const auto previous = directory.filePath("logs/editor.previous.log");
+        QFile::remove(previous);
+        QFile::rename(path, previous);
+    }
     applicationLog = std::make_unique<QFile>(path);
     if (!applicationLog->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
         applicationLog.reset();
@@ -361,9 +367,11 @@ int main(int argc, char* argv[]) {
         controller.seek(500'000'000);
         controller.addCaptionAtPlayhead();
         controller.updateSelectedCaption(QStringLiteral("출력 자막"), 1200);
-        QEventLoop audioPreviewRefreshLoop;
-        QTimer::singleShot(100, &audioPreviewRefreshLoop, &QEventLoop::quit);
-        audioPreviewRefreshLoop.exec();
+        // Export immediately after structural revisions. The output must capture the newest
+        // model snapshot even while the debounced preview rebuild is still pending.
+        controller.splitAtPlayhead();
+        controller.undo();
+        controller.redo();
         bool exportSucceeded = false;
         QEventLoop exportLoop;
         QTimer exportTimeout;

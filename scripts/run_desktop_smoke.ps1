@@ -69,7 +69,7 @@ $streams = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
 if ($streams -notcontains "video" -or $streams -notcontains "audio") {
     throw "exported timeline must contain both video and audio streams"
 }
-Write-Output "Timeline export passed: clip audio and burned captions produced a $exportDuration second MP4"
+Write-Output "Timeline export passed: rapid split/undo/redo, clip audio and burned captions produced a validated $exportDuration second MP4"
 
 if (-not (Test-Path -LiteralPath $copySource -PathType Leaf)) {
     & (Join-Path $root ".tools\ffmpeg\bin\ffmpeg.exe") -hide_banner -loglevel error -y `

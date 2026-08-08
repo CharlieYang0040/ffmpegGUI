@@ -50,6 +50,16 @@ qint64 TimelineView::timelineTimeAt(qreal x) const {
     return timeAt(x);
 }
 
+void TimelineView::setInteractionMode(int mode) {
+    mode = std::clamp(mode, 0, 1);
+    if (interaction_mode_ == mode) return;
+    interaction_mode_ = mode;
+    drag_mode_ = DragMode::none;
+    drag_clip_index_ = -1;
+    setCursor(QCursor(mode == 1 ? Qt::PointingHandCursor : Qt::ArrowCursor));
+    emit interactionModeChanged();
+}
+
 void TimelineView::setClips(QVariantList clips) {
     // QML only publishes this property when the timeline revision changes. A deep QVariant
     // comparison walks every clip and every waveform sample and can freeze the UI on large edits.
@@ -358,6 +368,14 @@ void TimelineView::geometryChange(const QRectF& newGeometry, const QRectF& oldGe
 }
 
 void TimelineView::mousePressEvent(QMouseEvent* event) {
+    if (interaction_mode_ == 1) {
+        drag_mode_ = DragMode::none;
+        drag_clip_index_ = -1;
+        seekAt(event->position().x());
+        setCursor(QCursor(Qt::ClosedHandCursor));
+        event->accept();
+        return;
+    }
     drag_clip_index_ = clipIndexAt(event->position().x());
     if (drag_clip_index_ < 0) {
         seekAt(event->position().x());
@@ -406,6 +424,16 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
 }
 
 void TimelineView::hoverMoveEvent(QHoverEvent* event) {
+    if (interaction_mode_ == 1) {
+        if (hover_clip_index_ >= 0) {
+            hover_clip_index_ = -1;
+            timeline_geometry_dirty_ = true;
+            update();
+        }
+        setCursor(QCursor(Qt::PointingHandCursor));
+        event->accept();
+        return;
+    }
     const auto index = clipIndexAt(event->position().x());
     if (hover_clip_index_ != index) {
         hover_clip_index_ = index;
@@ -448,6 +476,11 @@ void TimelineView::hoverLeaveEvent(QHoverEvent* event) {
 
 void TimelineView::mouseMoveEvent(QMouseEvent* event) {
     if (event->buttons().testFlag(Qt::LeftButton)) {
+        if (interaction_mode_ == 1) {
+            seekAt(event->position().x());
+            event->accept();
+            return;
+        }
         if (drag_mode_ == DragMode::none || drag_clip_index_ < 0) {
             seekAt(event->position().x());
         } else {
@@ -485,6 +518,12 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
+    if (interaction_mode_ == 1) {
+        seekAt(event->position().x());
+        setCursor(QCursor(Qt::PointingHandCursor));
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::LeftButton && drag_clip_index_ >= 0) {
         const auto clip = clips_[drag_clip_index_].toMap();
         const auto clipId = clip.value("id").toString();

@@ -23,6 +23,7 @@
 
 class QQmlEngine;
 class QJSEngine;
+class QFile;
 
 class EditorController final : public QObject {
     Q_OBJECT
@@ -56,6 +57,8 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool gpuSceneGraphPreview READ gpuSceneGraphPreview CONSTANT)
     Q_PROPERTY(bool exporting READ exporting NOTIFY exportingChanged)
     Q_PROPERTY(qreal exportProgress READ exportProgress NOTIFY exportProgressChanged)
+    Q_PROPERTY(QString exportStage READ exportStage NOTIFY exportProgressChanged)
+    Q_PROPERTY(QString exportOutputName READ exportOutputName NOTIFY exportProgressChanged)
 
 public:
     explicit EditorController(QObject* parent);
@@ -89,6 +92,8 @@ public:
     [[nodiscard]] bool gpuSceneGraphPreview() const noexcept { return use_d3d_scene_graph_; }
     [[nodiscard]] bool exporting() const noexcept { return exporting_; }
     [[nodiscard]] qreal exportProgress() const noexcept { return export_progress_; }
+    [[nodiscard]] QString exportStage() const { return export_stage_; }
+    [[nodiscard]] QString exportOutputName() const { return export_output_name_; }
     [[nodiscard]] bool lastExportUsedStreamCopy() const noexcept {
         return last_export_stream_copy_;
     }
@@ -155,6 +160,7 @@ public slots:
     [[nodiscard]] QUrl uniqueOutputUrl(const QUrl& url) const;
     void attachVideoItem(QObject* item);
     void refreshVideoWindowHandle();
+    void openLogFolder();
 
 signals:
     void timelineChanged();
@@ -185,6 +191,7 @@ private:
     void queuePreviewOperation(bool restorePosition);
     void startPreviewOperation();
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
+    void startExportValidation();
     void finishExport(bool success);
     [[nodiscard]] std::string makeUniqueClipId(const std::string& prefix);
     void setSingleSelection(QString clipId);
@@ -238,6 +245,7 @@ private:
     mutable std::optional<QVariantList> captions_cache_;
     mutable QHash<QString, QVariantList> waveform_cache_;
     QProcess export_process_;
+    QProcess export_validation_process_;
     std::optional<ffgui::ExportRequest> export_request_;
     QByteArray export_stderr_;
     bool exporting_{};
@@ -247,6 +255,10 @@ private:
     bool last_export_stream_copy_{};
     bool last_export_matched_preview_{};
     qreal export_progress_{};
+    QString export_stage_;
+    QString export_output_name_;
+    QString export_log_path_;
+    std::unique_ptr<QFile> export_log_file_;
     ffgui::TimeNs export_duration_ns_{};
     QString export_concat_path_;
     QString export_subtitle_path_;

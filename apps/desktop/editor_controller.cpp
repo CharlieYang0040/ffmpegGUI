@@ -18,6 +18,7 @@
 #include <QStandardPaths>
 #include <QDateTime>
 #include <QDebug>
+#include <QDesktopServices>
 #include <QtConcurrentRun>
 
 #include <algorithm>
@@ -94,6 +95,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 publishTimeline(true);
                 success = true;
             } catch (const std::exception& error) {
+                qWarning().noquote() << "media import failed" << error.what();
                 setStatus(QString::fromUtf8(error.what()));
             }
             importing_ = false;
@@ -101,13 +103,21 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             emit mediaImportFinished(success);
         });
     export_process_.setProcessChannelMode(QProcess::SeparateChannels);
+    export_validation_process_.setProcessChannelMode(QProcess::SeparateChannels);
 #ifdef Q_OS_WIN
     export_process_.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
         args->flags |= CREATE_NO_WINDOW;
     });
+    export_validation_process_.setCreateProcessArgumentsModifier(
+        [](QProcess::CreateProcessArguments* args) { args->flags |= CREATE_NO_WINDOW; });
 #endif
     connect(&export_process_, &QProcess::readyReadStandardError, this, [this] {
-        export_stderr_.append(export_process_.readAllStandardError());
+        const auto chunk = export_process_.readAllStandardError();
+        if (export_log_file_ && export_log_file_->isOpen()) {
+            export_log_file_->write(chunk);
+            export_log_file_->flush();
+        }
+        export_stderr_.append(chunk);
         if (export_stderr_.size() > 65'536) {
             export_stderr_ = export_stderr_.right(65'536);
         }
@@ -135,7 +145,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         [this](int exitCode, QProcess::ExitStatus status) {
             if (!exporting_) return;
             if (!export_cancelled_ && status == QProcess::NormalExit && exitCode == 0) {
-                finishExport(true);
+                startExportValidation();
                 return;
             }
             if (!export_cancelled_ && export_stream_copy_active_) {
@@ -160,6 +170,56 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             finishExport(false);
         }
     });
+    connect(
+        &export_validation_process_,
+        qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+        this,
+        [this](int exitCode, QProcess::ExitStatus status) {
+            const auto output = export_validation_process_.readAllStandardOutput();
+            const auto error = export_validation_process_.readAllStandardError();
+            if (export_log_file_ && export_log_file_->isOpen()) {
+                export_log_file_->write("\n--- ffprobe validation ---\n");
+                export_log_file_->write(output);
+                export_log_file_->write(error);
+                export_log_file_->flush();
+            }
+            bool valid = status == QProcess::NormalExit && exitCode == 0;
+            const auto document = QJsonDocument::fromJson(output);
+            const auto streams = document.object().value("streams").toArray();
+            bool hasVideo = false;
+            for (const auto& stream : streams) {
+                if (stream.toObject().value("codec_type").toString() == "video") {
+                    hasVideo = true;
+                    break;
+                }
+            }
+            const auto durationSeconds = document.object().value("format").toObject()
+                .value("duration").toString().toDouble();
+            const auto actualDuration = static_cast<ffgui::TimeNs>(
+                std::llround(durationSeconds * ffgui::kNanosecondsPerSecond));
+            const auto tolerance = std::max<ffgui::TimeNs>(
+                500'000'000, export_duration_ns_ / 50);
+            valid = valid && hasVideo && actualDuration > 0 &&
+                std::abs(actualDuration - export_duration_ns_) <= tolerance;
+            qInfo().noquote() << "export validation finished"
+                              << "valid=" << valid
+                              << "expected_ns=" << export_duration_ns_
+                              << "actual_ns=" << actualDuration
+                              << "video=" << hasVideo
+                              << "log=" << export_log_path_;
+            if (!valid && !error.trimmed().isEmpty()) export_stderr_.append(error);
+            finishExport(valid);
+        });
+    connect(
+        &export_validation_process_,
+        &QProcess::errorOccurred,
+        this,
+        [this](QProcess::ProcessError error) {
+            if (exporting_ && error == QProcess::FailedToStart) {
+                export_stderr_.append("ffprobe validation process could not be started");
+                finishExport(false);
+            }
+        });
 #ifdef FFGUI_HAS_GES
     use_d3d_scene_graph_ = qEnvironmentVariableIntValue("FFGUI_EXPERIMENTAL_D3D11_QSG") == 1;
     player_ = std::make_unique<ffgui::GesSequencePlayer>(
@@ -277,6 +337,14 @@ void EditorController::refreshVideoWindowHandle() {
 #endif
 }
 
+void EditorController::openLogFolder() {
+    const auto directory = QDir(
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+        .filePath("logs");
+    QDir().mkpath(directory);
+    QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
+}
+
 EditorController::~EditorController() {
 #ifdef FFGUI_HAS_GES
     if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
@@ -284,6 +352,10 @@ EditorController::~EditorController() {
     if (export_process_.state() != QProcess::NotRunning) {
         export_process_.kill();
         export_process_.waitForFinished(3'000);
+    }
+    if (export_validation_process_.state() != QProcess::NotRunning) {
+        export_validation_process_.kill();
+        export_validation_process_.waitForFinished(3'000);
     }
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
     if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
@@ -1339,12 +1411,10 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
 
     ffgui::ExportRequest request;
     request.output_path = std::filesystem::path(output.toStdWString());
-    if (preview_revision_ != timeline_.revision() || preview_snapshot_.empty()) {
-        setStatus("미리보기와 편집 상태가 일치하지 않아 출력을 시작하지 않았습니다");
-        return;
-    }
+    const auto exportSnapshot = timeline_.snapshot();
+    if (exportSnapshot.empty()) return;
     last_export_matched_preview_ = false;
-    for (const auto& span : preview_snapshot_) {
+    for (const auto& span : exportSnapshot) {
         const auto* asset = timeline_.asset(span.clip.asset_id);
         request.clips.push_back(ffgui::ExportClipInput{
             span.source_path,
@@ -1375,11 +1445,32 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
         .arg(QDateTime::currentMSecsSinceEpoch()));
     request.subtitle_script_path = std::filesystem::path(export_subtitle_path_.toStdWString());
     export_request_ = std::move(request);
+    // The export contract is the immutable model snapshot captured above. Preview preparation
+    // is asynchronous and must never make a newer edit unexportable or export stale clips.
     last_export_matched_preview_ = true;
     export_cpu_fallback_ = false;
     export_cancelled_ = false;
     last_export_stream_copy_ = false;
     export_progress_ = 0;
+    export_stage_ = "출력 준비 중";
+    export_output_name_ = QFileInfo(output).fileName();
+    const auto logDirectory = QDir(
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+        .filePath("logs");
+    QDir().mkpath(logDirectory);
+    export_log_path_ = QDir(logDirectory).filePath(QStringLiteral("export-%1.log")
+        .arg(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz")));
+    export_log_file_ = std::make_unique<QFile>(export_log_path_);
+    static_cast<void>(export_log_file_->open(QIODevice::WriteOnly | QIODevice::Text));
+    if (export_log_file_->isOpen()) {
+        export_log_file_->write(QStringLiteral(
+            "output=%1\ntimeline_revision=%2\nclips=%3\nexpected_duration_ns=%4\n")
+            .arg(output)
+            .arg(timeline_.revision())
+            .arg(exportSnapshot.size())
+            .arg(durationNs())
+            .toUtf8());
+    }
     exporting_ = true;
     emit exportProgressChanged();
     emit exportingChanged();
@@ -1422,14 +1513,52 @@ void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
         export_stderr_.clear();
         export_process_.setProgram(ffgui::locate_ffmpeg());
         export_process_.setArguments(arguments);
+        export_stage_ = export_stream_copy_active_
+            ? QStringLiteral("무손실 복사")
+            : (encoder == ffgui::ExportVideoEncoder::h264_nvenc
+                ? QStringLiteral("NVENC 인코딩")
+                : QStringLiteral("CPU 인코딩"));
+        if (export_log_file_ && export_log_file_->isOpen()) {
+            export_log_file_->write(QStringLiteral("\n--- %1 ---\n%2 %3\n")
+                .arg(export_stage_, export_process_.program(), arguments.join(' ')).toUtf8());
+            export_log_file_->flush();
+        }
+        qInfo().noquote() << "export process started"
+                          << "stage=" << export_stage_
+                          << "duration_ns=" << export_duration_ns_
+                          << "output=" << export_output_name_
+                          << "log=" << export_log_path_;
         setStatus(export_stream_copy_active_
             ? "내보내는 중 · 무손실 복사"
             : (encoder == ffgui::ExportVideoEncoder::h264_nvenc
                 ? "내보내는 중 · NVENC"
                 : "내보내는 중 · CPU"));
         export_process_.start();
+        emit exportProgressChanged();
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
+        finishExport(false);
+    }
+}
+
+void EditorController::startExportValidation() {
+    if (!export_request_.has_value()) {
+        finishExport(false);
+        return;
+    }
+    try {
+        export_stage_ = "결과 검증 중";
+        export_progress_ = std::max<qreal>(export_progress_, 0.99);
+        emit exportProgressChanged();
+        setStatus("내보낸 영상의 스트림과 재생시간을 확인하는 중입니다");
+        const auto output = QString::fromStdWString(export_request_->output_path.wstring());
+        export_validation_process_.setProgram(ffgui::locate_ffprobe());
+        export_validation_process_.setArguments({
+            "-v", "error", "-show_entries", "stream=codec_type:format=duration",
+            "-of", "json", output});
+        export_validation_process_.start();
+    } catch (const std::exception& error) {
+        export_stderr_.append(error.what());
         finishExport(false);
     }
 }
@@ -1437,8 +1566,13 @@ void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
 void EditorController::cancelExport() {
     if (!exporting_) return;
     export_cancelled_ = true;
+    export_stage_ = "취소 중";
+    emit exportProgressChanged();
     setStatus("내보내기를 취소하는 중입니다");
-    export_process_.kill();
+    if (export_process_.state() != QProcess::NotRunning) export_process_.kill();
+    if (export_validation_process_.state() != QProcess::NotRunning) {
+        export_validation_process_.kill();
+    }
 }
 
 void EditorController::finishExport(bool success) {
@@ -1462,16 +1596,27 @@ void EditorController::finishExport(bool success) {
                 : QStringLiteral("내보내기 실패 · %1").arg(detail));
         }
     }
+    qInfo().noquote() << "export job finished"
+                      << "success=" << success
+                      << "cancelled=" << export_cancelled_
+                      << "output=" << output
+                      << "log=" << export_log_path_;
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
     if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
     export_concat_path_.clear();
     export_subtitle_path_.clear();
     export_stream_copy_active_ = false;
     exporting_ = false;
+    export_stage_.clear();
     emit exportProgressChanged();
     emit exportingChanged();
     emit exportFinished(success, QUrl::fromLocalFile(output));
     export_request_.reset();
+    if (export_log_file_) {
+        export_log_file_->flush();
+        export_log_file_->close();
+        export_log_file_.reset();
+    }
 }
 
 void EditorController::queuePreviewOperation(bool restorePosition) {
@@ -1620,5 +1765,6 @@ void EditorController::setStatus(QString status) {
         return;
     }
     status_ = std::move(status);
+    qInfo().noquote() << "status changed" << status_;
     emit statusChanged();
 }
