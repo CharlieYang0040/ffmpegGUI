@@ -793,7 +793,11 @@ void TimelineModel::validate_caption(
     const CaptionCue& caption,
     std::optional<std::size_t> replacing) const {
     if (caption.id.empty() || caption.text.empty() || caption.timeline_in < 0 ||
-        caption.duration <= 0 || caption.timeline_out() > duration()) {
+        caption.duration <= 0 || caption.timeline_out() > duration() ||
+        !std::isfinite(caption.position_x) || !std::isfinite(caption.position_y) ||
+        caption.position_x < 0.0 || caption.position_x > 1.0 ||
+        caption.position_y < 0.0 || caption.position_y > 1.0 ||
+        caption.font_size < 12 || caption.font_size > 160) {
         throw std::invalid_argument("caption is outside the timeline or empty");
     }
     for (std::size_t index = 0; index < captions_.size(); ++index) {

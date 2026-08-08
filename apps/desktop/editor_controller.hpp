@@ -56,6 +56,11 @@ class EditorController final : public QObject {
     Q_PROPERTY(QString selectedCaptionId READ selectedCaptionId NOTIFY captionSelectionChanged)
     Q_PROPERTY(QString selectedCaptionText READ selectedCaptionText NOTIFY captionSelectionChanged)
     Q_PROPERTY(int selectedCaptionDurationMs READ selectedCaptionDurationMs NOTIFY captionSelectionChanged)
+    Q_PROPERTY(int selectedCaptionFontSize READ selectedCaptionFontSize NOTIFY captionSelectionChanged)
+    Q_PROPERTY(bool stampEnabled READ stampEnabled WRITE setStampEnabled NOTIFY graphicsChanged)
+    Q_PROPERTY(QString stampWorker READ stampWorker WRITE setStampWorker NOTIFY graphicsChanged)
+    Q_PROPERTY(QString stampInformation READ stampInformation WRITE setStampInformation NOTIFY graphicsChanged)
+    Q_PROPERTY(int stampBarPercent READ stampBarPercent WRITE setStampBarPercent NOTIFY graphicsChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
@@ -101,6 +106,11 @@ public:
     [[nodiscard]] QString selectedCaptionId() const { return selected_caption_id_; }
     [[nodiscard]] QString selectedCaptionText() const;
     [[nodiscard]] int selectedCaptionDurationMs() const noexcept;
+    [[nodiscard]] int selectedCaptionFontSize() const noexcept;
+    [[nodiscard]] bool stampEnabled() const noexcept { return stamp_enabled_; }
+    [[nodiscard]] QString stampWorker() const { return stamp_worker_; }
+    [[nodiscard]] QString stampInformation() const { return stamp_information_; }
+    [[nodiscard]] int stampBarPercent() const noexcept { return stamp_bar_percent_; }
     [[nodiscard]] bool canUndo() const noexcept { return timeline_.can_undo(); }
     [[nodiscard]] bool canRedo() const noexcept { return timeline_.can_redo(); }
     [[nodiscard]] bool importing() const noexcept { return importing_; }
@@ -172,8 +182,11 @@ public slots:
     void setSelectedClipDissolveMs(int milliseconds);
     void trimAllClipEdges(int frontFrames, int backFrames);
     void addCaptionAtPlayhead();
+    void addTextOverlay(const QString& text, int durationMs);
     void selectCaption(const QString& captionId);
     void updateSelectedCaption(const QString& text, int durationMs);
+    void updateCaptionPosition(const QString& captionId, qreal positionX, qreal positionY);
+    void setSelectedCaptionFontSize(int pixels);
     void deleteSelectedCaption();
     void moveCaption(const QString& captionId, qint64 timelineIn);
     void trimCaption(const QString& captionId, qint64 timelineIn, qint64 duration);
@@ -193,6 +206,10 @@ public slots:
     void setExportContainer(int container);
     void setExportResolution(int resolution);
     void setExportFrameRate(int frameRate);
+    void setStampEnabled(bool enabled);
+    void setStampWorker(const QString& worker);
+    void setStampInformation(const QString& information);
+    void setStampBarPercent(int percent);
     [[nodiscard]] QString exportExtension() const;
     [[nodiscard]] QString timeText(qint64 timelinePosition) const;
     [[nodiscard]] qint64 frameNumberAt(qint64 timelinePosition) const;
@@ -213,6 +230,7 @@ signals:
     void statusChanged();
     void selectedClipChanged();
     void captionSelectionChanged();
+    void graphicsChanged();
     void historyChanged();
     void importingChanged();
     void mediaImportFinished(bool success);
@@ -269,6 +287,10 @@ private:
     std::uint64_t generated_asset_id_{};
     std::uint64_t generated_caption_id_{};
     QString selected_caption_id_;
+    bool stamp_enabled_{};
+    QString stamp_worker_;
+    QString stamp_information_;
+    int stamp_bar_percent_{9};
     QObject* video_item_{};
     QWindow* video_window_{};
     bool use_d3d_scene_graph_{};

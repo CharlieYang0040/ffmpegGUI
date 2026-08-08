@@ -345,6 +345,13 @@ int main(int argc, char* argv[]) {
                 QStringLiteral("회귀 테스트 자막")) {
             return EXIT_FAILURE;
         }
+        const auto graphicId = controller.selectedCaptionId();
+        controller.updateCaptionPosition(graphicId, 0.25, 0.35);
+        controller.setSelectedCaptionFontSize(52);
+        controller.setStampWorker(QStringLiteral("테스트 작업자"));
+        controller.setStampInformation(QStringLiteral("검수본 v2"));
+        controller.setStampBarPercent(10);
+        controller.setStampEnabled(true);
         controller.selectClip(audioClipId);
         const auto beforeSpeedDuration = controller.durationNs();
         controller.setSelectedClipSpeedPercent(150);
@@ -392,6 +399,14 @@ int main(int argc, char* argv[]) {
                controller.captions().size() == 1 &&
                controller.captions().front().toMap().value("text").toString() ==
                    QStringLiteral("회귀 테스트 자막") &&
+               std::abs(controller.captions().front().toMap().value("positionX").toDouble() -
+                        0.25) < 0.0001 &&
+               std::abs(controller.captions().front().toMap().value("positionY").toDouble() -
+                        0.35) < 0.0001 &&
+               controller.captions().front().toMap().value("fontSize").toInt() == 52 &&
+               controller.stampEnabled() && controller.stampBarPercent() == 10 &&
+               controller.stampWorker() == QStringLiteral("테스트 작업자") &&
+               controller.stampInformation() == QStringLiteral("검수본 v2") &&
                expectedClipCount == importedClipCount + 4
             ? EXIT_SUCCESS
             : EXIT_FAILURE;
@@ -420,6 +435,11 @@ int main(int argc, char* argv[]) {
         controller.seek(500'000'000);
         controller.addCaptionAtPlayhead();
         controller.updateSelectedCaption(QStringLiteral("출력 자막"), 1200);
+        controller.updateCaptionPosition(controller.selectedCaptionId(), 0.3, 0.4);
+        controller.setSelectedCaptionFontSize(48);
+        controller.setStampWorker(QStringLiteral("자동 회귀"));
+        controller.setStampInformation(QStringLiteral("출력 검증본"));
+        controller.setStampEnabled(true);
         // Export immediately after structural revisions. The output must capture the newest
         // model snapshot even while the debounced preview rebuild is still pending.
         controller.splitAtPlayhead();

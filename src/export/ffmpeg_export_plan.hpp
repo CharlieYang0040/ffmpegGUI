@@ -50,6 +50,16 @@ struct ExportCaptionInput final {
     std::string text;
     TimeNs timeline_in{};
     TimeNs duration{};
+    double position_x{0.5};
+    double position_y{0.5};
+    int font_size{44};
+};
+
+struct ExportStampInput final {
+    bool enabled{};
+    std::string worker;
+    std::string information;
+    int bar_percent{9};
 };
 
 struct ExportRequest final {
@@ -59,6 +69,7 @@ struct ExportRequest final {
     bool prefer_stream_copy{true};
     std::filesystem::path concat_script_path;
     std::vector<ExportCaptionInput> captions;
+    ExportStampInput stamp;
     std::filesystem::path subtitle_script_path;
     ExportQuality quality{ExportQuality::balanced};
     int output_width{};

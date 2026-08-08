@@ -24,6 +24,7 @@ ApplicationWindow {
     property bool showOutputNode: true
     property bool showAudioNode: true
     property bool showEffectsNode: false
+    property bool showGraphicsNode: true
     property bool showGlobalTrimNode: false
     property bool showOutputSettingsNode: false
 
@@ -545,6 +546,106 @@ ApplicationWindow {
                             color: "#718094"
                             font.pixelSize: 15
                         }
+
+                        Item {
+                            id: graphicOverlayLayer
+                            anchors.fill: parent
+                            z: 20
+
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                height: parent.height * EditorController.stampBarPercent / 100
+                                color: "#e6000000"
+                                visible: EditorController.stampEnabled
+                                Label {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 14
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: EditorController.stampInformation
+                                    color: "white"
+                                    font.pixelSize: Math.max(11, parent.height * 0.36)
+                                }
+                                Label {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 14
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: EditorController.stampWorker.length > 0
+                                          ? "작업자  " + EditorController.stampWorker : ""
+                                    color: "white"
+                                    font.pixelSize: Math.max(11, parent.height * 0.36)
+                                }
+                            }
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                height: parent.height * EditorController.stampBarPercent / 100
+                                color: "#e6000000"
+                                visible: EditorController.stampEnabled
+                                Label {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 14
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: EditorController.timeText(EditorController.playheadNs)
+                                          + "  ·  F" + EditorController.frameNumberAt(EditorController.playheadNs)
+                                    color: "white"
+                                    font.family: "Consolas"
+                                    font.pixelSize: Math.max(11, parent.height * 0.34)
+                                }
+                            }
+
+                            Repeater {
+                                model: EditorController.captions
+                                delegate: Item {
+                                    id: overlayTextItem
+                                    required property var modelData
+                                    visible: EditorController.playheadNs >= modelData.timelineInNs &&
+                                             EditorController.playheadNs < modelData.timelineInNs + modelData.durationNs
+                                    width: overlayText.implicitWidth + 20
+                                    height: overlayText.implicitHeight + 12
+                                    x: modelData.positionX * graphicOverlayLayer.width - width / 2
+                                    y: modelData.positionY * graphicOverlayLayer.height - height / 2
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        color: EditorController.selectedCaptionId === modelData.id
+                                               ? "#5a000000" : "transparent"
+                                        border.width: EditorController.selectedCaptionId === modelData.id ? 2 : 0
+                                        border.color: "#f0c66a"
+                                        radius: 3
+                                    }
+                                    Label {
+                                        id: overlayText
+                                        anchors.centerIn: parent
+                                        text: modelData.text
+                                        color: "white"
+                                        font.bold: true
+                                        font.pixelSize: Math.max(
+                                            12, modelData.fontSize * graphicOverlayLayer.width / 1280)
+                                        style: Text.Outline
+                                        styleColor: "#d0000000"
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                                        drag.target: overlayTextItem
+                                        drag.minimumX: -overlayTextItem.width / 2
+                                        drag.maximumX: graphicOverlayLayer.width - overlayTextItem.width / 2
+                                        drag.minimumY: -overlayTextItem.height / 2
+                                        drag.maximumY: graphicOverlayLayer.height - overlayTextItem.height / 2
+                                        onPressed: EditorController.selectCaption(modelData.id)
+                                        onReleased: EditorController.updateCaptionPosition(
+                                            modelData.id,
+                                            (overlayTextItem.x + overlayTextItem.width / 2) /
+                                                graphicOverlayLayer.width,
+                                            (overlayTextItem.y + overlayTextItem.height / 2) /
+                                                graphicOverlayLayer.height)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -570,7 +671,7 @@ ApplicationWindow {
                         ComboBox {
                             id: nodePicker
                             Layout.fillWidth: true
-                            model: ["출력", "오디오", "이펙트", "전체 트림", "출력 설정"]
+                            model: ["출력", "오디오", "이펙트", "문구·스탬프", "전체 트림", "출력 설정"]
                         }
                         AppButton {
                             text: "+ 추가"
@@ -579,7 +680,8 @@ ApplicationWindow {
                                 if (nodePicker.currentIndex === 0) root.showOutputNode = true
                                 else if (nodePicker.currentIndex === 1) root.showAudioNode = true
                                 else if (nodePicker.currentIndex === 2) root.showEffectsNode = true
-                                else if (nodePicker.currentIndex === 3) root.showGlobalTrimNode = true
+                                else if (nodePicker.currentIndex === 3) root.showGraphicsNode = true
+                                else if (nodePicker.currentIndex === 4) root.showGlobalTrimNode = true
                                 else root.showOutputSettingsNode = true
                             }
                         }
@@ -703,6 +805,122 @@ ApplicationWindow {
                         Label {
                             Layout.fillWidth: true; wrapMode: Text.WordWrap
                             text: "선택 클립과 바로 앞 클립을 겹쳐 영상·오디오를 함께 전환합니다."
+                            color: "#7f8c9c"; font.pixelSize: 11
+                        }
+                    }
+
+                    InspectorNode {
+                        visible: root.showGraphicsNode
+                        title: "문구·스탬프"
+                        summary: "화면 배치 · 작업 정보"
+                        expanded: true
+                        onRemoveRequested: root.showGraphicsNode = false
+
+                        Label { text: "자유 문구"; font.bold: true }
+                        TextField {
+                            id: newOverlayText
+                            Layout.fillWidth: true
+                            placeholderText: "화면에 넣을 문구"
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            SpinBox {
+                                id: newOverlayDuration
+                                Layout.fillWidth: true
+                                from: 500; to: 60000; stepSize: 500; value: 3000
+                                textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                                valueFromText: function(text) { return Math.round((parseFloat(text) || 3) * 1000) }
+                            }
+                            AppButton {
+                                text: "+ 문구"
+                                compact: true
+                                enabled: EditorController.durationNs > 0 && newOverlayText.text.trim().length > 0
+                                onClicked: {
+                                    EditorController.addTextOverlay(newOverlayText.text, newOverlayDuration.value)
+                                    newOverlayText.clear()
+                                }
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: EditorController.selectedCaptionId.length > 0
+                            Label { text: "선택 문구"; color: "#b4bdc8" }
+                            TextField {
+                                Layout.fillWidth: true
+                                text: EditorController.selectedCaptionText
+                                onEditingFinished: EditorController.updateSelectedCaption(
+                                    text, selectedOverlayDuration.value)
+                            }
+                            GridLayout {
+                                Layout.fillWidth: true; columns: 2
+                                Label { text: "표시 시간"; color: "#b4bdc8" }
+                                SpinBox {
+                                    id: selectedOverlayDuration
+                                    Layout.fillWidth: true
+                                    from: 100; to: 60000; stepSize: 100
+                                    value: EditorController.selectedCaptionDurationMs
+                                    textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                                    valueFromText: function(text) { return Math.round((parseFloat(text) || 1) * 1000) }
+                                    onValueModified: EditorController.updateSelectedCaption(
+                                        EditorController.selectedCaptionText, value)
+                                }
+                                Label { text: "글자 크기"; color: "#b4bdc8" }
+                                SpinBox {
+                                    Layout.fillWidth: true
+                                    from: 12; to: 160; stepSize: 2
+                                    value: EditorController.selectedCaptionFontSize
+                                    onValueModified: EditorController.setSelectedCaptionFontSize(value)
+                                }
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: "프로그램 모니터의 문구를 직접 끌어 위치를 정합니다."
+                                wrapMode: Text.WordWrap
+                                color: "#7f8c9c"; font.pixelSize: 11
+                            }
+                            AppButton {
+                                Layout.fillWidth: true
+                                text: "선택 문구 삭제"
+                                onClicked: EditorController.deleteSelectedCaption()
+                            }
+                        }
+
+                        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#303844" }
+                        Switch {
+                            text: "상·하단 스탬프 표시"
+                            checked: EditorController.stampEnabled
+                            onToggled: EditorController.setStampEnabled(checked)
+                        }
+                        GridLayout {
+                            Layout.fillWidth: true; columns: 2
+                            enabled: EditorController.stampEnabled
+                            Label { text: "작업자"; color: "#b4bdc8" }
+                            TextField {
+                                Layout.fillWidth: true
+                                text: EditorController.stampWorker
+                                placeholderText: "이름"
+                                onEditingFinished: EditorController.setStampWorker(text)
+                            }
+                            Label { text: "영상 정보"; color: "#b4bdc8" }
+                            TextField {
+                                Layout.fillWidth: true
+                                text: EditorController.stampInformation
+                                placeholderText: "프로젝트·버전·샷 정보"
+                                onEditingFinished: EditorController.setStampInformation(text)
+                            }
+                            Label { text: "바 높이"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true
+                                from: 4; to: 25; value: EditorController.stampBarPercent
+                                textFromValue: function(value) { return value + "%" }
+                                valueFromText: function(text) { return parseInt(text) || 9 }
+                                onValueModified: EditorController.setStampBarPercent(value)
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: "검은 바는 영상 위에 겹쳐지므로 해상도와 화면 비율은 바뀌지 않습니다."
+                            wrapMode: Text.WordWrap
                             color: "#7f8c9c"; font.pixelSize: 11
                         }
                     }
@@ -929,7 +1147,7 @@ ApplicationWindow {
                                 fillMode: Image.Stretch
                                 asynchronous: true
                                 cache: true
-                                opacity: 0.82
+                                opacity: 1.0
                             }
                         }
                     }

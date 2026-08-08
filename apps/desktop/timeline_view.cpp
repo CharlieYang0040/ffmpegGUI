@@ -173,13 +173,13 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             const auto rangeRight = kHorizontalPadding + contentWidth *
                 static_cast<qreal>(std::min(out_point_ns_, viewEnd) - viewStart) /
                 static_cast<qreal>(viewDuration);
-            QColor rangeColor("#5b8cff");
-            rangeColor.setAlpha(48);
+            QColor rangeColor("#f0c66a");
+            rangeColor.setAlpha(24);
             contentRoot->appendChildNode(new QSGSimpleRectNode(
                 QRectF(rangeLeft, 8.0, std::max<qreal>(1.0, rangeRight - rangeLeft),
                        height() - 18.0),
                 rangeColor));
-            const QColor edgeColor("#78a5ff");
+            const QColor edgeColor("#f0c66a");
             contentRoot->appendChildNode(new QSGSimpleRectNode(
                 QRectF(rangeLeft, 8.0, 2.0, height() - 18.0), edgeColor));
             contentRoot->appendChildNode(new QSGSimpleRectNode(
@@ -196,8 +196,8 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
         if (totalDuration > 0 && drawableCount > 0) {
         auto* geometry = new QSGGeometry(
             QSGGeometry::defaultAttributes_ColoredPoint2D(),
-            drawableCount * 6);
-        geometry->setDrawingMode(QSGGeometry::DrawTriangles);
+            drawableCount * 8);
+        geometry->setDrawingMode(QSGGeometry::DrawLines);
         auto* vertices = geometry->vertexDataAsColoredPoint2D();
 
         int vertexIndex = 0;
@@ -214,24 +214,22 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             const auto right = kHorizontalPadding +
                 contentWidth * static_cast<qreal>(std::min(start + duration, viewEnd) - viewStart) /
                     static_cast<qreal>(viewDuration);
-            QColor color(clip.value("color", index % 2 == 0 ? "#343b43" : "#3a424b").toString());
-            if (index == hover_clip_index_) {
-                color = color.lighter(118);
-            }
-            if (selected_clip_ids_.contains(clip.value("id").toString())) {
-                color = color.lighter(125);
-            }
-            color.setAlpha(index == hover_clip_index_ ? 190 : 118);
+            const bool selected = selected_clip_ids_.contains(clip.value("id").toString());
+            QColor color = selected ? QColor("#f0c66a")
+                : (index == hover_clip_index_ ? QColor("#ffffff") : QColor("#d9dee5"));
+            color.setAlpha(selected ? 255 : (index == hover_clip_index_ ? 245 : 205));
             const auto x1 = left + 1.0;
             const auto x2 = std::max(x1 + 1.0, right - 1.0);
             const auto y1 = kTrackTop;
             const auto y2 = kTrackTop + trackHeight;
             setVertex(vertices[vertexIndex++], x1, y1, color);
             setVertex(vertices[vertexIndex++], x2, y1, color);
-            setVertex(vertices[vertexIndex++], x1, y2, color);
-            setVertex(vertices[vertexIndex++], x1, y2, color);
             setVertex(vertices[vertexIndex++], x2, y1, color);
             setVertex(vertices[vertexIndex++], x2, y2, color);
+            setVertex(vertices[vertexIndex++], x2, y2, color);
+            setVertex(vertices[vertexIndex++], x1, y2, color);
+            setVertex(vertices[vertexIndex++], x1, y2, color);
+            setVertex(vertices[vertexIndex++], x1, y1, color);
         }
 
         auto* clipNode = new QSGGeometryNode();
@@ -333,11 +331,11 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                         static_cast<qreal>(viewDuration);
                 if (left >= kHorizontalPadding && left <= width() - kHorizontalPadding) {
                     contentRoot->appendChildNode(new QSGSimpleRectNode(
-                        QRectF(left, kTrackTop, 4.0, trackHeight), QColor("#eef4ff")));
+                        QRectF(left, kTrackTop, 3.0, trackHeight), QColor("#f0c66a")));
                 }
                 if (right >= kHorizontalPadding && right <= width() - kHorizontalPadding) {
                     contentRoot->appendChildNode(new QSGSimpleRectNode(
-                        QRectF(right - 4.0, kTrackTop, 4.0, trackHeight), QColor("#eef4ff")));
+                        QRectF(right - 3.0, kTrackTop, 3.0, trackHeight), QColor("#f0c66a")));
                 }
                 break;
             }
@@ -401,7 +399,6 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
     }
     drag_clip_index_ = clipIndexAt(event->position().x());
     if (drag_clip_index_ < 0) {
-        seekAt(event->position().x());
         event->accept();
         return;
     }
@@ -532,7 +529,8 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
             return;
         }
         if (drag_mode_ == DragMode::none || drag_clip_index_ < 0) {
-            seekAt(event->position().x());
+            event->accept();
+            return;
         } else {
             const auto contentWidth = std::max<qreal>(1.0, width() - kHorizontalPadding * 2.0);
             drag_delta_ns_ = static_cast<qint64>(
@@ -612,8 +610,6 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
                 ? selected_clip_ids_
                 : QStringList{clipId};
             emit moveCommitted(movingIds, move_target_index_);
-        } else {
-            seekAt(event->position().x());
         }
     }
     drag_mode_ = DragMode::none;

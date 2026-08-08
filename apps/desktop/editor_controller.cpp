@@ -444,7 +444,6 @@ QVariantList EditorController::clips() const {
             }
         }
         value.insert("waveform", waveform);
-        value.insert("color", index % 2 == 0 ? "#343b43" : "#3a424b");
         result.push_back(value);
     }
     clips_cache_ = std::move(result);
@@ -505,7 +504,10 @@ QVariantList EditorController::captions() const {
             {"id", QString::fromStdString(caption.id)},
             {"text", QString::fromUtf8(caption.text)},
             {"timelineInNs", static_cast<qint64>(caption.timeline_in)},
-            {"durationNs", static_cast<qint64>(caption.duration)}});
+            {"durationNs", static_cast<qint64>(caption.duration)},
+            {"positionX", caption.position_x},
+            {"positionY", caption.position_y},
+            {"fontSize", caption.font_size}});
     }
     captions_cache_ = std::move(result);
     return captions_cache_.value();
@@ -606,6 +608,12 @@ int EditorController::selectedCaptionDurationMs() const noexcept {
     return found == timeline_.captions().end()
         ? 0
         : static_cast<int>(found->duration / 1'000'000);
+}
+
+int EditorController::selectedCaptionFontSize() const noexcept {
+    const auto id = selected_caption_id_.toStdString();
+    const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
+    return found == timeline_.captions().end() ? 44 : found->font_size;
 }
 
 void EditorController::attachVideoItem(QObject* item) {
@@ -1187,20 +1195,30 @@ void EditorController::trimAllClipEdges(int frontFrames, int backFrames) {
 }
 
 void EditorController::addCaptionAtPlayhead() {
+    addTextOverlay(QStringLiteral("새 문구"), 2000);
+}
+
+void EditorController::addTextOverlay(const QString& text, int durationMs) {
     if (durationNs() <= 0 || playhead_ns_ >= durationNs()) return;
     try {
+        const auto cleaned = text.trimmed();
+        if (cleaned.isEmpty()) throw std::invalid_argument("문구를 입력하세요");
         std::string id;
         do {
             id = "caption-" + std::to_string(++generated_caption_id_);
         } while (std::ranges::any_of(
             timeline_.captions(), [&id](const auto& caption) { return caption.id == id; }));
         const auto start = timeline_.nearest_frame_time(playhead_ns_).value_or(playhead_ns_);
-        const auto duration = std::min<ffgui::TimeNs>(2'000'000'000, durationNs() - start);
-        timeline_.add_caption(ffgui::CaptionCue{id, "새 자막", start, duration});
+        const auto available = durationNs() - start;
+        const auto duration = std::clamp<ffgui::TimeNs>(
+            static_cast<ffgui::TimeNs>(durationMs) * 1'000'000,
+            std::min<ffgui::TimeNs>(100'000'000, available), available);
+        timeline_.add_caption(ffgui::CaptionCue{
+            id, cleaned.toUtf8().toStdString(), start, duration, 0.5, 0.5, 44});
         selected_caption_id_ = QString::fromStdString(id);
         publishTimeline();
         emit captionSelectionChanged();
-        setStatus("현재 위치에 자막을 추가했습니다");
+        setStatus("현재 위치에 문구를 추가했습니다. 화면에서 끌어 배치하세요");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
     }
@@ -1234,6 +1252,41 @@ void EditorController::updateSelectedCaption(const QString& text, int durationMs
         publishTimeline();
         emit captionSelectionChanged();
         setStatus("자막을 수정했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::updateCaptionPosition(
+    const QString& captionId,
+    qreal positionX,
+    qreal positionY) {
+    const auto id = captionId.toStdString();
+    const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
+    if (found == timeline_.captions().end()) return;
+    try {
+        auto replacement = *found;
+        replacement.position_x = std::clamp<double>(positionX, 0.0, 1.0);
+        replacement.position_y = std::clamp<double>(positionY, 0.0, 1.0);
+        timeline_.update_caption(std::move(replacement));
+        selected_caption_id_ = captionId;
+        publishTimeline();
+        setStatus("문구 위치를 변경했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::setSelectedCaptionFontSize(int pixels) {
+    const auto id = selected_caption_id_.toStdString();
+    const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
+    if (found == timeline_.captions().end()) return;
+    try {
+        auto replacement = *found;
+        replacement.font_size = std::clamp(pixels, 12, 160);
+        timeline_.update_caption(std::move(replacement));
+        publishTimeline();
+        setStatus("문구 크기를 변경했습니다");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
     }
@@ -1457,14 +1510,23 @@ void EditorController::saveProject(const QString& path) {
                 {"id", QString::fromStdString(caption.id)},
                 {"text", QString::fromUtf8(caption.text)},
                 {"timelineInNs", timeString(caption.timeline_in)},
-                {"durationNs", timeString(caption.duration)}});
+                {"durationNs", timeString(caption.duration)},
+                {"positionX", caption.position_x},
+                {"positionY", caption.position_y},
+                {"fontSize", caption.font_size}});
         }
+        const QJsonObject stamp{
+            {"enabled", stamp_enabled_},
+            {"worker", stamp_worker_},
+            {"information", stamp_information_},
+            {"barPercent", stamp_bar_percent_}};
         const QJsonDocument document(QJsonObject{
             {"format", "ffmpegGUI-next"},
             {"version", 1},
             {"assets", assets},
             {"clips", clips},
-            {"captions", captions}});
+            {"captions", captions},
+            {"stamp", stamp}});
 
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly) || file.write(document.toJson()) < 0 || !file.commit()) {
@@ -1553,17 +1615,26 @@ void EditorController::loadProject(const QString& path) {
                 object.value("id").toString().toStdString(),
                 object.value("text").toString().toUtf8().toStdString(),
                 parseTime(object.value("timelineInNs"), "timelineInNs"),
-                parseTime(object.value("durationNs"), "captionDurationNs")});
+                parseTime(object.value("durationNs"), "captionDurationNs"),
+                object.contains("positionX") ? object.value("positionX").toDouble() : 0.5,
+                object.contains("positionY") ? object.value("positionY").toDouble() : 0.5,
+                object.contains("fontSize") ? object.value("fontSize").toInt() : 44});
         }
+        const auto stamp = root.value("stamp").toObject();
         loaded.clear_history();
         timeline_ = std::move(loaded);
         thumbnail_atlases_ = std::move(loadedAtlases);
         thumbnail_images_.clear();
         waveform_cache_.clear();
+        stamp_enabled_ = stamp.value("enabled").toBool(false);
+        stamp_worker_ = stamp.value("worker").toString();
+        stamp_information_ = stamp.value("information").toString();
+        stamp_bar_percent_ = std::clamp(stamp.value("barPercent").toInt(9), 4, 25);
         setSingleSelection(timeline_.clips().empty()
             ? QString{}
             : QString::fromStdString(timeline_.clips().front().id));
         publishTimeline(true);
+        emit graphicsChanged();
         setStatus("프로젝트 불러오기 완료");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -1623,6 +1694,34 @@ void EditorController::setExportFrameRate(int frameRate) {
     if (export_frame_rate_ == frameRate) return;
     export_frame_rate_ = frameRate;
     emit exportSettingsChanged();
+}
+
+void EditorController::setStampEnabled(bool enabled) {
+    if (stamp_enabled_ == enabled) return;
+    stamp_enabled_ = enabled;
+    emit graphicsChanged();
+    setStatus(enabled ? "스탬프를 표시합니다" : "스탬프를 숨겼습니다");
+}
+
+void EditorController::setStampWorker(const QString& worker) {
+    const auto cleaned = worker.trimmed();
+    if (stamp_worker_ == cleaned) return;
+    stamp_worker_ = cleaned;
+    emit graphicsChanged();
+}
+
+void EditorController::setStampInformation(const QString& information) {
+    const auto cleaned = information.trimmed();
+    if (stamp_information_ == cleaned) return;
+    stamp_information_ = cleaned;
+    emit graphicsChanged();
+}
+
+void EditorController::setStampBarPercent(int percent) {
+    percent = std::clamp(percent, 4, 25);
+    if (stamp_bar_percent_ == percent) return;
+    stamp_bar_percent_ = percent;
+    emit graphicsChanged();
 }
 
 QString EditorController::exportExtension() const {
@@ -1745,8 +1844,18 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     }
     for (const auto& caption : timeline_.captions()) {
         request.captions.push_back(ffgui::ExportCaptionInput{
-            caption.text, caption.timeline_in, caption.duration});
+            caption.text,
+            caption.timeline_in,
+            caption.duration,
+            caption.position_x,
+            caption.position_y,
+            caption.font_size});
     }
+    request.stamp = ffgui::ExportStampInput{
+        stamp_enabled_,
+        stamp_worker_.toUtf8().toStdString(),
+        stamp_information_.toUtf8().toStdString(),
+        stamp_bar_percent_};
     const auto exportCache = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
         .filePath("export-jobs");
     QDir().mkpath(exportCache);

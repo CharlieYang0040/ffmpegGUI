@@ -62,7 +62,6 @@ int main(int argc, char* argv[]) {
         clip.insert("sourceInNs", 0);
         clip.insert("durationNs", clipDuration);
         clip.insert("assetDurationNs", clipDuration);
-        clip.insert("color", index % 2 == 0 ? "#343b43" : "#3a424b");
         clips.push_back(clip);
     }
     timeline.setClips(clips);
@@ -91,6 +90,8 @@ int main(int argc, char* argv[]) {
     timeline.release(QPointF{300, 80});
     require(selectionEvents == 1,
             "clip body click must select instead of entering a separate scrub tool");
+    require(seekEvents == 3,
+            "clip body click must not move the playhead or request a seek");
 
     auto* root = timeline.render(nullptr);
     require(root != nullptr, "timeline must create a scene graph root");

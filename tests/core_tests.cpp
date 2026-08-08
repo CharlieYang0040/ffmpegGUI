@@ -661,7 +661,8 @@ void test_ffmpeg_export_plan_burns_timeline_captions() {
         std::filesystem::path{"result.mp4"},
         ffgui::ExportVideoEncoder::libx264};
     request.concat_script_path = std::filesystem::path{"job.ffconcat"};
-    request.captions = {{"첫 줄\nsecond", 500'000'000, 1'250'000'000}};
+    request.captions = {{"첫 줄\nsecond", 500'000'000, 1'250'000'000, 0.25, 0.35, 52}};
+    request.stamp = {true, "편집자", "검수본 v2", 10};
     request.subtitle_script_path = std::filesystem::path{"D:/cache/job.ass"};
     const auto plan = ffgui::compile_ffmpeg_export(request);
     require(plan.mode == ffgui::ExportMode::transcode,
@@ -670,10 +671,16 @@ void test_ffmpeg_export_plan_burns_timeline_captions() {
     for (const auto& argument : plan.arguments) arguments += argument + '\n';
     require(arguments.contains("ass=filename='D\\:/cache/job.ass'"),
             "caption ASS file must be attached to the video graph");
-    require(plan.subtitle_script.contains("Dialogue: 0,0:00:00.50,0:00:01.75"),
+    require(plan.subtitle_script.contains("Dialogue: 2,0:00:00.50,0:00:01.75"),
             "caption timestamps must retain centisecond ASS precision");
+    require(plan.subtitle_script.contains("\\pos(320,252)\\fs52"),
+            "caption drag coordinates and font size must reach the ASS script");
     require(plan.subtitle_script.contains("첫 줄\\Nsecond"),
             "caption text and line breaks must reach the ASS script");
+    require(plan.subtitle_script.contains("작업자  편집자") &&
+            plan.subtitle_script.contains("검수본 v2") &&
+            plan.subtitle_script.contains("00:00:00"),
+            "letterbox stamp metadata and timecode must reach the ASS script");
 }
 
 void test_ffmpeg_export_plan_applies_video_and_audio_speed() {

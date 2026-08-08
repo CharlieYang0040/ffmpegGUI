@@ -70,7 +70,7 @@ $streams = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
 if ($streams -notcontains "video" -or $streams -notcontains "audio") {
     throw "exported timeline must contain both video and audio streams"
 }
-Write-Output "Timeline export passed: rapid split/undo/redo, 300ms dissolve, clip audio and burned captions produced a validated $exportDuration second MP4"
+Write-Output "Timeline export passed: rapid split/undo/redo, 300ms dissolve, clip audio, positioned text and letterbox stamp produced a validated $exportDuration second MP4"
 
 if (Test-Path -LiteralPath $hevcExportOutput -PathType Leaf) {
     Remove-Item -LiteralPath $hevcExportOutput -Force
@@ -111,6 +111,9 @@ $copyData.clips = @(
     [pscustomobject]@{ id = "copy-b"; assetId = $assetId; sourceInNs = "2000000000"; durationNs = $copyTailDuration }
 )
 $copyData.captions = @()
+if ($null -ne $copyData.stamp) {
+    $copyData.stamp.enabled = $false
+}
 [IO.File]::WriteAllText(
     $copyProject,
     ($copyData | ConvertTo-Json -Depth 8),

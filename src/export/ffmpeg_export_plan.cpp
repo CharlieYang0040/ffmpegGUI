@@ -46,7 +46,8 @@ std::pair<TimeNs, TimeNs> normalized_fades(const ExportClipInput& clip) {
 
 bool can_stream_copy(const ExportRequest& request) {
     if (!request.prefer_stream_copy || request.concat_script_path.empty() ||
-        request.clips.empty() || !request.captions.empty() || request.output_width > 0 ||
+        request.clips.empty() || !request.captions.empty() || request.stamp.enabled ||
+        request.output_width > 0 ||
         request.output_height > 0 || request.output_fps > 0) {
         return false;
     }
@@ -180,9 +181,17 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
     }
     for (const auto& caption : request.captions) {
         if (caption.text.empty() || caption.timeline_in < 0 || caption.duration <= 0 ||
-            checked_add(caption.timeline_in, caption.duration) > plan.duration) {
+            checked_add(caption.timeline_in, caption.duration) > plan.duration ||
+            !std::isfinite(caption.position_x) || !std::isfinite(caption.position_y) ||
+            caption.position_x < 0.0 || caption.position_x > 1.0 ||
+            caption.position_y < 0.0 || caption.position_y > 1.0 ||
+            caption.font_size < 12 || caption.font_size > 160) {
             throw std::invalid_argument("export caption is outside the timeline or empty");
         }
+    }
+    if (request.stamp.enabled &&
+        (request.stamp.bar_percent < 4 || request.stamp.bar_percent > 25)) {
+        throw std::invalid_argument("export stamp bar size is invalid");
     }
     if (can_stream_copy(request)) {
         plan.mode = ExportMode::stream_copy;
@@ -273,11 +282,12 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         videoLabel = nextVideo;
         audioLabel = nextAudio;
     }
-    if (request.captions.empty()) {
+    const bool hasGraphics = !request.captions.empty() || request.stamp.enabled;
+    if (!hasGraphics) {
         filter += "[" + videoLabel + "]null[vout];[" + audioLabel + "]anull[aout]";
     } else {
         if (request.subtitle_script_path.empty()) {
-            throw std::invalid_argument("caption export requires an ASS script path");
+            throw std::invalid_argument("graphic overlay export requires an ASS script path");
         }
         filter += "[" + videoLabel + "]null[vbase];[" + audioLabel +
                   "]anull[aout];[vbase]ass=filename='" +
@@ -292,10 +302,53 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
             "Style: Default,Malgun Gothic,36,&H00FFFFFF,&H000000FF,&H00101010,"
             "&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,40,40,42,1\n\n[Events]\n"
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
+        if (request.stamp.enabled) {
+            const auto barHeight = 720 * request.stamp.bar_percent / 100;
+            const auto bottom = 720 - barHeight;
+            const auto end = ass_time(plan.duration);
+            const auto rectangle = [](int top, int bottomValue) {
+                return std::string{"{\\an7\\pos(0,0)\\p1\\bord0\\shad0\\1c&H000000&\\1a&H18&}m 0 "} +
+                    std::to_string(top) + " l 1280 " + std::to_string(top) + " 1280 " +
+                    std::to_string(bottomValue) + " 0 " + std::to_string(bottomValue);
+            };
+            plan.subtitle_script += "Dialogue: 0,0:00:00.00," + end +
+                ",Default,,0,0,0,," + rectangle(0, barHeight) + '\n';
+            plan.subtitle_script += "Dialogue: 0,0:00:00.00," + end +
+                ",Default,,0,0,0,," + rectangle(bottom, 720) + '\n';
+            if (!request.stamp.information.empty()) {
+                plan.subtitle_script += "Dialogue: 1,0:00:00.00," + end +
+                    ",Default,,0,0,0,,{\\an4\\pos(28," + std::to_string(barHeight / 2) +
+                    ")\\fs24}" + ass_text(request.stamp.information) + '\n';
+            }
+            if (!request.stamp.worker.empty()) {
+                plan.subtitle_script += "Dialogue: 1,0:00:00.00," + end +
+                    ",Default,,0,0,0,,{\\an6\\pos(1252," + std::to_string(barHeight / 2) +
+                    ")\\fs24}작업자  " + ass_text(request.stamp.worker) + '\n';
+            }
+            for (TimeNs start = 0; start < plan.duration; start += kNanosecondsPerSecond) {
+                const auto finish = std::min(
+                    checked_add(start, kNanosecondsPerSecond), plan.duration);
+                const auto secondsValue = start / kNanosecondsPerSecond;
+                std::ostringstream timecode;
+                timecode << std::setw(2) << std::setfill('0') << secondsValue / 3600 << ':'
+                         << std::setw(2) << (secondsValue / 60) % 60 << ':'
+                         << std::setw(2) << secondsValue % 60;
+                plan.subtitle_script += "Dialogue: 1," + ass_time(start) + ',' +
+                    ass_time(finish) + ",Default,,0,0,0,,{\\an6\\pos(1252," +
+                    std::to_string(bottom + barHeight / 2) + ")\\fs24}" +
+                    timecode.str() + '\n';
+            }
+        }
         for (const auto& caption : request.captions) {
-            plan.subtitle_script += "Dialogue: 0," + ass_time(caption.timeline_in) + ',' +
+            const auto x = std::clamp(
+                static_cast<int>(std::lround(caption.position_x * 1280)), 0, 1280);
+            const auto y = std::clamp(
+                static_cast<int>(std::lround(caption.position_y * 720)), 0, 720);
+            plan.subtitle_script += "Dialogue: 2," + ass_time(caption.timeline_in) + ',' +
                 ass_time(checked_add(caption.timeline_in, caption.duration)) +
-                ",Default,,0,0,0,," + ass_text(caption.text) + '\n';
+                ",Default,,0,0,0,,{\\an5\\pos(" + std::to_string(x) + ',' +
+                std::to_string(y) + ")\\fs" + std::to_string(caption.font_size) + "}" +
+                ass_text(caption.text) + '\n';
         }
     }
     plan.arguments.insert(
