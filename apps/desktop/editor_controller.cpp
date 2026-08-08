@@ -284,6 +284,13 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                     playing_ = nowPlaying;
                     emit playingChanged();
                 }
+                if (state == ffgui::PlaybackState::stopped && preview_should_play_ &&
+                    durationNs() > 0 && playhead_ns_ >= durationNs()) {
+                    playhead_ns_ = 0;
+                    emit playheadChanged();
+                    pending_preview_seek_ = 0;
+                    queuePreviewOperation(false);
+                }
             },
             Qt::QueuedConnection);
     });
@@ -412,7 +419,7 @@ QVariantList EditorController::clips() const {
         const auto& span = spans[index];
         QVariantMap value;
         value.insert("id", QString::fromStdString(span.clip.id));
-        value.insert("name", QString::fromStdWString(span.source_path.stem().wstring()));
+        value.insert("name", QString::fromStdWString(span.source_path.filename().wstring()));
         value.insert("timelineInNs", static_cast<qint64>(span.timeline_in));
         value.insert("sourceInNs", static_cast<qint64>(span.clip.source_in));
         value.insert("durationNs", static_cast<qint64>(span.timeline_out - span.timeline_in));

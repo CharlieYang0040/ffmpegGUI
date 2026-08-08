@@ -141,6 +141,7 @@ int main(int argc, char* argv[]) {
     QString exportProjectSmoke;
     QString exportProjectOutput;
     bool playbackSmoke = false;
+    bool loopSmoke = false;
     bool offscreenPresentationSmoke = false;
     bool hevcExportSmoke = false;
     const auto arguments = application.arguments();
@@ -151,6 +152,10 @@ int main(int argc, char* argv[]) {
         }
         if (arguments[index] == "--playback-smoke") {
             playbackSmoke = true;
+            continue;
+        }
+        if (arguments[index] == "--loop-smoke") {
+            loopSmoke = true;
             continue;
         }
         if (arguments[index] == "--offscreen-presentation-smoke") {
@@ -522,9 +527,9 @@ int main(int argc, char* argv[]) {
         QTimer::singleShot(850, &controller, [&controller] { controller.scrub(500'000'000, true); });
         QTimer::singleShot(1100, &controller, &EditorController::togglePlayback);
         QTimer::singleShot(
-            5000,
+            loopSmoke ? 9000 : 5000,
             &application,
-            [&application, &controller, offscreenPresentationSmoke] {
+            [&application, &controller, offscreenPresentationSmoke, loopSmoke] {
                 qInfo().noquote() << "playback smoke counters"
                                   << "received=" << controller.videoFramesReceived()
                                   << "delivered=" << controller.videoFramesDelivered()
@@ -534,6 +539,10 @@ int main(int argc, char* argv[]) {
                                   << "playhead_ns=" << controller.playheadNs()
                                   << "failed=" << controller.previewFailed();
                 if (controller.previewFailed()) application.exit(14);
+                else if (loopSmoke &&
+                         (!controller.playing() || controller.playheadNs() >= controller.durationNs())) {
+                    application.exit(17);
+                }
                 else if (controller.playheadNs() <= 750'000'000) application.exit(10);
                 else if (controller.inProcessPreview() && controller.videoFramesReceived() < 10) application.exit(11);
                 else if (controller.inProcessPreview() && controller.videoFramesDelivered() < 10) application.exit(12);

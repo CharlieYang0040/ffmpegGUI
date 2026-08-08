@@ -79,6 +79,13 @@ $videoSize = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
 if ($videoSize.Trim() -ne "1280x848") {
     throw "expanded stamp must preserve 1280x720 video pixels and add 64px bars: $videoSize"
 }
+$frameHashes = @(& (Join-Path $root ".tools\ffmpeg\bin\ffmpeg.exe") `
+    -hide_banner -loglevel error -ss 1.68 -i $exportOutput -t 0.34 `
+    -vf "fps=30" -f framemd5 - 2>$null | Where-Object { $_ -match '^[0-9]+,' } |
+    ForEach-Object { ($_ -split ',')[-1].Trim() })
+if (($frameHashes | Sort-Object -Unique).Count -lt 4) {
+    throw "video dissolve froze instead of producing changing transition frames"
+}
 Write-Output "Timeline export passed: rapid split/undo/redo, 300ms dissolve, clip audio, positioned text and letterbox stamp produced a validated $exportDuration second MP4"
 
 if (Test-Path -LiteralPath $hevcExportOutput -PathType Leaf) {
@@ -145,12 +152,12 @@ if ($copyDuration -lt 2.9 -or $copyDuration -gt 3.2) {
 Write-Output "Stream-copy passed: two keyframe-aligned cuts were remuxed without re-encoding"
 
 $playback = Start-Process -FilePath $application `
-    -ArgumentList @("--playback-smoke", $clipA, $clipB, $clipVfr) `
+    -ArgumentList @("--playback-smoke", "--loop-smoke", $clipA, $clipB, $clipVfr) `
     -WindowStyle Hidden -Wait -PassThru
 if ($playback.ExitCode -ne 0) {
     throw "deferred preview rebuild playback failed with code $($playback.ExitCode)"
 }
-Write-Output "Preview refresh passed: deferred rebuild was ready before sequence playback"
+Write-Output "Preview refresh and end loop passed: playback continued from the sequence start after EOS"
 
 $previousCpuPreview = $env:FFGUI_FORCE_CPU_PREVIEW
 try {

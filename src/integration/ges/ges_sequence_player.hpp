@@ -96,6 +96,8 @@ private:
     StateCallback state_callback_;
     ErrorCallback error_callback_;
     std::function<void(PreviewVideoFrame)> video_frame_callback_;
+    mutable std::mutex cut_points_mutex_;
+    std::vector<TimeNs> hard_cut_points_;
     std::atomic<void*> d3d11_device_handle_{nullptr};
     std::atomic<std::uint64_t> video_frame_serial_{0};
     std::atomic<TimeNs> duration_ns_{0};

@@ -220,6 +220,13 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         return plan;
     }
 
+    const bool hasTransitions = std::ranges::any_of(
+        request.clips,
+        [](const ExportClipInput& clip) { return clip.transition_in > 0; });
+    // xfade requires both inputs to use a constant, identical frame rate.  Keeping VFR
+    // timestamps here can make framesync hold the outgoing clip throughout the dissolve.
+    const auto compositionFps = request.output_fps > 0
+        ? request.output_fps : (hasTransitions ? 30 : 0);
     std::string filter;
     for (std::size_t index = 0; index < request.clips.size(); ++index) {
         const auto& clip = request.clips[index];
@@ -237,16 +244,23 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
                 std::to_string(request.output_width) + ":" +
                 std::to_string(request.output_height) + ":(ow-iw)/2:(oh-ih)/2,setsar=1,";
         }
-        if (request.output_fps > 0) {
-            filter += "fps=" + std::to_string(request.output_fps) + ",";
-        }
         if (clip.brightness != 0.0 || clip.contrast != 1.0 || clip.saturation != 1.0) {
             filter += "eq=brightness=" + decimal(clip.brightness) +
                 ":contrast=" + decimal(clip.contrast) +
                 ":saturation=" + decimal(clip.saturation) + ",";
         }
         filter += "settb=AVTB,setpts=(PTS-STARTPTS)/" + decimal(clip.playback_rate) +
-                  "[v" + suffix + "];";
+                  ",trim=duration=" + seconds(clip.timeline_duration());
+        if (compositionFps > 0) {
+            filter += ",fps=" + std::to_string(compositionFps) +
+                      ":round=near:eof_action=pass"
+                      ",tpad=stop_mode=clone:stop_duration=" +
+                      decimal(1.0 / static_cast<double>(compositionFps)) +
+                      ",trim=duration=" + seconds(clip.timeline_duration());
+        }
+        // Rebase once more after trim/fps so every xfade input starts at zero with the
+        // same time base and pixel format, including MKV and VFR sources.
+        filter += ",format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[v" + suffix + "];";
         if (clip.has_audio) {
             filter += "[" + suffix + ":a:0]aresample=48000:async=1:first_pts=0,"
                       "apad=whole_dur=" + seconds(clip.duration) +

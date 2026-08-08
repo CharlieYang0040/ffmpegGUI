@@ -430,6 +430,19 @@ GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_d
     frame.pts = GST_BUFFER_PTS_IS_VALID(buffer)
         ? static_cast<TimeNs>(GST_BUFFER_PTS(buffer))
         : 0;
+    if (player->state_.load(std::memory_order_acquire) == PlaybackState::playing) {
+        std::scoped_lock cutLock(player->cut_points_mutex_);
+        // One output frame can be timestamped just before or after the logical cut.
+        constexpr TimeNs cutGuard = 20'000'000;
+        const auto atHardCut = std::ranges::any_of(
+            player->hard_cut_points_,
+            [pts = frame.pts](TimeNs cut) { return std::abs(pts - cut) <= cutGuard; });
+        if (atHardCut) {
+            // GES can briefly emit its compositor background exactly at a zero-length cut.
+            // Keep the previous presented frame until the next clip's first real frame.
+            return GST_FLOW_OK;
+        }
+    }
     if (gst_is_d3d11_memory(memory)) {
         auto* d3dMemory = GST_D3D11_MEMORY_CAST(memory);
         D3D11_TEXTURE2D_DESC description{};
@@ -493,7 +506,19 @@ void GesSequencePlayer::rebuild_pipeline_locked(
     destroy_pipeline_locked();
     if (spans.empty()) {
         duration_ns_.store(0);
+        std::scoped_lock cutLock(cut_points_mutex_);
+        hard_cut_points_.clear();
         return;
+    }
+
+    {
+        std::scoped_lock cutLock(cut_points_mutex_);
+        hard_cut_points_.clear();
+        for (std::size_t index = 1; index < spans.size(); ++index) {
+            if (spans[index].clip.transition_in == 0) {
+                hard_cut_points_.push_back(spans[index].timeline_in);
+            }
+        }
     }
 
     auto* new_timeline = ges_timeline_new_audio_video();
@@ -744,6 +769,7 @@ void GesSequencePlayer::monitor(std::stop_token stop_token) {
                         current_position = duration_ns_.load();
                         position_ns_.store(current_position);
                         state_.store(PlaybackState::stopped);
+                        position_available = true;
                         state_changed = true;
                     } else if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
                         GError* error = nullptr;

@@ -24,9 +24,10 @@ ApplicationWindow {
     property bool showOutputNode: true
     property bool showAudioNode: true
     property bool showEffectsNode: false
-    property bool showGraphicsNode: true
+    property bool showGraphicsNode: false
     property bool showGlobalTrimNode: false
     property bool showOutputSettingsNode: false
+    property string expandedNode: ""
 
     function durationText(nanoseconds) {
         const totalSeconds = Math.max(0, Math.floor(nanoseconds / 1000000000))
@@ -84,9 +85,10 @@ ApplicationWindow {
 
     component InspectorNode: Rectangle {
         id: node
+        property string nodeKey
         property string title
         property string summary
-        property bool expanded: false
+        readonly property bool expanded: root.expandedNode === nodeKey
         signal removeRequested()
         default property alias nodeContent: body.data
         Layout.fillWidth: true
@@ -132,7 +134,9 @@ ApplicationWindow {
                     }
                 }
                 HoverHandler { id: headerMouse }
-                TapHandler { onTapped: node.expanded = !node.expanded }
+                TapHandler {
+                    onTapped: root.expandedNode = node.expanded ? "" : node.nodeKey
+                }
             }
             ColumnLayout {
                 id: body
@@ -529,6 +533,7 @@ ApplicationWindow {
                         readonly property real videoHeight: height - expandedBarHeight * 2
 
                         Loader {
+                            id: previewVideoLoader
                             x: 0
                             y: previewSurface.videoTop
                             width: parent.width
@@ -569,46 +574,86 @@ ApplicationWindow {
                                 : height * EditorController.stampBarPercent / 100
 
                             Rectangle {
+                                id: topStampBar
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.top: parent.top
                                 height: parent.stampBarHeight
-                                color: Qt.rgba(0, 0, 0, EditorController.stampOpacity / 100)
+                                color: EditorController.stampMode === 0
+                                       ? Qt.rgba(0, 0, 0, EditorController.stampOpacity / 100)
+                                       : "transparent"
                                 visible: EditorController.stampEnabled
+                                ShaderEffectSource {
+                                    anchors.fill: parent
+                                    visible: EditorController.stampMode === 1 &&
+                                             EditorController.inProcessPreview
+                                    sourceItem: previewVideoLoader
+                                    sourceRect: Qt.rect(
+                                        0, 0, previewVideoLoader.width,
+                                        Math.max(1, previewVideoLoader.height * previewSurface.stampRatio))
+                                    live: true
+                                    recursive: true
+                                }
+                                Rectangle {
+                                    anchors.fill: parent
+                                    visible: EditorController.stampMode === 1
+                                    color: Qt.rgba(0, 0, 0, EditorController.stampOpacity / 100)
+                                }
                                 Label {
                                     anchors.left: parent.left
-                                    anchors.leftMargin: 14
+                                    anchors.leftMargin: Math.max(10, parent.width * 28 / 1280)
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: EditorController.stampInformation
                                     color: "white"
-                                    font.pixelSize: Math.max(11, parent.height * 0.36)
+                                    font.pixelSize: Math.max(10, parent.width * 24 / 1280)
                                 }
                                 Label {
                                     anchors.right: parent.right
-                                    anchors.rightMargin: 14
+                                    anchors.rightMargin: Math.max(10, parent.width * 28 / 1280)
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: EditorController.stampWorker.length > 0
                                           ? "작업자  " + EditorController.stampWorker : ""
                                     color: "white"
-                                    font.pixelSize: Math.max(11, parent.height * 0.36)
+                                    font.pixelSize: Math.max(10, parent.width * 24 / 1280)
                                 }
                             }
                             Rectangle {
+                                id: bottomStampBar
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.bottom: parent.bottom
                                 height: parent.stampBarHeight
-                                color: Qt.rgba(0, 0, 0, EditorController.stampOpacity / 100)
+                                color: EditorController.stampMode === 0
+                                       ? Qt.rgba(0, 0, 0, EditorController.stampOpacity / 100)
+                                       : "transparent"
                                 visible: EditorController.stampEnabled
+                                ShaderEffectSource {
+                                    anchors.fill: parent
+                                    visible: EditorController.stampMode === 1 &&
+                                             EditorController.inProcessPreview
+                                    sourceItem: previewVideoLoader
+                                    sourceRect: Qt.rect(
+                                        0,
+                                        Math.max(0, previewVideoLoader.height -
+                                                 previewVideoLoader.height * previewSurface.stampRatio),
+                                        previewVideoLoader.width,
+                                        Math.max(1, previewVideoLoader.height * previewSurface.stampRatio))
+                                    live: true
+                                    recursive: true
+                                }
+                                Rectangle {
+                                    anchors.fill: parent
+                                    visible: EditorController.stampMode === 1
+                                    color: Qt.rgba(0, 0, 0, EditorController.stampOpacity / 100)
+                                }
                                 Label {
                                     anchors.right: parent.right
-                                    anchors.rightMargin: 14
+                                    anchors.rightMargin: Math.max(10, parent.width * 28 / 1280)
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: EditorController.timeText(EditorController.playheadNs)
-                                          + "  ·  F" + EditorController.frameNumberAt(EditorController.playheadNs)
+                                    text: EditorController.timeText(EditorController.playheadNs).slice(0, 8)
                                     color: "white"
                                     font.family: "Consolas"
-                                    font.pixelSize: Math.max(11, parent.height * 0.34)
+                                    font.pixelSize: Math.max(10, parent.width * 24 / 1280)
                                 }
                             }
 
@@ -706,11 +751,14 @@ ApplicationWindow {
 
                     InspectorNode {
                         visible: root.showOutputNode
+                        nodeKey: "output"
                         title: "출력"
                         summary: EditorController.exporting
                                  ? EditorController.exportStage : "내보내기 실행과 진행 상황"
-                        expanded: true
-                        onRemoveRequested: root.showOutputNode = false
+                        onRemoveRequested: {
+                            root.showOutputNode = false
+                            if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
                         Label {
                             Layout.fillWidth: true
                             visible: EditorController.exporting
@@ -734,11 +782,14 @@ ApplicationWindow {
 
                     InspectorNode {
                         visible: root.showAudioNode
+                        nodeKey: "audio"
                         title: "오디오"
                         summary: EditorController.selectedClipIds.length > 0
                                  ? EditorController.selectedClipIds.length + "개 클립" : "클립을 선택하세요"
-                        expanded: EditorController.selectedClipIds.length > 0
-                        onRemoveRequested: root.showAudioNode = false
+                        onRemoveRequested: {
+                            root.showAudioNode = false
+                            if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
                         GridLayout {
                             Layout.fillWidth: true
                             columns: 2
@@ -787,10 +838,13 @@ ApplicationWindow {
 
                     InspectorNode {
                         visible: root.showEffectsNode
+                        nodeKey: "effects"
                         title: "이펙트"
                         summary: "디졸브 · Color Grading"
-                        expanded: true
-                        onRemoveRequested: root.showEffectsNode = false
+                        onRemoveRequested: {
+                            root.showEffectsNode = false
+                            if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
                         Label { text: "Color Grading"; font.bold: true }
                         GridLayout {
                             Layout.fillWidth: true; columns: 2
@@ -828,11 +882,14 @@ ApplicationWindow {
 
                     InspectorNode {
                         visible: root.showGraphicsNode
+                        nodeKey: "graphics"
                         title: "문구·스탬프"
                         summary: EditorController.stampMode === 1
                                  ? "문구 · 확장 스탬프" : "문구 · 오버레이 스탬프"
-                        expanded: true
-                        onRemoveRequested: root.showGraphicsNode = false
+                        onRemoveRequested: {
+                            root.showGraphicsNode = false
+                            if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
 
                         Label { text: "자유 문구"; font.bold: true }
                         TextField {
@@ -977,10 +1034,13 @@ ApplicationWindow {
 
                     InspectorNode {
                         visible: root.showGlobalTrimNode
+                        nodeKey: "globalTrim"
                         title: "전체 트림"
                         summary: "모든 클립의 앞·뒤를 프레임 단위로 정리"
-                        expanded: true
-                        onRemoveRequested: root.showGlobalTrimNode = false
+                        onRemoveRequested: {
+                            root.showGlobalTrimNode = false
+                            if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
                         GridLayout {
                             Layout.fillWidth: true; columns: 2
                             Label { text: "앞 프레임"; color: "#b4bdc8" }
@@ -999,10 +1059,13 @@ ApplicationWindow {
 
                     InspectorNode {
                         visible: root.showOutputSettingsNode
+                        nodeKey: "outputSettings"
                         title: "출력 설정"
                         summary: ["MP4", "MKV", "MOV"][EditorController.exportContainer]
-                        expanded: true
-                        onRemoveRequested: root.showOutputSettingsNode = false
+                        onRemoveRequested: {
+                            root.showOutputSettingsNode = false
+                            if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
                         Label { text: "화질"; color: "#b4bdc8" }
                         ComboBox { Layout.fillWidth: true; model: ["고화질", "균형", "용량 절약"]; currentIndex: EditorController.exportQuality; onActivated: EditorController.exportQuality = currentIndex }
                         Label { text: "코덱"; color: "#b4bdc8" }
@@ -1165,15 +1228,18 @@ ApplicationWindow {
                             function(clip) {
                                 const clipWidth = timelineThumbnails.contentWidth * clip.durationNs /
                                                   Math.max(1, timeline.viewportDurationNs)
-                                return clip.thumbnailAtlas.length > 0 && clipWidth >= 28 &&
+                                return clipWidth >= 24 &&
                                        clip.timelineInNs + clip.durationNs > timeline.viewportStartNs &&
                                        clip.timelineInNs < timeline.viewportStartNs +
                                                            timeline.viewportDurationNs
                             })
                         Repeater {
                             model: timelineThumbnails.visibleThumbnailClips
-                            delegate: Image {
+                            delegate: Item {
+                                id: clipCard
                                 required property var modelData
+                                readonly property bool selected:
+                                    EditorController.selectedClipIds.indexOf(modelData.id) >= 0
                                 x: 12 + timelineThumbnails.contentWidth *
                                    (modelData.timelineInNs - timeline.viewportStartNs) /
                                    Math.max(1, timeline.viewportDurationNs)
@@ -1181,23 +1247,77 @@ ApplicationWindow {
                                 width: timelineThumbnails.contentWidth * modelData.durationNs /
                                        Math.max(1, timeline.viewportDurationNs)
                                 height: Math.max(1, timelineThumbnails.height - 44)
-                                visible: modelData.thumbnailAtlas.length > 0 &&
-                                         x + width > 12 && x < timelineThumbnails.width - 12
-                                source: modelData.thumbnailAtlas.length > 0
-                                    ? "file:///" + modelData.thumbnailAtlas.replace(/\\/g, "/")
-                                    : ""
-                                sourceClipRect: modelData.assetDurationNs > 0
-                                    ? Qt.rect(
-                                        1920 * modelData.sourceInNs / modelData.assetDurationNs,
-                                        0,
-                                        Math.max(1, 1920 * modelData.sourceDurationNs /
-                                                     modelData.assetDurationNs),
-                                        90)
-                                    : Qt.rect(0, 0, 1920, 90)
-                                fillMode: Image.Stretch
-                                asynchronous: true
-                                cache: true
-                                opacity: 1.0
+                                visible: x + width > 12 && x < timelineThumbnails.width - 12
+                                clip: true
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    color: "#0b0b0b"
+                                    border.width: clipCard.selected ? 2 : 1
+                                    border.color: clipCard.selected ? "#f0c66a" : "#f4f4f4"
+                                }
+                                Image {
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    anchors.topMargin: 23
+                                    visible: modelData.thumbnailAtlas.length > 0
+                                    source: visible
+                                        ? "file:///" + modelData.thumbnailAtlas.replace(/\\/g, "/")
+                                        : ""
+                                    sourceClipRect: modelData.assetDurationNs > 0
+                                        ? Qt.rect(
+                                            1920 * modelData.sourceInNs / modelData.assetDurationNs,
+                                            0,
+                                            Math.max(1, 1920 * modelData.sourceDurationNs /
+                                                         modelData.assetDurationNs),
+                                            90)
+                                        : Qt.rect(0, 0, 1920, 90)
+                                    fillMode: Image.Stretch
+                                    asynchronous: true
+                                    cache: true
+                                }
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    height: 23
+                                    color: "#d9000000"
+                                    Label {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 10
+                                        anchors.rightMargin: 10
+                                        text: modelData.name
+                                        elide: Text.ElideMiddle
+                                        verticalAlignment: Text.AlignVCenter
+                                        color: "white"
+                                        font.pixelSize: 11
+                                        font.bold: clipCard.selected
+                                    }
+                                }
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: 7
+                                    color: clipCard.selected ? "#f0c66a" : "#e6ffffff"
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 1; height: 18; color: "#171717"
+                                    }
+                                }
+                                Rectangle {
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: 7
+                                    color: clipCard.selected ? "#f0c66a" : "#e6ffffff"
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 1; height: 18; color: "#171717"
+                                    }
+                                }
                             }
                         }
                     }

@@ -841,6 +841,12 @@ void test_ffmpeg_export_plan_compiles_video_and_audio_dissolve() {
             "video dissolve must use the cumulative overlap offset");
     require(arguments.contains("acrossfade=d=1.000000000:c1=tri:c2=tri"),
             "audio dissolve must match the video overlap duration");
+    require(arguments.contains("fps=30:round=near:eof_action=pass") &&
+            arguments.contains("tpad=stop_mode=clone") &&
+            arguments.contains("format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS"),
+            "VFR dissolve inputs must share a constant frame rate, time base and pixel format");
+    require(arguments.contains("trim=duration=4.000000000"),
+            "dissolve input normalization must preserve the exact clip duration");
 }
 
 }  // namespace
