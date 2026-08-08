@@ -5,6 +5,7 @@
 
 #include <QFile>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QDir>
 #include <QJsonArray>
@@ -264,10 +265,15 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
 
 void EditorController::setVideoWindow(QWindow* window) {
     video_window_ = window;
+}
+
+void EditorController::refreshVideoWindowHandle() {
     if (video_window_ == nullptr || use_d3d_scene_graph_) return;
     video_window_->create();
 #ifdef FFGUI_HAS_GES
-    player_->set_video_window_handle(static_cast<std::uintptr_t>(video_window_->winId()));
+    const auto handle = static_cast<std::uintptr_t>(video_window_->winId());
+    player_->set_video_window_handle(handle);
+    qInfo().noquote() << "native preview window attached handle=" << handle;
 #endif
 }
 
@@ -293,6 +299,8 @@ std::uint64_t EditorController::videoFramesReceived() const noexcept {
 
 QVariantList EditorController::clips() const {
     if (clips_cache_.has_value()) return clips_cache_.value();
+    QElapsedTimer elapsed;
+    elapsed.start();
     QVariantList result;
     const auto spans = timeline_.snapshot();
     for (std::size_t index = 0; index < spans.size(); ++index) {
@@ -331,11 +339,18 @@ QVariantList EditorController::clips() const {
         result.push_back(value);
     }
     clips_cache_ = std::move(result);
+    if (elapsed.elapsed() >= 50) {
+        qWarning().noquote() << "clip view-model rebuild was slow"
+                             << "elapsed_ms=" << elapsed.elapsed()
+                             << "clips=" << clips_cache_->size();
+    }
     return clips_cache_.value();
 }
 
 QVariantList EditorController::mediaAssets() const {
     if (media_assets_cache_.has_value()) return media_assets_cache_.value();
+    QElapsedTimer elapsed;
+    elapsed.start();
     std::vector<const ffgui::MediaAsset*> assets;
     assets.reserve(timeline_.assets().size());
     for (const auto& [id, asset] : timeline_.assets()) {
@@ -364,6 +379,11 @@ QVariantList EditorController::mediaAssets() const {
             {"useCount", useCount}});
     }
     media_assets_cache_ = std::move(result);
+    if (elapsed.elapsed() >= 50) {
+        qWarning().noquote() << "media view-model rebuild was slow"
+                             << "elapsed_ms=" << elapsed.elapsed()
+                             << "assets=" << media_assets_cache_->size();
+    }
     return media_assets_cache_.value();
 }
 
@@ -1508,6 +1528,13 @@ void EditorController::startPreviewOperation() {
             PreviewOperationResult result;
             result.generation = generation;
             result.rebuilt = rebuild;
+            QElapsedTimer elapsed;
+            elapsed.start();
+            qInfo().noquote() << "preview operation started"
+                              << "generation=" << generation
+                              << "rebuild=" << rebuild
+                              << "seek=" << seekTarget.value_or(-1)
+                              << "play=" << shouldPlay;
             try {
                 if (rebuild) player->set_timeline(std::move(spans), std::move(captions));
                 if (shouldStop) {
@@ -1527,12 +1554,19 @@ void EditorController::startPreviewOperation() {
             } catch (const std::exception& error) {
                 result.error = QString::fromUtf8(error.what());
             }
+            qInfo().noquote() << "preview operation finished"
+                              << "generation=" << generation
+                              << "success=" << result.success
+                              << "elapsed_ms=" << elapsed.elapsed()
+                              << "error=" << result.error;
             return result;
         }));
 #endif
 }
 
 void EditorController::publishTimeline(bool resetPlayhead) {
+    QElapsedTimer publishElapsed;
+    publishElapsed.start();
 #ifdef FFGUI_HAS_GES
     preview_should_play_ = false;
 #endif
@@ -1574,6 +1608,11 @@ void EditorController::publishTimeline(bool resetPlayhead) {
 #else
     setStatus(timeline_.clips().empty() ? "미디어를 추가하세요" : "재생 준비 완료");
 #endif
+    if (publishElapsed.elapsed() >= 50) {
+        qWarning().noquote() << "timeline publish blocked the UI"
+                             << "elapsed_ms=" << publishElapsed.elapsed()
+                             << "clips=" << timeline_.clips().size();
+    }
 }
 
 void EditorController::setStatus(QString status) {

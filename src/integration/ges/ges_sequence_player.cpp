@@ -126,6 +126,27 @@ void require_ges(bool condition, const char* message) {
     }
 }
 
+std::string take_bus_error(GstElement* element) {
+    auto* bus = gst_element_get_bus(element);
+    if (bus == nullptr) return {};
+    auto* message = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR);
+    gst_object_unref(bus);
+    if (message == nullptr) return {};
+    GError* error = nullptr;
+    gchar* debug = nullptr;
+    gst_message_parse_error(message, &error, &debug);
+    std::string detail;
+    if (error != nullptr && error->message != nullptr) detail = error->message;
+    if (debug != nullptr && *debug != '\0') {
+        if (!detail.empty()) detail += " | ";
+        detail += debug;
+    }
+    if (error != nullptr) g_error_free(error);
+    g_free(debug);
+    gst_message_unref(message);
+    return detail;
+}
+
 }  // namespace
 
 GesSequencePlayer::GesSequencePlayer(
@@ -191,6 +212,8 @@ void GesSequencePlayer::seek(TimeNs timeline_position) {
                    << " (current=" << gst_element_state_get_name(current)
                    << ", pending=" << gst_element_state_get_name(pending)
                    << ", result=" << static_cast<int>(prepareResult) << ')';
+            const auto busError = take_bus_error(pipeline);
+            if (!busError.empty()) detail << " | " << busError;
             throw std::runtime_error(detail.str());
         }
         state_.store(PlaybackState::paused);
@@ -309,8 +332,7 @@ void GesSequencePlayer::set_video_window_handle(std::uintptr_t window_handle) {
 }
 
 void GesSequencePlayer::set_d3d11_device(void* device) {
-    std::scoped_lock lock(mutex_);
-    d3d11_device_handle_ = device;
+    d3d11_device_handle_.store(device, std::memory_order_release);
 }
 
 void GesSequencePlayer::set_video_frame_callback(
@@ -499,9 +521,10 @@ void GesSequencePlayer::rebuild_pipeline_locked(
             throw std::runtime_error("failed to create GES pipeline");
         }
         gst_object_ref_sink(new_pipeline);
-        if (d3d11_device_handle_ != nullptr) {
+        const auto d3d11DeviceHandle = d3d11_device_handle_.load(std::memory_order_acquire);
+        if (d3d11DeviceHandle != nullptr) {
             auto* wrappedDevice = gst_d3d11_device_new_wrapped(
-                static_cast<ID3D11Device*>(d3d11_device_handle_));
+                static_cast<ID3D11Device*>(d3d11DeviceHandle));
             if (wrappedDevice != nullptr) {
                 auto* context = gst_d3d11_context_new(wrappedDevice);
                 gst_element_set_context(GST_ELEMENT(new_pipeline), context);
@@ -539,9 +562,9 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 throw std::runtime_error("missing video sink: " + video_sink_factory_);
             }
             gst_object_ref_sink(sink);
-            if (d3d11_device_handle_ != nullptr) {
+            if (d3d11DeviceHandle != nullptr) {
                 auto* wrappedDevice = gst_d3d11_device_new_wrapped(
-                    static_cast<ID3D11Device*>(d3d11_device_handle_));
+                    static_cast<ID3D11Device*>(d3d11DeviceHandle));
                 if (wrappedDevice != nullptr) {
                     auto* context = gst_d3d11_context_new(wrappedDevice);
                     gst_element_set_context(sink, context);

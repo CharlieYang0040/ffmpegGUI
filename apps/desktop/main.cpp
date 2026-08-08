@@ -17,7 +17,10 @@
 #include <qqml.h>
 
 #include <cmath>
+#include <atomic>
+#include <chrono>
 #include <memory>
+#include <thread>
 
 namespace {
 
@@ -65,6 +68,11 @@ QString initializeApplicationLog() {
     return path;
 }
 
+qint64 monotonicMilliseconds() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 void configureBundledGStreamer() {
     const auto applicationDir = QCoreApplication::applicationDirPath();
     const auto pluginDir = QDir(applicationDir).filePath("lib/gstreamer-1.0");
@@ -91,6 +99,28 @@ int main(int argc, char* argv[]) {
     application.setOrganizationName("CharlieYang0040");
     const auto logPath = initializeApplicationLog();
     qInfo().noquote() << "application started; log=" << logPath;
+    std::atomic<qint64> uiHeartbeat{monotonicMilliseconds()};
+    QTimer uiHeartbeatTimer;
+    uiHeartbeatTimer.setInterval(250);
+    QObject::connect(&uiHeartbeatTimer, &QTimer::timeout, &application, [&uiHeartbeat] {
+        uiHeartbeat.store(monotonicMilliseconds(), std::memory_order_relaxed);
+    });
+    uiHeartbeatTimer.start();
+    std::jthread uiWatchdog([&uiHeartbeat](std::stop_token stopToken) {
+        bool reported = false;
+        while (!stopToken.stop_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            const auto delay = monotonicMilliseconds() -
+                uiHeartbeat.load(std::memory_order_relaxed);
+            if (delay >= 2'000 && !reported) {
+                qWarning().noquote() << "UI event loop stalled for at least" << delay << "ms";
+                reported = true;
+            } else if (delay < 750 && reported) {
+                qInfo().noquote() << "UI event loop recovered";
+                reported = false;
+            }
+        }
+    });
     configureBundledGStreamer();
     QQuickStyle::setStyle("Basic");
     QWindow videoWindow;

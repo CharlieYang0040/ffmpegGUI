@@ -154,6 +154,7 @@ public slots:
     [[nodiscard]] bool outputExists(const QUrl& url) const;
     [[nodiscard]] QUrl uniqueOutputUrl(const QUrl& url) const;
     void attachVideoItem(QObject* item);
+    void refreshVideoWindowHandle();
 
 signals:
     void timelineChanged();

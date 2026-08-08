@@ -123,15 +123,27 @@
 - [x] 편집 도구를 재생·이력·컷·구간 그룹으로 재배치하고 hover/pressed/danger 상태 적용
 - [x] 타임라인 클립 hover 강조와 이동·트림 커서 피드백
 - [x] 클립별 QML 썸네일·자막 delegate 제거 및 자산별 파형 데이터 캐시
+- [x] 파형을 포함한 전체 QVariant 타임라인의 UI 스레드 깊은 비교 제거
+- [x] 기본 모드에서 실험용 D3D11 Scene Graph 객체·GPU 장치 경로 완전 격리
+- [x] 2초 UI 이벤트 루프 watchdog과 GES/Scene Graph/뷰 모델 구간별 지연 로그
 - [x] Qt 테스트 플랫폼을 실제 설치된 `windows` 플러그인으로 고정해 숨은 오류창 제거
 - [x] Debug 빌드, 28개 코어 회귀, Scene Graph, QML lint, 실제 GES/데스크톱 회귀 통과
 
 다음 구현 순서:
 
-1. 실제 사용자 미디어에서 prepare/seek 지연과 실패 로그 수집, 복구 상태기계 보강
-2. 편집 후 전체 GES 파이프라인 재생성을 자산·클립 단위 증분 갱신으로 축소
-3. 분할·리플 삭제·트림·이동·Undo/Redo 상호작용 회귀 확대
-4. 삽입/덮어쓰기 및 리플/롤링 트림의 기본 편집 모드 구현
-5. D3D11 미리보기의 Qt Scene Graph 내 고정 합성 경로 안정화
+1. `d3d11videosink` 네이티브 HWND 의존성을 제거한 인프로세스 appsink 미리보기 기준선
+2. CPU BGRA appsink로 안정성 기준을 먼저 세운 뒤 D3D11 Scene Graph 제로카피 교체
+3. 편집 후 전체 GES 파이프라인 재생성을 자산·클립 단위 증분 갱신으로 축소
+4. 분할·리플 삭제·트림·이동·Undo/Redo 상호작용 회귀 확대
+5. 삽입/덮어쓰기 및 리플/롤링 트림의 기본 편집 모드 구현
+
+현재 차단 증거:
+
+- 네이티브 `d3d11videosink`는 여러 GES 파이프라인 교체 뒤 Qt 컨테이너 HWND를 다시
+  열지 못해 `Failed to open window`와 `READY → PAUSED` 실패를 발생시킨다.
+- 실험용 D3D11 appsink는 파이프라인과 프레임 수신에는 성공하지만 Qt Scene Graph
+  presentation 회귀가 종료 코드 13으로 실패한다.
+- 따라서 네이티브 창 경로를 계속 보수하거나 검증되지 않은 제로카피 경로를 기본값으로
+  바꾸지 않고, 동일 appsink 계약의 CPU 프레임 기준선을 먼저 완성한다.
 
 자막·전환·효과 확장은 위 기본 편집기 완료 기준이 충족될 때까지 보류한다.

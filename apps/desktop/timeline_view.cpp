@@ -2,6 +2,8 @@
 
 #include <QColor>
 #include <QCursor>
+#include <QDebug>
+#include <QElapsedTimer>
 #include <QHoverEvent>
 #include <QMouseEvent>
 #include <QSGGeometryNode>
@@ -49,9 +51,8 @@ qint64 TimelineView::timelineTimeAt(qreal x) const {
 }
 
 void TimelineView::setClips(QVariantList clips) {
-    if (clips_ == clips) {
-        return;
-    }
+    // QML only publishes this property when the timeline revision changes. A deep QVariant
+    // comparison walks every clip and every waveform sample and can freeze the UI on large edits.
     clips_ = std::move(clips);
     timeline_geometry_dirty_ = true;
     emit clipsChanged();
@@ -131,6 +132,9 @@ void TimelineView::setSelectedClipIds(QStringList clipIds) {
 }
 
 QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
+    const bool rebuildingGeometry = timeline_geometry_dirty_;
+    QElapsedTimer geometryTimer;
+    if (rebuildingGeometry) geometryTimer.start();
     auto* root = oldNode != nullptr ? oldNode : new QSGNode();
     auto* contentRoot = root->firstChild();
     if (contentRoot == nullptr) {
@@ -326,6 +330,13 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
 
         }
         timeline_geometry_dirty_ = false;
+    }
+
+    if (rebuildingGeometry && geometryTimer.elapsed() >= 50) {
+        qWarning().noquote() << "timeline Scene Graph rebuild was slow"
+                             << "elapsed_ms=" << geometryTimer.elapsed()
+                             << "clips=" << clips_.size()
+                             << "zoom=" << zoom_level_;
     }
 
     const auto paintedViewEnd = painted_view_start_ns_ + painted_view_duration_ns_;

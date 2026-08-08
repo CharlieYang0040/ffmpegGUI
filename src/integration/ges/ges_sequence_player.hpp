@@ -92,7 +92,7 @@ private:
     StateCallback state_callback_;
     ErrorCallback error_callback_;
     std::function<void(D3D11VideoFrame)> video_frame_callback_;
-    void* d3d11_device_handle_{};
+    std::atomic<void*> d3d11_device_handle_{nullptr};
     std::atomic<std::uint64_t> video_frame_serial_{0};
     std::atomic<TimeNs> duration_ns_{0};
     std::atomic<TimeNs> position_ns_{0};

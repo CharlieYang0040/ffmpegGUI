@@ -361,16 +361,22 @@ ApplicationWindow {
                         Layout.fillHeight: true
                         clip: true
 
-                        D3D11VideoItem {
-                            id: videoPreview
+                        Loader {
                             anchors.fill: parent
-                            visible: EditorController.gpuSceneGraphPreview
-                            Component.onCompleted: EditorController.attachVideoItem(videoPreview)
+                            active: EditorController.gpuSceneGraphPreview
+                            sourceComponent: D3D11VideoItem {
+                                id: experimentalVideoPreview
+                                Component.onCompleted:
+                                    EditorController.attachVideoItem(experimentalVideoPreview)
+                            }
                         }
                         WindowContainer {
+                            id: nativePreviewContainer
                             anchors.fill: parent
                             visible: !EditorController.gpuSceneGraphPreview
                             window: EditorController.videoWindow
+                            Component.onCompleted: Qt.callLater(
+                                EditorController.refreshVideoWindowHandle)
                         }
                         Label {
                             anchors.centerIn: parent
