@@ -54,13 +54,14 @@ try {
 }
 
 $pluginNames = @(
-    "gstaudioconvert.dll", "gstaudiofx.dll", "gstaudiomixer.dll",
-    "gstaudioparsers.dll", "gstaudioresample.dll", "gstcompositor.dll",
+    "gstapp.dll", "gstaudioconvert.dll", "gstaudiofx.dll", "gstaudiomixer.dll",
+    "gstaudioparsers.dll", "gstaudioresample.dll", "gstaudiotestsrc.dll", "gstcompositor.dll",
     "gstcoreelements.dll", "gstd3d11.dll", "gstencoding.dll",
     "gstges.dll", "gstisomp4.dll", "gstlibav.dll", "gstmatroska.dll",
     "gstnle.dll", "gstopengl.dll", "gstplayback.dll", "gstsoundtouch.dll",
     "gsttypefindfunctions.dll", "gstvideoconvertscale.dll", "gstvideofilter.dll",
     "gstvideomixer.dll", "gstvideoparsersbad.dll", "gstvideorate.dll",
+    "gstvideotestsrc.dll",
     "gstvolume.dll", "gstwasapi2.dll"
 )
 $pluginTarget = Join-Path $packageDir "lib\gstreamer-1.0"

@@ -55,9 +55,11 @@ try {
         throw "packaged FFmpeg did not generate a normalized audio waveform"
     }
 
-    $playbackArguments = @("--playback-smoke") + $media
+    # Keep a real scene-graph surface exposed while remaining effectively invisible. A hidden
+    # top-level window can starve D3D11 preroll and falsely report a broken standalone package.
+    $playbackArguments = @("--offscreen-presentation-smoke", "--playback-smoke") + $media
     $process = Start-Process -FilePath $application -ArgumentList $playbackArguments `
-        -WindowStyle Hidden -PassThru
+        -PassThru
     if (-not $process.WaitForExit($Seconds * 1000)) {
         Stop-Process -Id $process.Id -Force
         $process.WaitForExit()
