@@ -32,6 +32,7 @@ struct PreviewVideoFrame final {
     void* texture{};
     std::uint32_t width{};
     std::uint32_t height{};
+    std::uint32_t texture_subresource{};
     TimeNs pts{};
     std::uint64_t serial{};
     void* device{};

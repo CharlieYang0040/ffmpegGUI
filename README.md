@@ -53,7 +53,9 @@ QML 모듈과 필요한 GStreamer 런타임을 함께 포함합니다.
 `run_ges_smoke.ps1`은 CFR MP4, CFR MKV, VFR MKV를 생성해 트림된 4개 샷을 하나의
 타임라인으로 연속 재생하고 1280x720 CPU BGRA 미리보기 프레임을 검증합니다.
 `run_desktop_smoke.ps1`은 같은 파일로 인프로세스 미리보기, 프로젝트 왕복과 타임라인
-썸네일 캐시 생성을 검사합니다. 기본
+썸네일 캐시 생성을 검사합니다. D3D11 제로카피와 CPU 폴백 모두 실제 Qt Scene Graph
+표시까지 확인합니다. 기본 미리보기는 D3D11이며 드라이버 호환성 진단이 필요하면
+`FFGUI_FORCE_CPU_PREVIEW=1`로 CPU BGRA 경로를 강제할 수 있습니다. 기본
 `run_4k_seek_benchmark.ps1`은 실제 3840x2160 H.264/HEVC 개발용 영상을 만들고
 D3D11 하드웨어 디코더의 임의 탐색 후 첫 GPU 프레임 도착 시간을 검사합니다.
 `run_playback_soak.ps1`은 같은 영상이 섞인 타임라인에서 PTS 기반 seek와

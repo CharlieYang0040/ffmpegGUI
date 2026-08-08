@@ -433,6 +433,7 @@ GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_d
         frame.texture = texture;
         frame.width = description.Width;
         frame.height = description.Height;
+        frame.texture_subresource = gst_d3d11_memory_get_subresource_index(d3dMemory);
         frame.device = gst_d3d11_device_get_device_handle(d3dMemory->device);
     } else {
         GstVideoInfo videoInfo{};
@@ -604,7 +605,7 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 GError* parseError = nullptr;
                 sink = gst_parse_bin_from_description(
                     "d3d11upload ! d3d11convert ! "
-                    "video/x-raw(memory:D3D11Memory),format=BGRA ! "
+                    "video/x-raw(memory:D3D11Memory),format=RGBA ! "
                     "appsink name=qtappsink max-buffers=2 drop=true sync=true "
                     "enable-last-sample=false",
                     TRUE,

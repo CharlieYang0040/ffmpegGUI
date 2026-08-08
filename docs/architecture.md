@@ -75,8 +75,9 @@ TimelineModel
 - GStreamer는 전용 GLib 컨텍스트 스레드에서 동작한다.
 - FFmpeg 출력은 별도 프로세스로 실행해 충돌과 취소를 격리한다.
 - 썸네일·파형·PTS 분석은 제한된 작업 큐에서 수행한다.
-- 안정성 기준선은 1280x720 BGRA appsink 프레임을 타이트한 CPU 버퍼로 복사한 뒤
-  Qt Scene Graph 텍스처로 업로드한다. D3D11 텍스처 필드는 같은 프레임 계약에 남긴다.
+- 기본 경로는 1280x720 RGBA D3D11 appsink 텍스처를 Qt Scene Graph와 직접 공유한다.
+  공유 조건을 충족하지 않는 GPU 텍스처만 같은 장치의 표시용 텍스처로 복사하며,
+  `FFGUI_FORCE_CPU_PREVIEW=1`일 때는 BGRA CPU 버퍼 업로드 경로를 사용한다.
 - 프레임에는 GStreamer PTS를 함께 전달해 seek 이전 큐의 프레임과 현재
   타임라인 위치의 프레임을 구분한다.
 - 파이프라인 상태와 사용자 콜백은 별도 mutex로 보호한다. 따라서 stopped 상태의
@@ -84,7 +85,7 @@ TimelineModel
   프레임을 전달할 수 있다. `seek()`는 paused 화면에 요청 위치의 프레임이 준비되기
   전에 성공으로 반환하지 않는다.
 - GStreamer 스레드는 프레임마다 GUI 이벤트를 무제한 추가하지 않는다. 전달 대기 중인
-  CPU 프레임은 최신 한 장으로 교체하고 Qt 이벤트는 최대 하나만 예약한다.
+  프레임은 최신 한 장으로 교체하고 Qt 이벤트는 최대 하나만 예약한다.
 
 ## 의존성 원칙
 
@@ -99,15 +100,14 @@ TimelineModel
 클립 하나가 아니라 편집 결과 전체가 재생된다. Qt의 재생 헤드는 GStreamer 재생
 시계를 따라가며 seek 또한 항상 시퀀스 나노초 좌표를 사용한다.
 
-현재 기본 영상 출력은 `videoconvert ! videoscale ! BGRA appsink`이며 별도 네이티브
-`QWindow`, HWND와 `d3d11videosink`를 사용하지 않는다. `VideoPreviewItem`이 CPU BGRA와
-D3D11 텍스처를 모두 받을 수 있는 하나의 프레임 계약을 소비한다. CPU 기준선은 실제
-노출 창에서 수신 137·전달 137·표시 136프레임을 확인했고, 숨김 자동 회귀에서는 창이
-노출되지 않았을 때 표시 횟수를 성공 조건으로 오인하지 않는다.
+현재 기본 영상 출력은 `d3d11upload ! d3d11convert ! RGBA D3D11 appsink`이며 별도
+네이티브 `QWindow`, HWND와 `d3d11videosink`를 사용하지 않는다. Qt와 GStreamer가 같은
+D3D11 장치를 쓰고 멀티스레드 보호를 켠 상태에서 셰이더 리소스 텍스처를 Scene Graph에
+직접 전달한다. 실제 노출 창 회귀에서 CFR MP4·CFR MKV·VFR MKV는 수신 139·전달 139·
+표시 138프레임, 4K H.264/HEVC는 수신·전달·표시 122프레임을 확인했다.
 
-`FFGUI_EXPERIMENTAL_D3D11_QSG=1`은 같은 항목에 D3D11 appsink 텍스처를 전달하는
-실험 경로다. 장치 공유와 반복 presentation 회귀가 CPU 기준선과 같은 수준을 통과하기
-전까지 기본값으로 전환하지 않는다.
+`FFGUI_FORCE_CPU_PREVIEW=1`은 드라이버·원격 데스크톱 호환성 진단을 위한 안전 경로다.
+이 모드도 실제 노출 창에서 CPU BGRA 프레임 표시를 별도로 회귀한다.
 
 구조 편집은 `TimelineModel`과 Scene Graph 화면에 즉시 반영하지만 GES 파이프라인은
 각 마우스 동작마다 다시 만들지 않는다. 50ms 단일 타이머가 연속 편집을 최신 스냅샷
@@ -121,10 +121,11 @@ scrub·편집 요청은 마지막 위치와 최신 타임라인 세대로 합친
 현재 세대가 아니면 즉시 최신 스냅샷을 준비한다. 같은 세대의 준비 실패는 무한 재시도하지
 않고 오류 상태로 남겨 UI가 살아 있는 상태에서 다음 사용자 요청으로 복구할 수 있게 한다.
 
-현재 GES 미리보기 출력 프로필은 1280x720 BGRA다. 4K H.264/HEVC 원본은 선택된
+현재 GES 미리보기 출력 프로필은 1280x720 RGBA D3D11이다. 4K H.264/HEVC 원본은 선택된
 디코더가 원본 해상도로 해제하고 미리보기 합성 단계에서 축소한다. CPU appsink 30초
 soak는 112회 PTS 일치 seek, 최대 851.373ms, 측정 구간 private memory 증가 0MiB를
-확인했다. D3D11 제로카피 탐색 성능은 별도 실험 기준으로 유지한다.
+확인했다. CPU BGRA 30초 soak도 112회 PTS 일치 seek, 최대 851.373ms, 메모리 증가
+0MiB로 폴백 기준선을 유지한다.
 
 `TimelineSpan::has_audio`는 분석된 자산의 실제 오디오 존재 여부를 전달한다. 영상만 있는
 클립에는 GES `volume`과 `pitch`를 붙이지 않으며, 속도 변경은 영상 `videorate`, 오디오

@@ -9,6 +9,7 @@
 #include <QtQuick/qsgtexture_platform.h>
 
 #include <d3d11.h>
+#include <d3d11_4.h>
 
 #include <algorithm>
 #include <utility>
@@ -76,6 +77,7 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
                               << "size=" << next.width << "x" << next.height;
         }
         QSGTexture* texture = nullptr;
+        bool reusedBridgeTexture = false;
         if (next.cpu_pixels != nullptr && !next.cpu_pixels->empty() &&
             next.width > 0 && next.height > 0 && next.cpu_stride >= next.width * 4) {
             const QImage image(
@@ -86,22 +88,86 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
                 QImage::Format_ARGB32);
             texture = window()->createTextureFromImage(image);
         } else if (next.texture != nullptr) {
-            const auto qtDevice = reinterpret_cast<void*>(devicePointer());
-            if (next.device != qtDevice) return root;
-            texture = QNativeInterface::QSGD3D11Texture::fromNative(
-                next.texture,
-                window(),
-                QSize(static_cast<int>(next.width), static_cast<int>(next.height)));
-        }
-        if (texture != nullptr) {
-            if (node != nullptr) {
-                root->removeChildNode(node);
-                delete node;
+            auto* qtDevice = reinterpret_cast<ID3D11Device*>(devicePointer());
+            if (next.device != qtDevice || qtDevice == nullptr) return root;
+            auto* sourceTexture = static_cast<ID3D11Texture2D*>(next.texture);
+            D3D11_TEXTURE2D_DESC sourceDescription{};
+            sourceTexture->GetDesc(&sourceDescription);
+            const bool directlyShareable =
+                sourceDescription.Format == DXGI_FORMAT_R8G8B8A8_UNORM &&
+                sourceDescription.ArraySize == 1 &&
+                sourceDescription.MipLevels == 1 &&
+                next.texture_subresource == 0 &&
+                (sourceDescription.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0;
+            if (directlyShareable) {
+                texture = QNativeInterface::QSGD3D11Texture::fromNative(
+                    sourceTexture,
+                    window(),
+                    QSize(static_cast<int>(next.width), static_cast<int>(next.height)));
+            } else if (display_texture_ == nullptr) {
+                D3D11_TEXTURE2D_DESC displayDescription{};
+                displayDescription.Width = next.width;
+                displayDescription.Height = next.height;
+                displayDescription.MipLevels = 1;
+                displayDescription.ArraySize = 1;
+                displayDescription.Format = sourceDescription.Format;
+                displayDescription.SampleDesc.Count = 1;
+                displayDescription.Usage = D3D11_USAGE_DEFAULT;
+                displayDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                const auto created = qtDevice->CreateTexture2D(
+                    &displayDescription, nullptr, &display_texture_);
+                if (FAILED(created) || display_texture_ == nullptr) {
+                    qWarning().noquote() << "D3D11 preview bridge texture creation failed"
+                                         << Qt::hex << created;
+                    return root;
+                }
+                qInfo().noquote() << "D3D11 preview bridge created"
+                                  << "source_format=" << sourceDescription.Format
+                                  << "source_bind=" << sourceDescription.BindFlags
+                                  << "source_array=" << sourceDescription.ArraySize
+                                  << "source_mips=" << sourceDescription.MipLevels
+                                  << "subresource=" << next.texture_subresource
+                                  << "display_format=" << displayDescription.Format
+                                  << "display_bind=" << displayDescription.BindFlags;
             }
-            node = new QSGSimpleTextureNode();
-            node->setTexture(texture);
-            node->setOwnsTexture(true);
-            root->appendChildNode(node);
+            if (!directlyShareable) {
+                ID3D11DeviceContext* context = nullptr;
+                qtDevice->GetImmediateContext(&context);
+                if (context == nullptr) return root;
+                context->CopySubresourceRegion(
+                    display_texture_,
+                    0,
+                    0,
+                    0,
+                    0,
+                    sourceTexture,
+                    next.texture_subresource,
+                    nullptr);
+                context->Release();
+                if (node == nullptr) {
+                    texture = QNativeInterface::QSGD3D11Texture::fromNative(
+                        display_texture_,
+                        window(),
+                        QSize(static_cast<int>(next.width), static_cast<int>(next.height)));
+                } else {
+                    reusedBridgeTexture = true;
+                }
+            }
+        }
+        if (texture != nullptr || reusedBridgeTexture) {
+            if (node != nullptr) {
+                if (texture != nullptr) {
+                    root->removeChildNode(node);
+                    delete node;
+                    node = nullptr;
+                }
+            }
+            if (node == nullptr) {
+                node = new QSGSimpleTextureNode();
+                node->setTexture(texture);
+                node->setOwnsTexture(true);
+                root->appendChildNode(node);
+            }
             render_frame_ = std::move(next);
             rendered_serial_ = render_frame_.serial;
             emit framePresented(rendered_serial_);
@@ -150,6 +216,15 @@ void VideoPreviewItem::initializeGraphics() {
     auto* device = static_cast<ID3D11Device*>(itemWindow->rendererInterface()->getResource(
         itemWindow, QSGRendererInterface::DeviceResource));
     if (device == nullptr) return;
+    ID3D11Multithread* multithread = nullptr;
+    if (SUCCEEDED(device->QueryInterface(
+            __uuidof(ID3D11Multithread), reinterpret_cast<void**>(&multithread))) &&
+        multithread != nullptr) {
+        multithread->SetMultithreadProtected(TRUE);
+        multithread->Release();
+    } else {
+        qWarning().noquote() << "Qt D3D11 device does not expose multithread protection";
+    }
     {
         std::scoped_lock lock(device_mutex_);
         if (device_ == device) return;
@@ -164,6 +239,10 @@ void VideoPreviewItem::initializeGraphics() {
 }
 
 void VideoPreviewItem::invalidateGraphics() {
+    if (display_texture_ != nullptr) {
+        display_texture_->Release();
+        display_texture_ = nullptr;
+    }
     ID3D11Device* oldDevice = nullptr;
     {
         std::scoped_lock lock(device_mutex_);

@@ -8,6 +8,7 @@
 #include <mutex>
 
 struct ID3D11Device;
+struct ID3D11Texture2D;
 
 class VideoPreviewItem : public QQuickItem {
     Q_OBJECT
@@ -41,4 +42,5 @@ private:
     std::uint64_t rendered_serial_{};
     mutable std::mutex device_mutex_;
     ID3D11Device* device_{};
+    ID3D11Texture2D* display_texture_{};
 };

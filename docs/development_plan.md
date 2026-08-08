@@ -54,7 +54,7 @@
 - [x] 전체 시퀀스 seek와 클립 경계 재생
 - [x] 로드 직후 stopped seek와 paused 역방향 seek의 preroll 완료 보장
 - [x] GStreamer 오류와 EOS 상태를 Qt UI로 전달
-- [ ] D3D11 GPU 텍스처 → Qt Scene Graph 제로카피
+- [x] D3D11 GPU 텍스처 → Qt Scene Graph 제로카피
 - [x] GStreamer 재생 시계를 단일 타임라인 재생 헤드에 연결
 - [x] 클립 경계 오디오 버퍼 PTS 연속성 정밀 측정
 - [x] GES 클립 gain·음소거·페이드 제어 곡선 미리보기
@@ -131,19 +131,17 @@
 
 다음 구현 순서:
 
-1. D3D11 Scene Graph 제로카피를 CPU BGRA 기준선과 같은 presentation 회귀로 교체
-2. 편집 후 전체 GES 파이프라인 재생성을 자산·클립 단위 증분 갱신으로 축소
-3. 분할·리플 삭제·트림·이동·Undo/Redo 상호작용 회귀 확대
-4. 삽입/덮어쓰기 및 리플/롤링 트림의 기본 편집 모드 구현
+1. 편집 후 전체 GES 파이프라인 재생성을 자산·클립 단위 증분 갱신으로 축소
+2. 분할·리플 삭제·트림·이동·Undo/Redo 상호작용 회귀 확대
+3. 삽입/덮어쓰기 및 리플/롤링 트림의 기본 편집 모드 구현
 
 현재 차단 증거:
 
 - 네이티브 `d3d11videosink`는 여러 GES 파이프라인 교체 뒤 Qt 컨테이너 HWND를 다시
   열지 못해 `Failed to open window`와 `READY → PAUSED` 실패를 발생시킨다.
-- 실험용 D3D11 appsink는 파이프라인과 프레임 수신에는 성공하지만 Qt Scene Graph
-  presentation 회귀가 종료 코드 13으로 실패한다.
-- 따라서 네이티브 창 경로를 계속 보수하거나 검증되지 않은 제로카피 경로를 기본값으로
-  바꾸지 않고, 동일 appsink 계약의 CPU 프레임 기준선을 먼저 완성한다.
+- D3D11 appsink는 RGBA 셰이더 리소스와 Qt 장치 공유, 멀티스레드 보호를 적용해
+  Scene Graph presentation 회귀를 통과했다. BGRA 네이티브 텍스처는 Qt의 RGBA 전용
+  import에서 SRV 생성에 실패하므로 사용하지 않는다.
 
 자막·전환·효과 확장은 위 기본 편집기 완료 기준이 충족될 때까지 보류한다.
 
@@ -158,6 +156,11 @@
 - [x] 무음 클립의 GES 오디오 효과 금지와 영상/오디오 속도 효과 분리
 - [x] 4K 무음 H.264/HEVC 접근 위반 회귀 통과
 - [x] 4K CPU BGRA 30초 soak 112 seek, 최대 851.373ms, private 증가 0MiB
+- [x] RGBA D3D11 텍스처와 Qt Scene Graph 직접 공유 및 GPU 복사 폴백
+- [x] Qt/GStreamer 공유 장치의 D3D11 멀티스레드 보호로 교착·접근 위반 제거
+- [x] CFR MP4·CFR/VFR MKV 노출 창 139/139/138 수신·전달·표시 회귀
+- [x] 4K H.264/HEVC 노출 창 122/122/122 수신·전달·표시 회귀
+- [x] D3D11 기본 경로와 `FFGUI_FORCE_CPU_PREVIEW=1` 폴백 자동 회귀
 
 ## 2026-08-08 편집 입출력 가시성 및 진단 복구
 

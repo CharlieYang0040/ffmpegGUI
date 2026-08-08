@@ -9,6 +9,12 @@ import FFGuiNext
 ApplicationWindow {
     id: root
     visible: true
+    x: Screen.width / 2 - width / 2
+    y: Screen.height / 2 - height / 2
+    opacity: OffscreenPresentationSmoke ? 0.01 : 1.0
+    flags: OffscreenPresentationSmoke
+           ? Qt.FramelessWindowHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus
+           : Qt.Window
     width: 1440
     height: 900
     minimumWidth: 1100

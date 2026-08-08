@@ -222,7 +222,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             }
         });
 #ifdef FFGUI_HAS_GES
-    use_d3d_scene_graph_ = qEnvironmentVariableIntValue("FFGUI_EXPERIMENTAL_D3D11_QSG") == 1;
+    use_d3d_scene_graph_ = qEnvironmentVariableIntValue("FFGUI_FORCE_CPU_PREVIEW") != 1;
     in_process_preview_ = true;
     player_ = std::make_unique<ffgui::GesSequencePlayer>(
         use_d3d_scene_graph_ ? "d3d11-appsink" : "cpu-appsink",

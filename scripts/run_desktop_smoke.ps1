@@ -123,6 +123,33 @@ if ($playback.ExitCode -ne 0) {
 }
 Write-Output "Preview refresh passed: deferred rebuild was ready before sequence playback"
 
+$previousCpuPreview = $env:FFGUI_FORCE_CPU_PREVIEW
+try {
+    Remove-Item Env:FFGUI_FORCE_CPU_PREVIEW -ErrorAction SilentlyContinue
+    $d3dPlayback = Start-Process -FilePath $application `
+        -ArgumentList @("--offscreen-presentation-smoke", "--playback-smoke", $clipA, $clipB, $clipVfr) `
+        -Wait -PassThru
+    if ($d3dPlayback.ExitCode -ne 0) {
+        throw "D3D11 zero-copy presentation failed with code $($d3dPlayback.ExitCode)"
+    }
+    Write-Output "D3D11 presentation passed: decoded GPU frames reached the exposed Qt scene graph"
+
+    $env:FFGUI_FORCE_CPU_PREVIEW = "1"
+    $cpuPlayback = Start-Process -FilePath $application `
+        -ArgumentList @("--offscreen-presentation-smoke", "--playback-smoke", $clipA, $clipB, $clipVfr) `
+        -Wait -PassThru
+    if ($cpuPlayback.ExitCode -ne 0) {
+        throw "CPU preview fallback failed with code $($cpuPlayback.ExitCode)"
+    }
+    Write-Output "CPU preview fallback passed: BGRA frames reached the exposed Qt scene graph"
+} finally {
+    if ($null -eq $previousCpuPreview) {
+        Remove-Item Env:FFGUI_FORCE_CPU_PREVIEW -ErrorAction SilentlyContinue
+    } else {
+        $env:FFGUI_FORCE_CPU_PREVIEW = $previousCpuPreview
+    }
+}
+
 $process = Start-Process -FilePath $application `
     -ArgumentList @($clipA, $clipB, $clipVfr) `
     -WindowStyle Hidden -PassThru

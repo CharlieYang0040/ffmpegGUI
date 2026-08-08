@@ -10,6 +10,7 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QQmlApplicationEngine>
+#include <QQmlContext>
 #include <QQuickStyle>
 #include <QStandardPaths>
 #include <QTimer>
@@ -140,6 +141,7 @@ int main(int argc, char* argv[]) {
     QString exportProjectSmoke;
     QString exportProjectOutput;
     bool playbackSmoke = false;
+    bool offscreenPresentationSmoke = false;
     const auto arguments = application.arguments();
     for (int index = 1; index < arguments.size(); ++index) {
         if (arguments[index] == "--project-roundtrip" && index + 1 < arguments.size()) {
@@ -148,6 +150,10 @@ int main(int argc, char* argv[]) {
         }
         if (arguments[index] == "--playback-smoke") {
             playbackSmoke = true;
+            continue;
+        }
+        if (arguments[index] == "--offscreen-presentation-smoke") {
+            offscreenPresentationSmoke = true;
             continue;
         }
         if (arguments[index] == "--export-smoke" && index + 1 < arguments.size()) {
@@ -163,6 +169,8 @@ int main(int argc, char* argv[]) {
     }
 
     QQmlApplicationEngine engine;
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("OffscreenPresentationSmoke"), offscreenPresentationSmoke);
     QObject::connect(
         &engine,
         &QQmlApplicationEngine::objectCreationFailed,
@@ -428,22 +436,26 @@ int main(int argc, char* argv[]) {
         controller.addCaptionAtPlayhead();
         controller.updateSelectedCaption(QStringLiteral("미리보기 자막"), 1200);
         QTimer::singleShot(150, &controller, &EditorController::togglePlayback);
-        QTimer::singleShot(5000, &application, [&application, &controller] {
-            qInfo().noquote() << "playback smoke counters"
-                              << "received=" << controller.videoFramesReceived()
-                              << "delivered=" << controller.videoFramesDelivered()
-                              << "presented=" << controller.videoFramesPresented()
-                              << "surface_exposed=" << controller.videoSurfaceExposed()
-                              << "playhead_ns=" << controller.playheadNs()
-                              << "failed=" << controller.previewFailed();
-            if (controller.previewFailed()) application.exit(14);
-            else if (controller.playheadNs() <= 750'000'000) application.exit(10);
-            else if (controller.inProcessPreview() && controller.videoFramesReceived() < 10) application.exit(11);
-            else if (controller.inProcessPreview() && controller.videoFramesDelivered() < 10) application.exit(12);
-            else if (controller.inProcessPreview() && controller.videoSurfaceExposed() &&
-                     controller.videoFramesPresented() < 10) application.exit(13);
-            else application.exit(EXIT_SUCCESS);
-        });
+        QTimer::singleShot(
+            5000,
+            &application,
+            [&application, &controller, offscreenPresentationSmoke] {
+                qInfo().noquote() << "playback smoke counters"
+                                  << "received=" << controller.videoFramesReceived()
+                                  << "delivered=" << controller.videoFramesDelivered()
+                                  << "presented=" << controller.videoFramesPresented()
+                                  << "surface_exposed=" << controller.videoSurfaceExposed()
+                                  << "playhead_ns=" << controller.playheadNs()
+                                  << "failed=" << controller.previewFailed();
+                if (controller.previewFailed()) application.exit(14);
+                else if (controller.playheadNs() <= 750'000'000) application.exit(10);
+                else if (controller.inProcessPreview() && controller.videoFramesReceived() < 10) application.exit(11);
+                else if (controller.inProcessPreview() && controller.videoFramesDelivered() < 10) application.exit(12);
+                else if (offscreenPresentationSmoke && !controller.videoSurfaceExposed()) application.exit(15);
+                else if (controller.inProcessPreview() && controller.videoSurfaceExposed() &&
+                         controller.videoFramesPresented() < 10) application.exit(13);
+                else application.exit(EXIT_SUCCESS);
+            });
     }
     return application.exec();
 }
