@@ -507,7 +507,8 @@ QVariantList EditorController::captions() const {
             {"durationNs", static_cast<qint64>(caption.duration)},
             {"positionX", caption.position_x},
             {"positionY", caption.position_y},
-            {"fontSize", caption.font_size}});
+            {"fontSize", caption.font_size},
+            {"backgroundOpacity", caption.background_opacity}});
     }
     captions_cache_ = std::move(result);
     return captions_cache_.value();
@@ -614,6 +615,12 @@ int EditorController::selectedCaptionFontSize() const noexcept {
     const auto id = selected_caption_id_.toStdString();
     const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
     return found == timeline_.captions().end() ? 44 : found->font_size;
+}
+
+int EditorController::selectedCaptionBackgroundOpacity() const noexcept {
+    const auto id = selected_caption_id_.toStdString();
+    const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
+    return found == timeline_.captions().end() ? 0 : found->background_opacity;
 }
 
 void EditorController::attachVideoItem(QObject* item) {
@@ -1292,6 +1299,21 @@ void EditorController::setSelectedCaptionFontSize(int pixels) {
     }
 }
 
+void EditorController::setSelectedCaptionBackgroundOpacity(int percent) {
+    const auto id = selected_caption_id_.toStdString();
+    const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
+    if (found == timeline_.captions().end()) return;
+    try {
+        auto replacement = *found;
+        replacement.background_opacity = std::clamp(percent, 0, 100);
+        timeline_.update_caption(std::move(replacement));
+        publishTimeline();
+        setStatus(percent > 0 ? "문구 배경을 조정했습니다" : "문구 배경을 제거했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
 void EditorController::deleteSelectedCaption() {
     if (selected_caption_id_.isEmpty()) return;
     try {
@@ -1513,13 +1535,16 @@ void EditorController::saveProject(const QString& path) {
                 {"durationNs", timeString(caption.duration)},
                 {"positionX", caption.position_x},
                 {"positionY", caption.position_y},
-                {"fontSize", caption.font_size}});
+                {"fontSize", caption.font_size},
+                {"backgroundOpacity", caption.background_opacity}});
         }
         const QJsonObject stamp{
             {"enabled", stamp_enabled_},
             {"worker", stamp_worker_},
             {"information", stamp_information_},
-            {"barPercent", stamp_bar_percent_}};
+            {"barPercent", stamp_bar_percent_},
+            {"opacity", stamp_opacity_},
+            {"mode", stamp_mode_}};
         const QJsonDocument document(QJsonObject{
             {"format", "ffmpegGUI-next"},
             {"version", 1},
@@ -1618,7 +1643,9 @@ void EditorController::loadProject(const QString& path) {
                 parseTime(object.value("durationNs"), "captionDurationNs"),
                 object.contains("positionX") ? object.value("positionX").toDouble() : 0.5,
                 object.contains("positionY") ? object.value("positionY").toDouble() : 0.5,
-                object.contains("fontSize") ? object.value("fontSize").toInt() : 44});
+                object.contains("fontSize") ? object.value("fontSize").toInt() : 44,
+                object.contains("backgroundOpacity")
+                    ? object.value("backgroundOpacity").toInt() : 0});
         }
         const auto stamp = root.value("stamp").toObject();
         loaded.clear_history();
@@ -1630,6 +1657,8 @@ void EditorController::loadProject(const QString& path) {
         stamp_worker_ = stamp.value("worker").toString();
         stamp_information_ = stamp.value("information").toString();
         stamp_bar_percent_ = std::clamp(stamp.value("barPercent").toInt(9), 4, 25);
+        stamp_opacity_ = std::clamp(stamp.value("opacity").toInt(90), 0, 100);
+        stamp_mode_ = std::clamp(stamp.value("mode").toInt(0), 0, 1);
         setSingleSelection(timeline_.clips().empty()
             ? QString{}
             : QString::fromStdString(timeline_.clips().front().id));
@@ -1722,6 +1751,22 @@ void EditorController::setStampBarPercent(int percent) {
     if (stamp_bar_percent_ == percent) return;
     stamp_bar_percent_ = percent;
     emit graphicsChanged();
+}
+
+void EditorController::setStampOpacity(int percent) {
+    percent = std::clamp(percent, 0, 100);
+    if (stamp_opacity_ == percent) return;
+    stamp_opacity_ = percent;
+    emit graphicsChanged();
+}
+
+void EditorController::setStampMode(int mode) {
+    mode = std::clamp(mode, 0, 1);
+    if (stamp_mode_ == mode) return;
+    stamp_mode_ = mode;
+    emit graphicsChanged();
+    setStatus(mode == 0 ? "스탬프를 영상 위에 겹칩니다"
+                        : "원본 영상 크기를 유지하고 캔버스 높이를 확장합니다");
 }
 
 QString EditorController::exportExtension() const {
@@ -1849,13 +1894,16 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             caption.duration,
             caption.position_x,
             caption.position_y,
-            caption.font_size});
+            caption.font_size,
+            caption.background_opacity});
     }
     request.stamp = ffgui::ExportStampInput{
         stamp_enabled_,
         stamp_worker_.toUtf8().toStdString(),
         stamp_information_.toUtf8().toStdString(),
-        stamp_bar_percent_};
+        stamp_bar_percent_,
+        stamp_opacity_,
+        stamp_mode_ == 1};
     const auto exportCache = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
         .filePath("export-jobs");
     QDir().mkpath(exportCache);

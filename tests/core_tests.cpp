@@ -661,8 +661,9 @@ void test_ffmpeg_export_plan_burns_timeline_captions() {
         std::filesystem::path{"result.mp4"},
         ffgui::ExportVideoEncoder::libx264};
     request.concat_script_path = std::filesystem::path{"job.ffconcat"};
-    request.captions = {{"첫 줄\nsecond", 500'000'000, 1'250'000'000, 0.25, 0.35, 52}};
-    request.stamp = {true, "편집자", "검수본 v2", 10};
+    request.captions = {{"첫 줄\nsecond", 500'000'000, 1'250'000'000,
+                         0.25, 0.35, 52, 65}};
+    request.stamp = {true, "편집자", "검수본 v2", 10, 75, true};
     request.subtitle_script_path = std::filesystem::path{"D:/cache/job.ass"};
     const auto plan = ffgui::compile_ffmpeg_export(request);
     require(plan.mode == ffgui::ExportMode::transcode,
@@ -673,7 +674,13 @@ void test_ffmpeg_export_plan_burns_timeline_captions() {
             "caption ASS file must be attached to the video graph");
     require(plan.subtitle_script.contains("Dialogue: 2,0:00:00.50,0:00:01.75"),
             "caption timestamps must retain centisecond ASS precision");
-    require(plan.subtitle_script.contains("\\pos(320,252)\\fs52"),
+    require(arguments.contains("vstack=inputs=3[vstampexpanded]") &&
+            plan.subtitle_script.contains("PlayResY: 864"),
+            "expanded stamp must add top and bottom pixels without scaling the center clip");
+    require(plan.subtitle_script.contains("Style: TextBackground0") &&
+            plan.subtitle_script.contains("&H5A000000"),
+            "caption black background opacity must compile into an ASS opaque-box style");
+    require(plan.subtitle_script.contains("\\pos(320,324)\\fs52"),
             "caption drag coordinates and font size must reach the ASS script");
     require(plan.subtitle_script.contains("첫 줄\\Nsecond"),
             "caption text and line breaks must reach the ASS script");
@@ -681,6 +688,16 @@ void test_ffmpeg_export_plan_burns_timeline_captions() {
             plan.subtitle_script.contains("검수본 v2") &&
             plan.subtitle_script.contains("00:00:00"),
             "letterbox stamp metadata and timecode must reach the ASS script");
+
+    request.stamp.expand_canvas = false;
+    request.stamp.background_opacity = 50;
+    const auto overlayPlan = ffgui::compile_ffmpeg_export(request);
+    std::string overlayArguments;
+    for (const auto& argument : overlayPlan.arguments) overlayArguments += argument + '\n';
+    require(!overlayArguments.contains("vstampexpanded") &&
+            overlayPlan.subtitle_script.contains("PlayResY: 720") &&
+            overlayPlan.subtitle_script.contains("\\1a&H80&"),
+            "overlay stamp opacity must darken the existing video without changing its canvas");
 }
 
 void test_ffmpeg_export_plan_applies_video_and_audio_speed() {

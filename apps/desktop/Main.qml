@@ -521,9 +521,18 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
+                        readonly property real stampRatio: EditorController.stampBarPercent / 100
+                        readonly property real expandedBarHeight:
+                            EditorController.stampEnabled && EditorController.stampMode === 1
+                            ? height * stampRatio / (1 + 2 * stampRatio) : 0
+                        readonly property real videoTop: expandedBarHeight
+                        readonly property real videoHeight: height - expandedBarHeight * 2
 
                         Loader {
-                            anchors.fill: parent
+                            x: 0
+                            y: previewSurface.videoTop
+                            width: parent.width
+                            height: previewSurface.videoHeight
                             active: EditorController.inProcessPreview
                             sourceComponent: VideoPreviewItem {
                                 id: inProcessVideoPreview
@@ -533,7 +542,10 @@ ApplicationWindow {
                         }
                         WindowContainer {
                             id: nativePreviewContainer
-                            anchors.fill: parent
+                            x: 0
+                            y: previewSurface.videoTop
+                            width: parent.width
+                            height: previewSurface.videoHeight
                             visible: !EditorController.inProcessPreview
                             window: EditorController.videoWindow
                             Component.onCompleted: Qt.callLater(
@@ -551,13 +563,17 @@ ApplicationWindow {
                             id: graphicOverlayLayer
                             anchors.fill: parent
                             z: 20
+                            readonly property real stampBarHeight:
+                                EditorController.stampMode === 1
+                                ? previewSurface.expandedBarHeight
+                                : height * EditorController.stampBarPercent / 100
 
                             Rectangle {
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.top: parent.top
-                                height: parent.height * EditorController.stampBarPercent / 100
-                                color: "#e6000000"
+                                height: parent.stampBarHeight
+                                color: Qt.rgba(0, 0, 0, EditorController.stampOpacity / 100)
                                 visible: EditorController.stampEnabled
                                 Label {
                                     anchors.left: parent.left
@@ -581,8 +597,8 @@ ApplicationWindow {
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.bottom: parent.bottom
-                                height: parent.height * EditorController.stampBarPercent / 100
-                                color: "#e6000000"
+                                height: parent.stampBarHeight
+                                color: Qt.rgba(0, 0, 0, EditorController.stampOpacity / 100)
                                 visible: EditorController.stampEnabled
                                 Label {
                                     anchors.right: parent.right
@@ -606,12 +622,12 @@ ApplicationWindow {
                                     width: overlayText.implicitWidth + 20
                                     height: overlayText.implicitHeight + 12
                                     x: modelData.positionX * graphicOverlayLayer.width - width / 2
-                                    y: modelData.positionY * graphicOverlayLayer.height - height / 2
+                                    y: previewSurface.videoTop +
+                                       modelData.positionY * previewSurface.videoHeight - height / 2
 
                                     Rectangle {
                                         anchors.fill: parent
-                                        color: EditorController.selectedCaptionId === modelData.id
-                                               ? "#5a000000" : "transparent"
+                                        color: Qt.rgba(0, 0, 0, modelData.backgroundOpacity / 100)
                                         border.width: EditorController.selectedCaptionId === modelData.id ? 2 : 0
                                         border.color: "#f0c66a"
                                         radius: 3
@@ -633,15 +649,16 @@ ApplicationWindow {
                                         drag.target: overlayTextItem
                                         drag.minimumX: -overlayTextItem.width / 2
                                         drag.maximumX: graphicOverlayLayer.width - overlayTextItem.width / 2
-                                        drag.minimumY: -overlayTextItem.height / 2
-                                        drag.maximumY: graphicOverlayLayer.height - overlayTextItem.height / 2
+                                        drag.minimumY: previewSurface.videoTop - overlayTextItem.height / 2
+                                        drag.maximumY: previewSurface.videoTop + previewSurface.videoHeight -
+                                                       overlayTextItem.height / 2
                                         onPressed: EditorController.selectCaption(modelData.id)
                                         onReleased: EditorController.updateCaptionPosition(
                                             modelData.id,
                                             (overlayTextItem.x + overlayTextItem.width / 2) /
                                                 graphicOverlayLayer.width,
-                                            (overlayTextItem.y + overlayTextItem.height / 2) /
-                                                graphicOverlayLayer.height)
+                                            (overlayTextItem.y + overlayTextItem.height / 2 -
+                                                previewSurface.videoTop) / previewSurface.videoHeight)
                                     }
                                 }
                             }
@@ -812,7 +829,8 @@ ApplicationWindow {
                     InspectorNode {
                         visible: root.showGraphicsNode
                         title: "문구·스탬프"
-                        summary: "화면 배치 · 작업 정보"
+                        summary: EditorController.stampMode === 1
+                                 ? "문구 · 확장 스탬프" : "문구 · 오버레이 스탬프"
                         expanded: true
                         onRemoveRequested: root.showGraphicsNode = false
 
@@ -871,10 +889,22 @@ ApplicationWindow {
                                     value: EditorController.selectedCaptionFontSize
                                     onValueModified: EditorController.setSelectedCaptionFontSize(value)
                                 }
+                                Label { text: "배경 불투명도"; color: "#b4bdc8" }
+                                SpinBox {
+                                    Layout.fillWidth: true
+                                    from: 0; to: 100; stepSize: 5
+                                    value: EditorController.selectedCaptionBackgroundOpacity
+                                    textFromValue: function(value) {
+                                        return value === 0 ? "없음" : value + "%"
+                                    }
+                                    valueFromText: function(text) { return parseInt(text) || 0 }
+                                    onValueModified:
+                                        EditorController.setSelectedCaptionBackgroundOpacity(value)
+                                }
                             }
                             Label {
                                 Layout.fillWidth: true
-                                text: "프로그램 모니터의 문구를 직접 끌어 위치를 정합니다."
+                                text: "프로그램 모니터에서 직접 끌어 배치합니다. 배경 0%는 없음, 100%는 불투명입니다."
                                 wrapMode: Text.WordWrap
                                 color: "#7f8c9c"; font.pixelSize: 11
                             }
@@ -894,6 +924,13 @@ ApplicationWindow {
                         GridLayout {
                             Layout.fillWidth: true; columns: 2
                             enabled: EditorController.stampEnabled
+                            Label { text: "배치 방식"; color: "#b4bdc8" }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: ["영상 위에 겹치기", "캔버스 높이 확장"]
+                                currentIndex: EditorController.stampMode
+                                onActivated: EditorController.setStampMode(currentIndex)
+                            }
                             Label { text: "작업자"; color: "#b4bdc8" }
                             TextField {
                                 Layout.fillWidth: true
@@ -916,10 +953,23 @@ ApplicationWindow {
                                 valueFromText: function(text) { return parseInt(text) || 9 }
                                 onValueModified: EditorController.setStampBarPercent(value)
                             }
+                            Label { text: "바 불투명도"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true
+                                from: 0; to: 100; stepSize: 5
+                                value: EditorController.stampOpacity
+                                textFromValue: function(value) {
+                                    return value === 0 ? "투명" : value + "%"
+                                }
+                                valueFromText: function(text) { return parseInt(text) || 0 }
+                                onValueModified: EditorController.setStampOpacity(value)
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
-                            text: "검은 바는 영상 위에 겹쳐지므로 해상도와 화면 비율은 바뀌지 않습니다."
+                            text: EditorController.stampMode === 0
+                                  ? "영상 위에 바를 겹칩니다. 출력 해상도는 바뀌지 않습니다."
+                                  : "원본 영상은 축소하지 않고 위·아래 픽셀을 추가해 출력 높이를 늘립니다."
                             wrapMode: Text.WordWrap
                             color: "#7f8c9c"; font.pixelSize: 11
                         }

@@ -797,7 +797,8 @@ void TimelineModel::validate_caption(
         !std::isfinite(caption.position_x) || !std::isfinite(caption.position_y) ||
         caption.position_x < 0.0 || caption.position_x > 1.0 ||
         caption.position_y < 0.0 || caption.position_y > 1.0 ||
-        caption.font_size < 12 || caption.font_size > 160) {
+        caption.font_size < 12 || caption.font_size > 160 ||
+        caption.background_opacity < 0 || caption.background_opacity > 100) {
         throw std::invalid_argument("caption is outside the timeline or empty");
     }
     for (std::size_t index = 0; index < captions_.size(); ++index) {

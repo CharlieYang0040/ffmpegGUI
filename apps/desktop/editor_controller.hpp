@@ -57,10 +57,13 @@ class EditorController final : public QObject {
     Q_PROPERTY(QString selectedCaptionText READ selectedCaptionText NOTIFY captionSelectionChanged)
     Q_PROPERTY(int selectedCaptionDurationMs READ selectedCaptionDurationMs NOTIFY captionSelectionChanged)
     Q_PROPERTY(int selectedCaptionFontSize READ selectedCaptionFontSize NOTIFY captionSelectionChanged)
+    Q_PROPERTY(int selectedCaptionBackgroundOpacity READ selectedCaptionBackgroundOpacity NOTIFY captionSelectionChanged)
     Q_PROPERTY(bool stampEnabled READ stampEnabled WRITE setStampEnabled NOTIFY graphicsChanged)
     Q_PROPERTY(QString stampWorker READ stampWorker WRITE setStampWorker NOTIFY graphicsChanged)
     Q_PROPERTY(QString stampInformation READ stampInformation WRITE setStampInformation NOTIFY graphicsChanged)
     Q_PROPERTY(int stampBarPercent READ stampBarPercent WRITE setStampBarPercent NOTIFY graphicsChanged)
+    Q_PROPERTY(int stampOpacity READ stampOpacity WRITE setStampOpacity NOTIFY graphicsChanged)
+    Q_PROPERTY(int stampMode READ stampMode WRITE setStampMode NOTIFY graphicsChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
@@ -107,10 +110,13 @@ public:
     [[nodiscard]] QString selectedCaptionText() const;
     [[nodiscard]] int selectedCaptionDurationMs() const noexcept;
     [[nodiscard]] int selectedCaptionFontSize() const noexcept;
+    [[nodiscard]] int selectedCaptionBackgroundOpacity() const noexcept;
     [[nodiscard]] bool stampEnabled() const noexcept { return stamp_enabled_; }
     [[nodiscard]] QString stampWorker() const { return stamp_worker_; }
     [[nodiscard]] QString stampInformation() const { return stamp_information_; }
     [[nodiscard]] int stampBarPercent() const noexcept { return stamp_bar_percent_; }
+    [[nodiscard]] int stampOpacity() const noexcept { return stamp_opacity_; }
+    [[nodiscard]] int stampMode() const noexcept { return stamp_mode_; }
     [[nodiscard]] bool canUndo() const noexcept { return timeline_.can_undo(); }
     [[nodiscard]] bool canRedo() const noexcept { return timeline_.can_redo(); }
     [[nodiscard]] bool importing() const noexcept { return importing_; }
@@ -187,6 +193,7 @@ public slots:
     void updateSelectedCaption(const QString& text, int durationMs);
     void updateCaptionPosition(const QString& captionId, qreal positionX, qreal positionY);
     void setSelectedCaptionFontSize(int pixels);
+    void setSelectedCaptionBackgroundOpacity(int percent);
     void deleteSelectedCaption();
     void moveCaption(const QString& captionId, qint64 timelineIn);
     void trimCaption(const QString& captionId, qint64 timelineIn, qint64 duration);
@@ -210,6 +217,8 @@ public slots:
     void setStampWorker(const QString& worker);
     void setStampInformation(const QString& information);
     void setStampBarPercent(int percent);
+    void setStampOpacity(int percent);
+    void setStampMode(int mode);
     [[nodiscard]] QString exportExtension() const;
     [[nodiscard]] QString timeText(qint64 timelinePosition) const;
     [[nodiscard]] qint64 frameNumberAt(qint64 timelinePosition) const;
@@ -291,6 +300,8 @@ private:
     QString stamp_worker_;
     QString stamp_information_;
     int stamp_bar_percent_{9};
+    int stamp_opacity_{90};
+    int stamp_mode_{};
     QObject* video_item_{};
     QWindow* video_window_{};
     bool use_d3d_scene_graph_{};

@@ -348,9 +348,12 @@ int main(int argc, char* argv[]) {
         const auto graphicId = controller.selectedCaptionId();
         controller.updateCaptionPosition(graphicId, 0.25, 0.35);
         controller.setSelectedCaptionFontSize(52);
+        controller.setSelectedCaptionBackgroundOpacity(65);
         controller.setStampWorker(QStringLiteral("테스트 작업자"));
         controller.setStampInformation(QStringLiteral("검수본 v2"));
         controller.setStampBarPercent(10);
+        controller.setStampOpacity(75);
+        controller.setStampMode(1);
         controller.setStampEnabled(true);
         controller.selectClip(audioClipId);
         const auto beforeSpeedDuration = controller.durationNs();
@@ -404,7 +407,9 @@ int main(int argc, char* argv[]) {
                std::abs(controller.captions().front().toMap().value("positionY").toDouble() -
                         0.35) < 0.0001 &&
                controller.captions().front().toMap().value("fontSize").toInt() == 52 &&
+               controller.captions().front().toMap().value("backgroundOpacity").toInt() == 65 &&
                controller.stampEnabled() && controller.stampBarPercent() == 10 &&
+               controller.stampOpacity() == 75 && controller.stampMode() == 1 &&
                controller.stampWorker() == QStringLiteral("테스트 작업자") &&
                controller.stampInformation() == QStringLiteral("검수본 v2") &&
                expectedClipCount == importedClipCount + 4
@@ -437,8 +442,11 @@ int main(int argc, char* argv[]) {
         controller.updateSelectedCaption(QStringLiteral("출력 자막"), 1200);
         controller.updateCaptionPosition(controller.selectedCaptionId(), 0.3, 0.4);
         controller.setSelectedCaptionFontSize(48);
+        controller.setSelectedCaptionBackgroundOpacity(60);
         controller.setStampWorker(QStringLiteral("자동 회귀"));
         controller.setStampInformation(QStringLiteral("출력 검증본"));
+        controller.setStampOpacity(75);
+        controller.setStampMode(1);
         controller.setStampEnabled(true);
         // Export immediately after structural revisions. The output must capture the newest
         // model snapshot even while the debounced preview rebuild is still pending.

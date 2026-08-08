@@ -1,7 +1,8 @@
 param(
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Debug",
-    [int]$Seconds = 5
+    [int]$Seconds = 5,
+    [string]$BuildDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,7 +10,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $gstRoot = Join-Path $root ".tools\gstreamer"
 $qtRoot = Join-Path $root ".tools\Qt\6.10.2\msvc2022_64"
 $mediaDir = Join-Path $root "out\test-media\ges-smoke"
-$application = Join-Path $root "out\build\windows-msvc\$Configuration\ffmpegGUI-next.exe"
+if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
+    $BuildDirectory = Join-Path $root "out\build\windows-msvc"
+}
+$application = Join-Path $BuildDirectory "$Configuration\ffmpegGUI-next.exe"
 $clipA = Join-Path $mediaDir "shot-a.mp4"
 $clipB = Join-Path $mediaDir "shot-b.mkv"
 $clipVfr = Join-Path $mediaDir "shot-vfr.mkv"
@@ -69,6 +73,11 @@ $streams = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
     -v error -show_entries stream=codec_type -of csv=p=0 $exportOutput
 if ($streams -notcontains "video" -or $streams -notcontains "audio") {
     throw "exported timeline must contain both video and audio streams"
+}
+$videoSize = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
+    -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x $exportOutput
+if ($videoSize.Trim() -ne "1280x848") {
+    throw "expanded stamp must preserve 1280x720 video pixels and add 64px bars: $videoSize"
 }
 Write-Output "Timeline export passed: rapid split/undo/redo, 300ms dissolve, clip audio, positioned text and letterbox stamp produced a validated $exportDuration second MP4"
 

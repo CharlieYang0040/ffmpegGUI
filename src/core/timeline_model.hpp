@@ -83,6 +83,7 @@ struct CaptionCue final {
     double position_x{0.5};
     double position_y{0.5};
     int font_size{44};
+    int background_opacity{};
 
     bool operator==(const CaptionCue&) const = default;
     [[nodiscard]] TimeNs timeline_out() const { return checked_add(timeline_in, duration); }

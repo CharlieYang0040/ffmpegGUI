@@ -115,6 +115,13 @@ std::string decimal(double value) {
     return stream.str();
 }
 
+std::string ass_alpha(int opacity_percent) {
+    const auto alpha = 255 - std::clamp(opacity_percent, 0, 100) * 255 / 100;
+    std::ostringstream stream;
+    stream << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << alpha;
+    return stream.str();
+}
+
 std::string atempo_chain(double rate) {
     std::string chain;
     while (rate < 0.5) {
@@ -185,12 +192,15 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
             !std::isfinite(caption.position_x) || !std::isfinite(caption.position_y) ||
             caption.position_x < 0.0 || caption.position_x > 1.0 ||
             caption.position_y < 0.0 || caption.position_y > 1.0 ||
-            caption.font_size < 12 || caption.font_size > 160) {
+            caption.font_size < 12 || caption.font_size > 160 ||
+            caption.background_opacity < 0 || caption.background_opacity > 100) {
             throw std::invalid_argument("export caption is outside the timeline or empty");
         }
     }
     if (request.stamp.enabled &&
-        (request.stamp.bar_percent < 4 || request.stamp.bar_percent > 25)) {
+        (request.stamp.bar_percent < 4 || request.stamp.bar_percent > 25 ||
+         request.stamp.background_opacity < 0 ||
+         request.stamp.background_opacity > 100)) {
         throw std::invalid_argument("export stamp bar size is invalid");
     }
     if (can_stream_copy(request)) {
@@ -282,6 +292,24 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         videoLabel = nextVideo;
         audioLabel = nextAudio;
     }
+    const auto stampBarHeight = request.stamp.enabled
+        ? 720 * request.stamp.bar_percent / 100 : 0;
+    const auto videoOffsetY = request.stamp.enabled && request.stamp.expand_canvas
+        ? stampBarHeight : 0;
+    const auto playResolutionY = 720 + videoOffsetY * 2;
+    if (request.stamp.enabled && request.stamp.expand_canvas) {
+        const auto ratio = decimal(request.stamp.bar_percent / 100.0);
+        const auto opacity = decimal(request.stamp.background_opacity / 100.0);
+        filter += "[" + videoLabel + "]split=3[vstampcenter][vstamptop][vstampbottom];";
+        filter += "[vstamptop]crop=iw:max(2\\,trunc(ih*" + ratio +
+            "/2)*2):0:0,drawbox=color=black@" + opacity + ":t=fill[vstamptopbar];";
+        filter += "[vstampbottom]crop=iw:max(2\\,trunc(ih*" + ratio +
+            "/2)*2):0:ih-oh,drawbox=color=black@" + opacity +
+            ":t=fill[vstampbottombar];";
+        filter += "[vstamptopbar][vstampcenter][vstampbottombar]"
+                  "vstack=inputs=3[vstampexpanded];";
+        videoLabel = "vstampexpanded";
+    }
     const bool hasGraphics = !request.captions.empty() || request.stamp.enabled;
     if (!hasGraphics) {
         filter += "[" + videoLabel + "]null[vout];[" + audioLabel + "]anull[aout]";
@@ -293,28 +321,43 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
                   "]anull[aout];[vbase]ass=filename='" +
                   filter_path(request.subtitle_script_path) + "'[vout]";
         plan.subtitle_script =
-            "[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n"
+            "[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: " +
+            std::to_string(playResolutionY) + "\n"
             "ScaledBorderAndShadow: yes\n\n[V4+ Styles]\n"
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
             "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
             "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
             "MarginR, MarginV, Encoding\n"
             "Style: Default,Malgun Gothic,36,&H00FFFFFF,&H000000FF,&H00101010,"
-            "&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,40,40,42,1\n\n[Events]\n"
+            "&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,40,40,42,1\n";
+        for (std::size_t index = 0; index < request.captions.size(); ++index) {
+            const auto& caption = request.captions[index];
+            if (caption.background_opacity <= 0) continue;
+            const auto color = "&H" + ass_alpha(caption.background_opacity) + "000000";
+            plan.subtitle_script += "Style: TextBackground" + std::to_string(index) +
+                ",Malgun Gothic,36,&H00FFFFFF,&H000000FF," + color + ',' + color +
+                ",-1,0,0,0,100,100,0,0,3,7,0,5,20,20,20,1\n";
+        }
+        plan.subtitle_script +=
+            "\n[Events]\n"
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
         if (request.stamp.enabled) {
-            const auto barHeight = 720 * request.stamp.bar_percent / 100;
-            const auto bottom = 720 - barHeight;
+            const auto barHeight = stampBarHeight;
+            const auto bottom = request.stamp.expand_canvas
+                ? videoOffsetY + 720 : 720 - barHeight;
             const auto end = ass_time(plan.duration);
-            const auto rectangle = [](int top, int bottomValue) {
-                return std::string{"{\\an7\\pos(0,0)\\p1\\bord0\\shad0\\1c&H000000&\\1a&H18&}m 0 "} +
+            const auto rectangle = [&](int top, int bottomValue) {
+                return std::string{"{\\an7\\pos(0,0)\\p1\\bord0\\shad0\\1c&H000000&\\1a&H"} +
+                    ass_alpha(request.stamp.background_opacity) + "&}m 0 " +
                     std::to_string(top) + " l 1280 " + std::to_string(top) + " 1280 " +
                     std::to_string(bottomValue) + " 0 " + std::to_string(bottomValue);
             };
-            plan.subtitle_script += "Dialogue: 0,0:00:00.00," + end +
-                ",Default,,0,0,0,," + rectangle(0, barHeight) + '\n';
-            plan.subtitle_script += "Dialogue: 0,0:00:00.00," + end +
-                ",Default,,0,0,0,," + rectangle(bottom, 720) + '\n';
+            if (!request.stamp.expand_canvas) {
+                plan.subtitle_script += "Dialogue: 0,0:00:00.00," + end +
+                    ",Default,,0,0,0,," + rectangle(0, barHeight) + '\n';
+                plan.subtitle_script += "Dialogue: 0,0:00:00.00," + end +
+                    ",Default,,0,0,0,," + rectangle(720 - barHeight, 720) + '\n';
+            }
             if (!request.stamp.information.empty()) {
                 plan.subtitle_script += "Dialogue: 1,0:00:00.00," + end +
                     ",Default,,0,0,0,,{\\an4\\pos(28," + std::to_string(barHeight / 2) +
@@ -339,14 +382,18 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
                     timecode.str() + '\n';
             }
         }
-        for (const auto& caption : request.captions) {
+        for (std::size_t index = 0; index < request.captions.size(); ++index) {
+            const auto& caption = request.captions[index];
             const auto x = std::clamp(
                 static_cast<int>(std::lround(caption.position_x * 1280)), 0, 1280);
             const auto y = std::clamp(
-                static_cast<int>(std::lround(caption.position_y * 720)), 0, 720);
+                videoOffsetY + static_cast<int>(std::lround(caption.position_y * 720)),
+                videoOffsetY, videoOffsetY + 720);
+            const auto style = caption.background_opacity > 0
+                ? "TextBackground" + std::to_string(index) : "Default";
             plan.subtitle_script += "Dialogue: 2," + ass_time(caption.timeline_in) + ',' +
                 ass_time(checked_add(caption.timeline_in, caption.duration)) +
-                ",Default,,0,0,0,,{\\an5\\pos(" + std::to_string(x) + ',' +
+                ',' + style + ",,0,0,0,,{\\an5\\pos(" + std::to_string(x) + ',' +
                 std::to_string(y) + ")\\fs" + std::to_string(caption.font_size) + "}" +
                 ass_text(caption.text) + '\n';
         }

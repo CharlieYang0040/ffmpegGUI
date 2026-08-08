@@ -53,6 +53,7 @@ struct ExportCaptionInput final {
     double position_x{0.5};
     double position_y{0.5};
     int font_size{44};
+    int background_opacity{};
 };
 
 struct ExportStampInput final {
@@ -60,6 +61,8 @@ struct ExportStampInput final {
     std::string worker;
     std::string information;
     int bar_percent{9};
+    int background_opacity{90};
+    bool expand_canvas{};
 };
 
 struct ExportRequest final {
