@@ -36,6 +36,8 @@ class EditorController final : public QObject {
     Q_PROPERTY(qint64 inPointNs READ inPointNs NOTIFY rangeChanged)
     Q_PROPERTY(qint64 outPointNs READ outPointNs NOTIFY rangeChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
+    Q_PROPERTY(bool previewBusy READ previewBusy NOTIFY previewBusyChanged)
+    Q_PROPERTY(bool previewFailed READ previewFailed NOTIFY previewFailedChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString selectedClipId READ selectedClipId NOTIFY selectedClipChanged)
     Q_PROPERTY(QStringList selectedClipIds READ selectedClipIds NOTIFY selectedClipChanged)
@@ -67,6 +69,8 @@ public:
     [[nodiscard]] qint64 inPointNs() const noexcept { return in_point_ns_; }
     [[nodiscard]] qint64 outPointNs() const noexcept { return out_point_ns_; }
     [[nodiscard]] bool playing() const noexcept { return playing_; }
+    [[nodiscard]] bool previewBusy() const noexcept { return preview_busy_; }
+    [[nodiscard]] bool previewFailed() const noexcept { return preview_failed_; }
     [[nodiscard]] QString status() const { return status_; }
     [[nodiscard]] QString selectedClipId() const { return selected_clip_id_; }
     [[nodiscard]] QStringList selectedClipIds() const { return selected_clip_ids_; }
@@ -156,6 +160,8 @@ signals:
     void playheadChanged();
     void rangeChanged();
     void playingChanged();
+    void previewBusyChanged();
+    void previewFailedChanged();
     void statusChanged();
     void selectedClipChanged();
     void captionSelectionChanged();
@@ -175,11 +181,20 @@ private:
 
     void publishTimeline(bool resetPlayhead = false);
     void setStatus(QString status);
+    void queuePreviewOperation(bool restorePosition);
+    void startPreviewOperation();
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
     void finishExport(bool success);
     [[nodiscard]] std::string makeUniqueClipId(const std::string& prefix);
     void setSingleSelection(QString clipId);
-    bool applyPreviewTimeline(bool restorePosition);
+#ifdef FFGUI_HAS_GES
+    struct PreviewOperationResult final {
+        std::uint64_t generation{};
+        bool rebuilt{};
+        bool success{};
+        QString error;
+    };
+#endif
 
     ffgui::TimelineModel timeline_;
     std::vector<ffgui::TimelineSpan> preview_snapshot_;
@@ -193,6 +208,8 @@ private:
     qint64 in_point_ns_{-1};
     qint64 out_point_ns_{-1};
     bool playing_{};
+    bool preview_busy_{};
+    bool preview_failed_{};
     QString status_{"미디어를 추가하세요"};
     QString selected_clip_id_;
     QStringList selected_clip_ids_;
@@ -207,7 +224,18 @@ private:
     bool importing_{};
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
     QTimer preview_update_timer_;
+#ifdef FFGUI_HAS_GES
+    QFutureWatcher<PreviewOperationResult> preview_watcher_;
+    std::optional<qint64> pending_preview_seek_;
+    bool preview_operation_pending_{};
+    bool preview_should_play_{};
+    bool preview_stop_requested_{};
+#endif
     QHash<QString, QString> thumbnail_atlases_;
+    mutable std::optional<QVariantList> clips_cache_;
+    mutable std::optional<QVariantList> media_assets_cache_;
+    mutable std::optional<QVariantList> captions_cache_;
+    mutable QHash<QString, QVariantList> waveform_cache_;
     QProcess export_process_;
     std::optional<ffgui::ExportRequest> export_request_;
     QByteArray export_stderr_;

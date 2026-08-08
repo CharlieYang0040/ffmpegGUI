@@ -31,6 +31,45 @@ ApplicationWindow {
     palette.buttonText: "#e8edf2"
     palette.highlight: "#5b8cff"
 
+    component AppButton: Button {
+        id: control
+        property bool danger: false
+        property bool compact: false
+        hoverEnabled: true
+        implicitHeight: compact ? 30 : 34
+        leftPadding: compact ? 10 : 14
+        rightPadding: compact ? 10 : 14
+        contentItem: Label {
+            text: control.text
+            color: !control.enabled ? "#657080"
+                  : control.danger ? (control.hovered ? "#ffffff" : "#ffb7b7")
+                  : "#e8edf2"
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            font.pixelSize: 13
+            font.bold: control.down || control.highlighted
+        }
+        background: Rectangle {
+            radius: 6
+            color: !control.enabled ? "#171c22"
+                 : control.down ? (control.danger ? "#9e3038" : "#365f9f")
+                 : control.hovered ? (control.danger ? "#6f2a31" : "#303b49")
+                 : control.highlighted ? "#294e82" : "#202731"
+            border.width: control.activeFocus ? 2 : 1
+            border.color: control.activeFocus ? "#75a7ff"
+                        : control.hovered ? (control.danger ? "#c94a55" : "#56677d")
+                        : "#343e4b"
+            Behavior on color { ColorAnimation { duration: 90 } }
+            Behavior on border.color { ColorAnimation { duration: 90 } }
+        }
+    }
+
+    component ToolDivider: Rectangle {
+        implicitWidth: 1
+        implicitHeight: 22
+        color: "#35404d"
+    }
+
     Shortcut { sequences: [StandardKey.Undo]; enabled: EditorController.canUndo; onActivated: EditorController.undo() }
     Shortcut { sequences: [StandardKey.Redo]; enabled: EditorController.canRedo; onActivated: EditorController.redo() }
     Shortcut { sequence: "Space"; onActivated: EditorController.togglePlayback() }
@@ -46,8 +85,6 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.duplicateSelectedClip() }
     Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.deleteSelectedClip() }
     Shortcut { sequence: "M"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted) }
-    Shortcut { sequence: "Ctrl+Alt+T"; enabled: EditorController.durationNs > 0; onActivated: EditorController.addCaptionAtPlayhead() }
-
     FileDialog {
         id: mediaDialog
         title: "영상 추가"
@@ -128,19 +165,19 @@ ApplicationWindow {
                 anchors.leftMargin: 16
                 anchors.rightMargin: 16
                 Label { text: "ffmpegGUI"; font.pixelSize: 18; font.bold: true }
-                Button {
+                AppButton {
                     text: EditorController.importing ? "분석 중…" : "영상 추가"
                     enabled: !EditorController.importing
                     onClicked: mediaDialog.open()
                 }
-                Button { text: "열기"; onClicked: openProjectDialog.open() }
-                Button {
+                AppButton { text: "열기"; onClicked: openProjectDialog.open() }
+                AppButton {
                     text: "저장"
                     enabled: EditorController.durationNs > 0
                     onClicked: saveProjectDialog.open()
                 }
                 Item { Layout.fillWidth: true }
-                Button {
+                AppButton {
                     text: EditorController.exporting ? "내보내는 중…" : "내보내기"
                     enabled: EditorController.durationNs > 0 && !EditorController.exporting
                     onClicked: exportDialog.open()
@@ -171,7 +208,7 @@ ApplicationWindow {
                             color: "#8994a3"
                         }
                         Item { Layout.fillWidth: true }
-                        Button {
+                        AppButton {
                             text: "+"
                             implicitWidth: 34
                             onClicked: mediaDialog.open()
@@ -241,7 +278,7 @@ ApplicationWindow {
                                         font.pixelSize: 11
                                     }
                                 }
-                                Button {
+                                AppButton {
                                     text: "+"
                                     implicitWidth: 30
                                     ToolTip.visible: hovered
@@ -266,25 +303,83 @@ ApplicationWindow {
 
             Frame {
                 SplitView.fillWidth: true
+                SplitView.minimumWidth: 420
+                padding: 0
                 background: Rectangle { color: "#080a0d" }
 
-                D3D11VideoItem {
-                    id: videoPreview
+                ColumnLayout {
                     anchors.fill: parent
-                    visible: EditorController.gpuSceneGraphPreview
-                    Component.onCompleted: EditorController.attachVideoItem(videoPreview)
+                    spacing: 0
 
-                    Label {
-                        anchors.centerIn: parent
-                        visible: !videoPreview.gpuReady
-                        text: "GPU 미리보기 초기화 중"
-                        color: "#8994a3"
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 36
+                        color: "#151a20"
+                        border.color: "#272f39"
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            spacing: 8
+                            Rectangle {
+                                implicitWidth: 8
+                                implicitHeight: 8
+                                radius: 4
+                                color: EditorController.previewFailed ? "#ef5964"
+                                     : EditorController.previewBusy ? "#f5b942"
+                                     : EditorController.playing ? "#52d273" : "#647183"
+                                SequentialAnimation on opacity {
+                                    running: EditorController.previewBusy
+                                    loops: Animation.Infinite
+                                    NumberAnimation { to: 0.35; duration: 450 }
+                                    NumberAnimation { to: 1.0; duration: 450 }
+                                }
+                            }
+                            Label {
+                                text: EditorController.previewFailed ? "미리보기 오류"
+                                    : EditorController.previewBusy ? "미리보기 준비 중"
+                                    : EditorController.playing ? "재생 중" : "프로그램 모니터"
+                                color: "#c7d0db"
+                                font.pixelSize: 12
+                                font.bold: EditorController.previewBusy || EditorController.playing
+                            }
+                            Item { Layout.fillWidth: true }
+                            Label {
+                                text: root.durationText(EditorController.playheadNs)
+                                      + " / " + root.durationText(EditorController.durationNs)
+                                color: "#8e9aaa"
+                                font.family: "Consolas"
+                                font.pixelSize: 12
+                            }
+                        }
                     }
-                }
-                WindowContainer {
-                    anchors.fill: parent
-                    visible: !EditorController.gpuSceneGraphPreview
-                    window: EditorController.videoWindow
+
+                    Item {
+                        id: previewSurface
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+
+                        D3D11VideoItem {
+                            id: videoPreview
+                            anchors.fill: parent
+                            visible: EditorController.gpuSceneGraphPreview
+                            Component.onCompleted: EditorController.attachVideoItem(videoPreview)
+                        }
+                        WindowContainer {
+                            anchors.fill: parent
+                            visible: !EditorController.gpuSceneGraphPreview
+                            window: EditorController.videoWindow
+                        }
+                        Label {
+                            anchors.centerIn: parent
+                            visible: EditorController.durationNs === 0
+                            text: EditorController.importing ? "미디어 분석 중…" : "미디어를 추가하세요"
+                            color: "#718094"
+                            font.pixelSize: 15
+                        }
+                    }
                 }
             }
 
@@ -379,7 +474,7 @@ ApplicationWindow {
                             onValueModified: EditorController.setSelectedClipFadeOutMs(value)
                         }
                     }
-                    Button {
+                    AppButton {
                         Layout.fillWidth: true
                         visible: EditorController.selectedClipIds.length > 0
                         text: EditorController.selectedClipMuted ? "음소거 해제 (M)" : "음소거 (M)"
@@ -391,71 +486,6 @@ ApplicationWindow {
                         Layout.preferredHeight: 1
                         color: "#303844"
                     }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Label { text: "자막"; font.bold: true }
-                        Item { Layout.fillWidth: true }
-                        Button {
-                            text: "+"
-                            implicitWidth: 34
-                            enabled: EditorController.durationNs > 0
-                            onClicked: EditorController.addCaptionAtPlayhead()
-                        }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Button {
-                            Layout.fillWidth: true
-                            text: "SRT 가져오기"
-                            enabled: EditorController.durationNs > 0
-                            onClicked: importSrtDialog.open()
-                        }
-                        Button {
-                            Layout.fillWidth: true
-                            text: "SRT 내보내기"
-                            enabled: EditorController.captions.length > 0
-                            onClicked: exportSrtDialog.open()
-                        }
-                    }
-                    TextField {
-                        id: captionTextField
-                        Layout.fillWidth: true
-                        visible: EditorController.selectedCaptionId.length > 0
-                        placeholderText: "자막 내용"
-                        text: EditorController.selectedCaptionText
-                        onAccepted: EditorController.updateSelectedCaption(
-                            text, captionDuration.value)
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        visible: EditorController.selectedCaptionId.length > 0
-                        Label { text: "길이"; color: "#b4bdc8" }
-                        SpinBox {
-                            id: captionDuration
-                            Layout.fillWidth: true
-                            from: 100
-                            to: 60000
-                            stepSize: 100
-                            editable: true
-                            value: EditorController.selectedCaptionDurationMs
-                            textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
-                            valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
-                        }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        visible: EditorController.selectedCaptionId.length > 0
-                        Button {
-                            Layout.fillWidth: true
-                            text: "자막 적용"
-                            onClicked: EditorController.updateSelectedCaption(
-                                captionTextField.text, captionDuration.value)
-                        }
-                        Button {
-                            text: "삭제"
-                            onClicked: EditorController.deleteSelectedCaption()
-                        }
-                    }
                     ProgressBar {
                         Layout.fillWidth: true
                         visible: EditorController.exporting
@@ -463,7 +493,7 @@ ApplicationWindow {
                         to: 1
                         value: EditorController.exportProgress
                     }
-                    Button {
+                    AppButton {
                         Layout.fillWidth: true
                         text: EditorController.exporting ? "취소" : "영상 내보내기"
                         enabled: EditorController.exporting || EditorController.durationNs > 0
@@ -488,61 +518,108 @@ ApplicationWindow {
 
                 RowLayout {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 34
-                    Button {
-                        text: EditorController.playing ? "Ⅱ" : "▶"
+                    Layout.preferredHeight: 40
+                    Layout.leftMargin: 6
+                    Layout.rightMargin: 8
+                    spacing: 5
+                    AppButton {
+                        text: EditorController.playing ? "Ⅱ  일시정지" : "▶  재생"
                         enabled: EditorController.durationNs > 0
+                        highlighted: EditorController.playing
                         onClicked: EditorController.togglePlayback()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "전체 타임라인 재생/일시정지  Space"
                     }
-                    Button {
+                    AppButton {
+                        text: "‹"
+                        compact: true
+                        enabled: EditorController.durationNs > 0
+                        onClicked: EditorController.stepFrame(-1)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "이전 원본 프레임  ←"
+                    }
+                    AppButton {
+                        text: "›"
+                        compact: true
+                        enabled: EditorController.durationNs > 0
+                        onClicked: EditorController.stepFrame(1)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "다음 원본 프레임  →"
+                    }
+                    ToolDivider { }
+                    AppButton {
                         text: "↶"
+                        compact: true
                         enabled: EditorController.canUndo
                         onClicked: EditorController.undo()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "실행 취소  Ctrl+Z"
                     }
-                    Button {
+                    AppButton {
                         text: "↷"
+                        compact: true
                         enabled: EditorController.canRedo
                         onClicked: EditorController.redo()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "다시 실행  Ctrl+Y"
                     }
-                    Button {
-                        text: "분할"
+                    ToolDivider { }
+                    AppButton {
+                        text: "✂  분할"
                         enabled: EditorController.durationNs > 0
                         onClicked: EditorController.splitAtPlayhead()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "재생 헤드에서 분할  Ctrl+K"
                     }
-                    Button {
-                        text: "시작점"
+                    AppButton {
+                        text: "복제"
+                        enabled: EditorController.selectedClipIds.length > 0
+                        onClicked: EditorController.duplicateSelectedClip()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "선택 클립 복제  Ctrl+D"
+                    }
+                    AppButton {
+                        text: "삭제"
+                        danger: true
+                        enabled: EditorController.selectedClipIds.length > 0
+                        onClicked: EditorController.deleteSelectedClip()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "선택 클립 리플 삭제  Delete"
+                    }
+                    ToolDivider { }
+                    AppButton {
+                        text: "[  인"
+                        compact: true
                         enabled: EditorController.durationNs > 0
+                        highlighted: EditorController.inPointNs >= 0
                         onClicked: EditorController.setInPoint()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "구간 시작 표시  I"
                     }
-                    Button {
-                        text: "끝점"
+                    AppButton {
+                        text: "아웃  ]"
+                        compact: true
                         enabled: EditorController.durationNs > 0
+                        highlighted: EditorController.outPointNs >= 0
                         onClicked: EditorController.setOutPoint()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "구간 끝 표시  O"
                     }
-                    Button {
-                        text: "구간 삭제"
+                    AppButton {
+                        text: "구간 리플 삭제"
+                        danger: true
                         enabled: EditorController.inPointNs >= 0
                                  && EditorController.outPointNs > EditorController.inPointNs
                         onClicked: EditorController.extractMarkedRange()
-                    }
-                    Button {
-                        text: EditorController.selectedClipIds.length > 1
-                              ? EditorController.selectedClipIds.length + "개 삭제"
-                              : "삭제"
-                        enabled: EditorController.selectedClipIds.length > 0
-                        onClicked: EditorController.deleteSelectedClip()
-                    }
-                    Button {
-                        text: EditorController.selectedClipIds.length > 1
-                              ? EditorController.selectedClipIds.length + "개 복제"
-                              : "복제"
-                        enabled: EditorController.selectedClipIds.length > 0
-                        onClicked: EditorController.duplicateSelectedClip()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "인/아웃 구간을 삭제하고 빈자리 닫기  Shift+Delete"
                     }
                     Label {
                         Layout.fillWidth: true
                         text: EditorController.status
-                        color: "#8994a3"
+                        elide: Text.ElideRight
+                        color: EditorController.previewFailed ? "#ff7780"
+                             : EditorController.previewBusy ? "#f0bd58" : "#8994a3"
                     }
                     Label {
                         text: Math.round(timeline.zoomLevel * 100) + "%"
@@ -559,61 +636,6 @@ ApplicationWindow {
                     Rectangle {
                         anchors.fill: parent
                         color: "#11161c"
-                    }
-
-                    Repeater {
-                        model: EditorController.clips
-
-                        delegate: Item {
-                            id: clipThumbnail
-                            required property var modelData
-                            readonly property real contentWidth: Math.max(1, timelineLayer.width - 24)
-                            readonly property real timelineStart: modelData.timelineInNs
-                            readonly property real timelineEnd: timelineStart + modelData.durationNs
-                            readonly property bool intersectsViewport:
-                                timelineEnd > timeline.viewportStartNs
-                                && timelineStart < timeline.viewportStartNs + timeline.viewportDurationNs
-
-                            x: 12 + (timelineStart - timeline.viewportStartNs)
-                               / Math.max(1, timeline.viewportDurationNs) * contentWidth
-                            y: 30
-                            width: modelData.durationNs
-                                   / Math.max(1, timeline.viewportDurationNs) * contentWidth
-                            height: Math.max(1, timelineLayer.height - 44)
-                            visible: modelData.thumbnailAtlas.length > 0 && intersectsViewport
-                            clip: true
-
-                            Image {
-                                id: atlas
-                                anchors.fill: parent
-                                source: clipThumbnail.modelData.thumbnailAtlas.length > 0
-                                    ? "file:///" + clipThumbnail.modelData.thumbnailAtlas.replace(/\\/g, "/")
-                                    : ""
-                                fillMode: Image.Stretch
-                                asynchronous: true
-                                cache: true
-                                smooth: true
-                                opacity: 0.9
-                                sourceClipRect: Qt.rect(
-                                    atlas.sourceSize.width * clipThumbnail.modelData.sourceInNs
-                                        / Math.max(1, clipThumbnail.modelData.assetDurationNs),
-                                    0,
-                                    atlas.sourceSize.width * clipThumbnail.modelData.sourceDurationNs
-                                        / Math.max(1, clipThumbnail.modelData.assetDurationNs),
-                                    atlas.sourceSize.height)
-                            }
-                            Label {
-                                anchors.top: parent.top
-                                anchors.right: parent.right
-                                anchors.margins: 5
-                                visible: Math.abs(clipThumbnail.modelData.playbackRate - 1.0) > 0.001
-                                text: Math.round(clipThumbnail.modelData.playbackRate * 100) + "%"
-                                color: "white"
-                                font.bold: true
-                                font.pixelSize: 11
-                                background: Rectangle { color: "#a0000000"; radius: 3 }
-                            }
-                        }
                     }
 
                     TimelineView {
@@ -633,120 +655,6 @@ ApplicationWindow {
                             EditorController.trimClip(clipId, sourceIn, duration)
                         onMoveCommitted: (clipIds, insertionIndex) =>
                             EditorController.moveClips(clipIds, insertionIndex)
-                    }
-
-                    Repeater {
-                        model: EditorController.captions
-                        delegate: Rectangle {
-                            id: captionBar
-                            required property var modelData
-                            readonly property real contentWidth: Math.max(1, timelineLayer.width - 24)
-                            readonly property real baseX: 12 + (modelData.timelineInNs - timeline.viewportStartNs)
-                               / Math.max(1, timeline.viewportDurationNs) * contentWidth
-                            readonly property real baseWidth: Math.max(4, modelData.durationNs
-                                / Math.max(1, timeline.viewportDurationNs) * contentWidth)
-                            readonly property real leftDelta: leftDrag.active
-                                ? Math.max(-baseX + 12, Math.min(leftDrag.translation.x, baseWidth - 8)) : 0
-                            readonly property real rightDelta: rightDrag.active
-                                ? Math.max(-baseWidth + 8, rightDrag.translation.x) : 0
-                            readonly property real moveDelta: moveDrag.active ? moveDrag.translation.x : 0
-                            x: baseX + leftDelta + moveDelta
-                            y: timelineLayer.height - 31
-                            width: Math.max(8, baseWidth - leftDelta + rightDelta)
-                            height: 24
-                            z: 4
-                            radius: 3
-                            visible: modelData.timelineInNs + modelData.durationNs > timeline.viewportStartNs
-                                     && modelData.timelineInNs < timeline.viewportStartNs + timeline.viewportDurationNs
-                            color: modelData.id === EditorController.selectedCaptionId
-                                   ? "#b780ff" : "#7952a8"
-                            border.color: "#d8bcff"
-                            clip: true
-
-                            Label {
-                                anchors.fill: parent
-                                anchors.leftMargin: 6
-                                anchors.rightMargin: 6
-                                text: captionBar.modelData.text
-                                elide: Text.ElideRight
-                                verticalAlignment: Text.AlignVCenter
-                                font.pixelSize: 11
-                            }
-                            TapHandler {
-                                onTapped: EditorController.selectCaption(captionBar.modelData.id)
-                            }
-                            Item {
-                                anchors.fill: parent
-                                anchors.leftMargin: 7
-                                anchors.rightMargin: 7
-                                DragHandler {
-                                    id: moveDrag
-                                    target: null
-                                    xAxis.enabled: true
-                                    yAxis.enabled: false
-                                    onActiveChanged: {
-                                        if (active) {
-                                            EditorController.selectCaption(captionBar.modelData.id)
-                                        } else if (translation.x !== 0) {
-                                            EditorController.moveCaption(
-                                                captionBar.modelData.id,
-                                                timeline.timelineTimeAt(
-                                                    captionBar.baseX + translation.x))
-                                        }
-                                    }
-                                }
-                            }
-                            Rectangle {
-                                anchors.left: parent.left
-                                width: 7
-                                height: parent.height
-                                color: "#eadcff"
-                                z: 2
-                                DragHandler {
-                                    id: leftDrag
-                                    target: null
-                                    xAxis.enabled: true
-                                    yAxis.enabled: false
-                                    onActiveChanged: {
-                                        if (active) {
-                                            EditorController.selectCaption(captionBar.modelData.id)
-                                        } else if (translation.x !== 0) {
-                                            const newIn = timeline.timelineTimeAt(
-                                                captionBar.baseX + translation.x)
-                                            const oldOut = captionBar.modelData.timelineInNs
-                                                           + captionBar.modelData.durationNs
-                                            EditorController.trimCaption(
-                                                captionBar.modelData.id, newIn, oldOut - newIn)
-                                        }
-                                    }
-                                }
-                            }
-                            Rectangle {
-                                anchors.right: parent.right
-                                width: 7
-                                height: parent.height
-                                color: "#eadcff"
-                                z: 2
-                                DragHandler {
-                                    id: rightDrag
-                                    target: null
-                                    xAxis.enabled: true
-                                    yAxis.enabled: false
-                                    onActiveChanged: {
-                                        if (active) {
-                                            EditorController.selectCaption(captionBar.modelData.id)
-                                        } else if (translation.x !== 0) {
-                                            const newOut = timeline.timelineTimeAt(
-                                                captionBar.baseX + captionBar.baseWidth + translation.x)
-                                            EditorController.trimCaption(
-                                                captionBar.modelData.id,
-                                                captionBar.modelData.timelineInNs,
-                                                newOut - captionBar.modelData.timelineInNs)
-                                        }
-                                    }
-                                }
-                            }
-                        }
                     }
 
                     DropArea {

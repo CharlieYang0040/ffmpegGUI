@@ -3,8 +3,12 @@
 
 #include <QGuiApplication>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QDateTime>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QStandardPaths>
@@ -13,8 +17,53 @@
 #include <qqml.h>
 
 #include <cmath>
+#include <memory>
 
 namespace {
+
+std::unique_ptr<QFile> applicationLog;
+QMutex applicationLogMutex;
+QtMessageHandler previousMessageHandler{};
+
+void writeApplicationLog(
+    QtMsgType type,
+    const QMessageLogContext& context,
+    const QString& message) {
+    const char* level = "INFO";
+    if (type == QtWarningMsg) level = "WARN";
+    else if (type == QtCriticalMsg) level = "ERROR";
+    else if (type == QtFatalMsg) level = "FATAL";
+    else if (type == QtDebugMsg) level = "DEBUG";
+    const auto category = context.category != nullptr ? context.category : "default";
+    const auto line = QStringLiteral("%1 [%2] %3 · %4\n")
+        .arg(QDateTime::currentDateTime().toString(Qt::ISODateWithMs))
+        .arg(QString::fromLatin1(level))
+        .arg(QString::fromLatin1(category))
+        .arg(message)
+        .toUtf8();
+    {
+        QMutexLocker lock(&applicationLogMutex);
+        if (applicationLog && applicationLog->isOpen()) {
+            applicationLog->write(line);
+            applicationLog->flush();
+        }
+    }
+    if (previousMessageHandler != nullptr) previousMessageHandler(type, context, message);
+}
+
+QString initializeApplicationLog() {
+    const auto directory = QDir(
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation));
+    QDir().mkpath(directory.filePath("logs"));
+    const auto path = directory.filePath("logs/editor.log");
+    applicationLog = std::make_unique<QFile>(path);
+    if (!applicationLog->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        applicationLog.reset();
+        return {};
+    }
+    previousMessageHandler = qInstallMessageHandler(writeApplicationLog);
+    return path;
+}
 
 void configureBundledGStreamer() {
     const auto applicationDir = QCoreApplication::applicationDirPath();
@@ -40,6 +89,8 @@ int main(int argc, char* argv[]) {
     QGuiApplication application(argc, argv);
     application.setApplicationName("ffmpegGUI Next");
     application.setOrganizationName("CharlieYang0040");
+    const auto logPath = initializeApplicationLog();
+    qInfo().noquote() << "application started; log=" << logPath;
     configureBundledGStreamer();
     QQuickStyle::setStyle("Basic");
     QWindow videoWindow;
@@ -161,9 +212,23 @@ int main(int argc, char* argv[]) {
         }
         controller.undo();
         QEventLoop previewRefreshLoop;
-        QTimer::singleShot(100, &previewRefreshLoop, &QEventLoop::quit);
+        QTimer previewRefreshTimeout;
+        previewRefreshTimeout.setSingleShot(true);
+        QObject::connect(
+            &controller,
+            &EditorController::previewBusyChanged,
+            &previewRefreshLoop,
+            [&controller, &previewRefreshLoop] {
+                if (!controller.previewBusy() && controller.previewRebuildCount() > 0) {
+                    previewRefreshLoop.quit();
+                }
+            });
+        QObject::connect(
+            &previewRefreshTimeout, &QTimer::timeout, &previewRefreshLoop, &QEventLoop::quit);
+        previewRefreshTimeout.start(15'000);
         previewRefreshLoop.exec();
-        if (controller.previewRebuildCount() == 0 || controller.previewRebuildCount() > 2) {
+        if (controller.previewBusy() || controller.previewRebuildCount() == 0 ||
+            controller.previewRebuildCount() > 2) {
             return EXIT_FAILURE;
         }
         const auto beforeRangeDeleteDuration = controller.durationNs();
@@ -326,7 +391,8 @@ int main(int argc, char* argv[]) {
         controller.updateSelectedCaption(QStringLiteral("미리보기 자막"), 1200);
         QTimer::singleShot(150, &controller, &EditorController::togglePlayback);
         QTimer::singleShot(5000, &application, [&application, &controller] {
-            if (controller.playheadNs() < 500'000'000) application.exit(10);
+            if (controller.previewFailed()) application.exit(14);
+            else if (controller.playheadNs() <= 750'000'000) application.exit(10);
             else if (controller.gpuSceneGraphPreview() && controller.videoFramesReceived() < 10) application.exit(11);
             else if (controller.gpuSceneGraphPreview() && controller.videoFramesDelivered() < 10) application.exit(12);
             else if (controller.gpuSceneGraphPreview() && controller.videoFramesPresented() < 10) application.exit(13);

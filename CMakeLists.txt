@@ -133,7 +133,7 @@ if(FFGUI_BUILD_DESKTOP)
             endif()
             add_test(NAME timeline_view COMMAND ffgui_timeline_view_tests)
             set_tests_properties(timeline_view PROPERTIES
-                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+                ENVIRONMENT "QT_QPA_PLATFORM=windows"
                 ENVIRONMENT_MODIFICATION
                     "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
             )

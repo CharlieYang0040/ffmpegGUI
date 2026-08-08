@@ -16,6 +16,7 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QDateTime>
+#include <QDebug>
 #include <QtConcurrentRun>
 
 #include <algorithm>
@@ -75,6 +76,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 for (auto& item : imported) {
                     const auto assetId = item.asset.id();
                     const auto assetKey = QString::fromStdString(assetId);
+                    waveform_cache_.remove(assetKey);
                     const auto duration = item.asset.duration();
                     if (!item.thumbnail_atlas.isEmpty()) {
                         thumbnail_atlases_.insert(assetKey, std::move(item.thumbnail_atlas));
@@ -200,6 +202,8 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         QMetaObject::invokeMethod(
             this,
             [this, message = std::move(message)] {
+                qWarning().noquote() << "GStreamer playback error:"
+                                     << QString::fromUtf8(message);
                 setStatus(QString::fromUtf8(message));
             },
             Qt::QueuedConnection);
@@ -208,8 +212,54 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     preview_update_timer_.setSingleShot(true);
     preview_update_timer_.setInterval(50);
     connect(&preview_update_timer_, &QTimer::timeout, this, [this] {
-        static_cast<void>(applyPreviewTimeline(true));
+        queuePreviewOperation(true);
     });
+#ifdef FFGUI_HAS_GES
+    connect(
+        &preview_watcher_,
+        &QFutureWatcher<PreviewOperationResult>::finished,
+        this,
+        [this] {
+            const auto result = preview_watcher_.result();
+            if (result.success) {
+                if (preview_failed_) {
+                    preview_failed_ = false;
+                    emit previewFailedChanged();
+                }
+                if (result.rebuilt) {
+                    preview_applied_generation_ = result.generation;
+                    ++preview_rebuild_count_;
+                }
+            } else {
+                preview_should_play_ = false;
+                qWarning().noquote() << "preview operation failed:" << result.error;
+                if (!preview_failed_) {
+                    preview_failed_ = true;
+                    emit previewFailedChanged();
+                }
+                setStatus(result.error.isEmpty()
+                    ? QStringLiteral("미리보기를 준비하지 못했습니다")
+                    : result.error);
+            }
+
+            const bool generationAdvanced = result.generation != preview_generation_;
+            if (preview_operation_pending_ || generationAdvanced) {
+                startPreviewOperation();
+                return;
+            }
+            if (preview_busy_) {
+                preview_busy_ = false;
+                emit previewBusyChanged();
+            }
+            if (result.success) {
+                setStatus(timeline_.clips().empty()
+                    ? QStringLiteral("미디어를 추가하세요")
+                    : (preview_should_play_
+                        ? QStringLiteral("재생 중")
+                        : QStringLiteral("미리보기 준비 완료")));
+            }
+        });
+#endif
 }
 
 void EditorController::setVideoWindow(QWindow* window) {
@@ -222,6 +272,9 @@ void EditorController::setVideoWindow(QWindow* window) {
 }
 
 EditorController::~EditorController() {
+#ifdef FFGUI_HAS_GES
+    if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
+#endif
     if (export_process_.state() != QProcess::NotRunning) {
         export_process_.kill();
         export_process_.waitForFinished(3'000);
@@ -239,6 +292,7 @@ std::uint64_t EditorController::videoFramesReceived() const noexcept {
 }
 
 QVariantList EditorController::clips() const {
+    if (clips_cache_.has_value()) return clips_cache_.value();
     QVariantList result;
     const auto spans = timeline_.snapshot();
     for (std::size_t index = 0; index < spans.size(); ++index) {
@@ -262,19 +316,26 @@ QVariantList EditorController::clips() const {
             thumbnail_atlases_.value(QString::fromStdString(span.clip.asset_id)));
         QVariantList waveform;
         if (asset != nullptr) {
-            waveform.reserve(static_cast<qsizetype>(asset->audio_peaks().size()));
-            for (const auto peak : asset->audio_peaks()) {
-                waveform.push_back(peak);
+            const auto assetKey = QString::fromStdString(asset->id());
+            const auto cached = waveform_cache_.constFind(assetKey);
+            if (cached != waveform_cache_.cend()) {
+                waveform = cached.value();
+            } else {
+                waveform.reserve(static_cast<qsizetype>(asset->audio_peaks().size()));
+                for (const auto peak : asset->audio_peaks()) waveform.push_back(peak);
+                waveform_cache_.insert(assetKey, waveform);
             }
         }
         value.insert("waveform", waveform);
         value.insert("color", index % 2 == 0 ? "#315a94" : "#3b6599");
         result.push_back(value);
     }
-    return result;
+    clips_cache_ = std::move(result);
+    return clips_cache_.value();
 }
 
 QVariantList EditorController::mediaAssets() const {
+    if (media_assets_cache_.has_value()) return media_assets_cache_.value();
     std::vector<const ffgui::MediaAsset*> assets;
     assets.reserve(timeline_.assets().size());
     for (const auto& [id, asset] : timeline_.assets()) {
@@ -302,10 +363,12 @@ QVariantList EditorController::mediaAssets() const {
             {"thumbnailAtlas", thumbnail_atlases_.value(id)},
             {"useCount", useCount}});
     }
-    return result;
+    media_assets_cache_ = std::move(result);
+    return media_assets_cache_.value();
 }
 
 QVariantList EditorController::captions() const {
+    if (captions_cache_.has_value()) return captions_cache_.value();
     QVariantList result;
     result.reserve(static_cast<qsizetype>(timeline_.captions().size()));
     for (const auto& caption : timeline_.captions()) {
@@ -315,7 +378,8 @@ QVariantList EditorController::captions() const {
             {"timelineInNs", static_cast<qint64>(caption.timeline_in)},
             {"durationNs", static_cast<qint64>(caption.duration)}});
     }
-    return result;
+    captions_cache_ = std::move(result);
+    return captions_cache_.value();
 }
 
 qint64 EditorController::durationNs() const noexcept {
@@ -393,7 +457,7 @@ void EditorController::attachVideoItem(QObject* item) {
     connect(videoItem, &D3D11VideoItem::d3d11DeviceReady, this, [this](quintptr device) {
         player_->set_d3d11_device(reinterpret_cast<void*>(device));
         preview_applied_generation_.reset();
-        if (!preview_snapshot_.empty()) static_cast<void>(applyPreviewTimeline(true));
+        if (!preview_snapshot_.empty()) queuePreviewOperation(true);
     });
     if (videoItem->devicePointer() != 0) {
         player_->set_d3d11_device(reinterpret_cast<void*>(videoItem->devicePointer()));
@@ -468,42 +532,28 @@ void EditorController::seek(qint64 timelinePosition) {
     playhead_ns_ = std::clamp<qint64>(timelinePosition, 0, durationNs());
     emit playheadChanged();
 #ifdef FFGUI_HAS_GES
-    try {
-        if (!applyPreviewTimeline(false)) return;
-        player_->seek(playhead_ns_);
-    } catch (const std::exception& error) {
-        setStatus(QString::fromUtf8(error.what()));
-    }
+    preview_should_play_ = false;
+    pending_preview_seek_ = playhead_ns_;
+    queuePreviewOperation(false);
 #endif
 }
 
 void EditorController::togglePlayback() {
 #ifdef FFGUI_HAS_GES
-    try {
-        if (playing_) {
-            player_->pause();
-        } else {
-            if (!applyPreviewTimeline(true)) return;
-            if (playhead_ns_ >= durationNs()) {
-                seek(0);
-            }
-            player_->play();
-        }
-    } catch (const std::exception& error) {
-        setStatus(QString::fromUtf8(error.what()));
+    preview_should_play_ = !(preview_should_play_ || playing_);
+    if (preview_should_play_ && playhead_ns_ >= durationNs()) {
+        playhead_ns_ = 0;
+        emit playheadChanged();
     }
+    if (preview_should_play_) pending_preview_seek_ = playhead_ns_;
+    queuePreviewOperation(false);
 #endif
 }
 
 void EditorController::stepFrame(int direction) {
     if (direction == 0 || timeline_.clips().empty()) return;
 #ifdef FFGUI_HAS_GES
-    try {
-        if (playing_) player_->pause();
-    } catch (const std::exception& error) {
-        setStatus(QString::fromUtf8(error.what()));
-        return;
-    }
+    preview_should_play_ = false;
 #endif
     const auto target = direction > 0
         ? timeline_.next_frame_time(playhead_ns_)
@@ -592,7 +642,10 @@ void EditorController::extractMarkedRange() {
 
 void EditorController::stop() {
 #ifdef FFGUI_HAS_GES
-    player_->stop();
+    preview_should_play_ = false;
+    preview_stop_requested_ = true;
+    pending_preview_seek_ = 0;
+    queuePreviewOperation(false);
 #endif
     playhead_ns_ = 0;
     emit playheadChanged();
@@ -1202,6 +1255,7 @@ void EditorController::loadProject(const QString& path) {
         loaded.clear_history();
         timeline_ = std::move(loaded);
         thumbnail_atlases_ = std::move(loadedAtlases);
+        waveform_cache_.clear();
         setSingleSelection(timeline_.clips().empty()
             ? QString{}
             : QString::fromStdString(timeline_.clips().front().id));
@@ -1310,7 +1364,10 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     emit exportProgressChanged();
     emit exportingChanged();
 #ifdef FFGUI_HAS_GES
-    if (playing_) player_->pause();
+    if (playing_ || preview_should_play_) {
+        preview_should_play_ = false;
+        queuePreviewOperation(false);
+    }
 #endif
     startExportProcess(ffgui::ExportVideoEncoder::h264_nvenc);
 }
@@ -1397,39 +1454,87 @@ void EditorController::finishExport(bool success) {
     export_request_.reset();
 }
 
-bool EditorController::applyPreviewTimeline(bool restorePosition) {
+void EditorController::queuePreviewOperation(bool restorePosition) {
 #ifdef FFGUI_HAS_GES
-    if (preview_applied_generation_.has_value() &&
-        preview_applied_generation_.value() == preview_generation_) {
-        return true;
-    }
     preview_update_timer_.stop();
-    try {
-        player_->set_timeline(preview_snapshot_, timeline_.captions());
-        preview_applied_generation_ = preview_generation_;
-        ++preview_rebuild_count_;
-        if (restorePosition && playhead_ns_ > 0 && playhead_ns_ < durationNs()) {
-            player_->seek(playhead_ns_);
-        }
-        setStatus(timeline_.clips().empty() ? "미디어를 추가하세요" : "재생 준비 완료");
-        return true;
-    } catch (const std::exception& error) {
-        setStatus(QString::fromUtf8(error.what()));
-        return false;
-    }
+    if (restorePosition) pending_preview_seek_ = playhead_ns_;
+    preview_operation_pending_ = true;
+    startPreviewOperation();
 #else
     static_cast<void>(restorePosition);
-    return true;
+#endif
+}
+
+void EditorController::startPreviewOperation() {
+#ifdef FFGUI_HAS_GES
+    if (preview_watcher_.isRunning() || !preview_operation_pending_) return;
+
+    const auto generation = preview_generation_;
+    const bool rebuild = !preview_applied_generation_.has_value() ||
+        preview_applied_generation_.value() != generation;
+    auto spans = rebuild ? preview_snapshot_ : std::vector<ffgui::TimelineSpan>{};
+    // Caption overlay operations can invalidate the NLE composition during an accurate seek.
+    // Keep the core editing preview video/audio-only until the overlay path has its own
+    // gap-safe composition and regression suite.
+    auto captions = std::vector<ffgui::CaptionCue>{};
+    const auto seekTarget = pending_preview_seek_;
+    const bool shouldPlay = preview_should_play_;
+    const bool shouldStop = preview_stop_requested_;
+    pending_preview_seek_.reset();
+    preview_stop_requested_ = false;
+    preview_operation_pending_ = false;
+    if (!preview_busy_) {
+        preview_busy_ = true;
+        emit previewBusyChanged();
+    }
+    if (preview_failed_) {
+        preview_failed_ = false;
+        emit previewFailedChanged();
+    }
+    setStatus(rebuild
+        ? QStringLiteral("미리보기 타임라인 준비 중…")
+        : QStringLiteral("미리보기 위치 이동 중…"));
+
+    auto* player = player_.get();
+    preview_watcher_.setFuture(QtConcurrent::run(
+        [player,
+         generation,
+         rebuild,
+         spans = std::move(spans),
+         captions = std::move(captions),
+         seekTarget,
+         shouldPlay,
+         shouldStop]() mutable {
+            PreviewOperationResult result;
+            result.generation = generation;
+            result.rebuilt = rebuild;
+            try {
+                if (rebuild) player->set_timeline(std::move(spans), std::move(captions));
+                if (shouldStop) {
+                    player->stop();
+                } else {
+                    if (seekTarget.has_value() && player->duration() > 0) {
+                        player->seek(std::clamp<qint64>(
+                            seekTarget.value(), 0, static_cast<qint64>(player->duration())));
+                    }
+                    if (shouldPlay) {
+                        player->play();
+                    } else if (player->state() == ffgui::PlaybackState::playing) {
+                        player->pause();
+                    }
+                }
+                result.success = true;
+            } catch (const std::exception& error) {
+                result.error = QString::fromUtf8(error.what());
+            }
+            return result;
+        }));
 #endif
 }
 
 void EditorController::publishTimeline(bool resetPlayhead) {
 #ifdef FFGUI_HAS_GES
-    try {
-        if (playing_) player_->stop();
-    } catch (const std::exception& error) {
-        setStatus(QString::fromUtf8(error.what()));
-    }
+    preview_should_play_ = false;
 #endif
     if (resetPlayhead) {
         playhead_ns_ = 0;
@@ -1439,6 +1544,9 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     preview_snapshot_ = timeline_.snapshot();
     preview_revision_ = timeline_.revision();
     ++preview_generation_;
+    clips_cache_.reset();
+    media_assets_cache_.reset();
+    captions_cache_.reset();
     const auto previousIn = in_point_ns_;
     const auto previousOut = out_point_ns_;
     if (in_point_ns_ > durationNs()) in_point_ns_ = -1;

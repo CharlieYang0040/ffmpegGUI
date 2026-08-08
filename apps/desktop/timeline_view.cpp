@@ -1,6 +1,8 @@
 #include "timeline_view.hpp"
 
 #include <QColor>
+#include <QCursor>
+#include <QHoverEvent>
 #include <QMouseEvent>
 #include <QSGGeometryNode>
 #include <QSGSimpleRectNode>
@@ -39,6 +41,7 @@ void setVertex(
 TimelineView::TimelineView(QQuickItem* parent) : QQuickItem(parent) {
     setFlag(ItemHasContents, true);
     setAcceptedMouseButtons(Qt::LeftButton);
+    setAcceptHoverEvents(true);
 }
 
 qint64 TimelineView::timelineTimeAt(qreal x) const {
@@ -211,10 +214,13 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                 contentWidth * static_cast<qreal>(std::min(start + duration, viewEnd) - viewStart) /
                     static_cast<qreal>(viewDuration);
             QColor color(clip.value("color", index % 2 == 0 ? "#315a94" : "#3f6b9f").toString());
+            if (index == hover_clip_index_) {
+                color = color.lighter(118);
+            }
             if (selected_clip_ids_.contains(clip.value("id").toString())) {
                 color = color.lighter(125);
             }
-            color.setAlpha(145);
+            color.setAlpha(index == hover_clip_index_ ? 205 : 165);
             const auto x1 = left + 1.0;
             const auto x2 = std::max(x1 + 1.0, right - 1.0);
             const auto y1 = kTrackTop;
@@ -376,12 +382,56 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
             static_cast<qreal>(visibleDurationNs());
     if (std::abs(event->position().x() - left) <= kHandleHitWidth) {
         drag_mode_ = DragMode::trim_left;
+        setCursor(QCursor(Qt::SizeHorCursor));
     } else if (std::abs(event->position().x() - right) <= kHandleHitWidth) {
         drag_mode_ = DragMode::trim_right;
+        setCursor(QCursor(Qt::SizeHorCursor));
     } else {
         drag_mode_ = DragMode::move;
+        setCursor(QCursor(Qt::ClosedHandCursor));
     }
     if (selectionMode != 0) drag_mode_ = DragMode::none;
+    event->accept();
+}
+
+void TimelineView::hoverMoveEvent(QHoverEvent* event) {
+    const auto index = clipIndexAt(event->position().x());
+    if (hover_clip_index_ != index) {
+        hover_clip_index_ = index;
+        timeline_geometry_dirty_ = true;
+        update();
+    }
+    if (index < 0) {
+        setCursor(QCursor(Qt::ArrowCursor));
+        event->accept();
+        return;
+    }
+
+    const auto clip = clips_[index].toMap();
+    const auto contentWidth = std::max<qreal>(1.0, width() - kHorizontalPadding * 2.0);
+    const auto start = clip.value("timelineInNs").toLongLong();
+    const auto duration = clip.value("durationNs").toLongLong();
+    const auto left = kHorizontalPadding + contentWidth *
+        static_cast<qreal>(start - viewport_start_ns_) /
+        static_cast<qreal>(visibleDurationNs());
+    const auto right = kHorizontalPadding + contentWidth *
+        static_cast<qreal>(start + duration - viewport_start_ns_) /
+        static_cast<qreal>(visibleDurationNs());
+    setCursor(QCursor(
+        std::abs(event->position().x() - left) <= kHandleHitWidth ||
+            std::abs(event->position().x() - right) <= kHandleHitWidth
+        ? Qt::SizeHorCursor
+        : Qt::OpenHandCursor));
+    event->accept();
+}
+
+void TimelineView::hoverLeaveEvent(QHoverEvent* event) {
+    if (hover_clip_index_ >= 0) {
+        hover_clip_index_ = -1;
+        timeline_geometry_dirty_ = true;
+        update();
+    }
+    setCursor(QCursor(Qt::ArrowCursor));
     event->accept();
 }
 
@@ -450,6 +500,7 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
     drag_mode_ = DragMode::none;
     drag_clip_index_ = -1;
     drag_delta_ns_ = 0;
+    setCursor(QCursor(hover_clip_index_ >= 0 ? Qt::OpenHandCursor : Qt::ArrowCursor));
     timeline_geometry_dirty_ = true;
     update();
     event->accept();

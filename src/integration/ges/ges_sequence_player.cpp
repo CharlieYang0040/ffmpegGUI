@@ -183,8 +183,15 @@ void GesSequencePlayer::seek(TimeNs timeline_position) {
         } else if (prepareResult != GST_STATE_CHANGE_FAILURE) {
             gst_element_get_state(pipeline, &current, &pending, 0);
         }
-        if (prepareResult == GST_STATE_CHANGE_FAILURE || current != GST_STATE_PAUSED) {
-            throw std::runtime_error("GES timeline failed to prepare for seeking");
+        const bool pausePending = pending == GST_STATE_PAUSED;
+        if (prepareResult == GST_STATE_CHANGE_FAILURE ||
+            (current != GST_STATE_PAUSED && !pausePending)) {
+            std::ostringstream detail;
+            detail << "GES preview could not enter paused state before seek"
+                   << " (current=" << gst_element_state_get_name(current)
+                   << ", pending=" << gst_element_state_get_name(pending)
+                   << ", result=" << static_cast<int>(prepareResult) << ')';
+            throw std::runtime_error(detail.str());
         }
         state_.store(PlaybackState::paused);
         notifyPaused = true;
@@ -645,6 +652,10 @@ void GesSequencePlayer::monitor(std::stop_token stop_token) {
                         error_message = error && error->message
                             ? error->message
                             : "GStreamer playback failed";
+                        if (debug != nullptr && *debug != '\0') {
+                            error_message += " | ";
+                            error_message += debug;
+                        }
                         if (error != nullptr) {
                             g_error_free(error);
                         }

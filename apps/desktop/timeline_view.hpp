@@ -5,6 +5,7 @@
 #include <QtQml/qqmlregistration.h>
 
 class QWheelEvent;
+class QHoverEvent;
 
 class TimelineView : public QQuickItem {
     Q_OBJECT
@@ -67,6 +68,8 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void hoverMoveEvent(QHoverEvent* event) override;
+    void hoverLeaveEvent(QHoverEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
 
 private:
@@ -91,6 +94,7 @@ private:
     qreal drag_origin_x_{};
     qint64 drag_delta_ns_{};
     int move_target_index_{-1};
+    int hover_clip_index_{-1};
     qreal zoom_level_{1.0};
     qint64 viewport_start_ns_{};
     bool timeline_geometry_dirty_{true};
