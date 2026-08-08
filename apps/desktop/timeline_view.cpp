@@ -371,7 +371,12 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
     if (interaction_mode_ == 1) {
         drag_mode_ = DragMode::none;
         drag_clip_index_ = -1;
-        seekAt(event->position().x());
+        interaction_active_ = true;
+        interaction_kind_ = QStringLiteral("탐색");
+        interaction_x_ = event->position().x();
+        interaction_time_ns_ = timeAt(interaction_x_);
+        emit interactionFeedbackChanged();
+        seekAt(event->position().x(), false);
         setCursor(QCursor(Qt::ClosedHandCursor));
         event->accept();
         return;
@@ -411,14 +416,23 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
             static_cast<qreal>(visibleDurationNs());
     if (std::abs(event->position().x() - left) <= kHandleHitWidth) {
         drag_mode_ = DragMode::trim_left;
+        interaction_kind_ = QStringLiteral("시작 트림");
+        interaction_time_ns_ = start;
         setCursor(QCursor(Qt::SizeHorCursor));
     } else if (std::abs(event->position().x() - right) <= kHandleHitWidth) {
         drag_mode_ = DragMode::trim_right;
+        interaction_kind_ = QStringLiteral("끝 트림");
+        interaction_time_ns_ = start + duration;
         setCursor(QCursor(Qt::SizeHorCursor));
     } else {
         drag_mode_ = DragMode::move;
+        interaction_kind_ = QStringLiteral("클립 이동");
+        interaction_time_ns_ = start;
         setCursor(QCursor(Qt::ClosedHandCursor));
     }
+    interaction_active_ = drag_mode_ != DragMode::none;
+    interaction_x_ = event->position().x();
+    emit interactionFeedbackChanged();
     if (selectionMode != 0) drag_mode_ = DragMode::none;
     event->accept();
 }
@@ -477,7 +491,10 @@ void TimelineView::hoverLeaveEvent(QHoverEvent* event) {
 void TimelineView::mouseMoveEvent(QMouseEvent* event) {
     if (event->buttons().testFlag(Qt::LeftButton)) {
         if (interaction_mode_ == 1) {
-            seekAt(event->position().x());
+            interaction_x_ = event->position().x();
+            interaction_time_ns_ = timeAt(interaction_x_);
+            emit interactionFeedbackChanged();
+            seekAt(event->position().x(), false);
             event->accept();
             return;
         }
@@ -508,6 +525,14 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
             } else {
                 move_target_index_ = insertionIndexAt(event->position().x());
             }
+            interaction_x_ = event->position().x();
+            if (drag_mode_ == DragMode::trim_left || drag_mode_ == DragMode::trim_right) {
+                interaction_time_ns_ = clip.value("timelineInNs").toLongLong() +
+                    (drag_mode_ == DragMode::trim_right ? duration : 0) + drag_delta_ns_;
+            } else {
+                interaction_time_ns_ = timeAt(interaction_x_);
+            }
+            emit interactionFeedbackChanged();
             timeline_geometry_dirty_ = true;
             update();
         }
@@ -519,7 +544,9 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
 
 void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
     if (interaction_mode_ == 1) {
-        seekAt(event->position().x());
+        seekAt(event->position().x(), true);
+        interaction_active_ = false;
+        emit interactionFeedbackChanged();
         setCursor(QCursor(Qt::PointingHandCursor));
         event->accept();
         return;
@@ -550,18 +577,20 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
     drag_mode_ = DragMode::none;
     drag_clip_index_ = -1;
     drag_delta_ns_ = 0;
+    interaction_active_ = false;
+    emit interactionFeedbackChanged();
     setCursor(QCursor(hover_clip_index_ >= 0 ? Qt::OpenHandCursor : Qt::ArrowCursor));
     timeline_geometry_dirty_ = true;
     update();
     event->accept();
 }
 
-void TimelineView::seekAt(qreal x) {
+void TimelineView::seekAt(qreal x, bool finalPosition) {
     if (duration_ns_ <= 0) {
         return;
     }
     setPlayheadNs(timeAt(x));
-    emit seekRequested(playhead_ns_);
+    emit seekRequested(playhead_ns_, finalPosition);
 }
 
 void TimelineView::wheelEvent(QWheelEvent* event) {

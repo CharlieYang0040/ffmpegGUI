@@ -154,14 +154,18 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 QFile::remove(QString::fromStdWString(export_request_->output_path.wstring()));
                 QFile::remove(export_concat_path_);
                 setStatus("무손실 복사를 적용할 수 없어 NVENC로 다시 시도합니다");
-                startExportProcess(ffgui::ExportVideoEncoder::h264_nvenc);
+                startExportProcess(export_codec_ == 1
+                    ? ffgui::ExportVideoEncoder::hevc_nvenc
+                    : ffgui::ExportVideoEncoder::h264_nvenc);
                 return;
             }
             if (!export_cancelled_ && !export_cpu_fallback_) {
                 export_cpu_fallback_ = true;
                 QFile::remove(QString::fromStdWString(export_request_->output_path.wstring()));
                 setStatus("NVENC를 사용할 수 없어 CPU 인코딩으로 다시 시도합니다");
-                startExportProcess(ffgui::ExportVideoEncoder::libx264);
+                startExportProcess(export_codec_ == 1
+                    ? ffgui::ExportVideoEncoder::libx265
+                    : ffgui::ExportVideoEncoder::libx264);
                 return;
             }
             finishExport(false);
@@ -655,7 +659,21 @@ void EditorController::seek(qint64 timelinePosition) {
 #ifdef FFGUI_HAS_GES
     preview_should_play_ = false;
     pending_preview_seek_ = playhead_ns_;
+    pending_preview_seek_accurate_ = true;
     queuePreviewOperation(false);
+#endif
+}
+
+void EditorController::scrub(qint64 timelinePosition, bool finalPosition) {
+    playhead_ns_ = std::clamp<qint64>(timelinePosition, 0, durationNs());
+    emit playheadChanged();
+#ifdef FFGUI_HAS_GES
+    preview_should_play_ = false;
+    pending_preview_seek_ = playhead_ns_;
+    pending_preview_seek_accurate_ = finalPosition;
+    queuePreviewOperation(false);
+#else
+    static_cast<void>(finalPosition);
 #endif
 }
 
@@ -1407,6 +1425,78 @@ bool EditorController::outputExists(const QUrl& url) const {
     return url.isLocalFile() && QFileInfo::exists(url.toLocalFile());
 }
 
+void EditorController::setExportQuality(int quality) {
+    quality = std::clamp(quality, 0, 2);
+    if (export_quality_ == quality) return;
+    export_quality_ = quality;
+    emit exportSettingsChanged();
+}
+
+void EditorController::setExportCodec(int codec) {
+    codec = std::clamp(codec, 0, 2);
+    if (export_codec_ == codec) return;
+    export_codec_ = codec;
+    emit exportSettingsChanged();
+}
+
+void EditorController::setExportContainer(int container) {
+    container = std::clamp(container, 0, 2);
+    if (export_container_ == container) return;
+    export_container_ = container;
+    emit exportSettingsChanged();
+}
+
+QString EditorController::exportExtension() const {
+    if (export_container_ == 1) return QStringLiteral("mkv");
+    if (export_container_ == 2) return QStringLiteral("mov");
+    return QStringLiteral("mp4");
+}
+
+QString EditorController::timeText(qint64 timelinePosition) const {
+    const auto milliseconds = std::max<qint64>(0, timelinePosition) / 1'000'000;
+    const auto hours = milliseconds / 3'600'000;
+    const auto minutes = (milliseconds / 60'000) % 60;
+    const auto seconds = (milliseconds / 1'000) % 60;
+    const auto millis = milliseconds % 1'000;
+    return QStringLiteral("%1:%2:%3.%4")
+        .arg(hours, 2, 10, QLatin1Char('0'))
+        .arg(minutes, 2, 10, QLatin1Char('0'))
+        .arg(seconds, 2, 10, QLatin1Char('0'))
+        .arg(millis, 3, 10, QLatin1Char('0'));
+}
+
+qint64 EditorController::frameNumberAt(qint64 timelinePosition) const {
+    const auto clamped = std::clamp<qint64>(timelinePosition, 0, durationNs());
+    qint64 frameBase = 0;
+    qint64 cursor = 0;
+    for (const auto& clip : timeline_.clips()) {
+        const auto* asset = timeline_.asset(clip.asset_id);
+        const auto clipEnd = cursor + clip.timeline_duration();
+        if (asset == nullptr || asset->frame_pts().empty()) {
+            cursor = clipEnd;
+            continue;
+        }
+        const auto& frames = asset->frame_pts();
+        const auto first = std::lower_bound(frames.begin(), frames.end(), clip.source_in);
+        const auto last = std::lower_bound(frames.begin(), frames.end(), clip.source_out());
+        if (clamped >= clipEnd) {
+            frameBase += std::distance(first, last);
+            cursor = clipEnd;
+            continue;
+        }
+        const auto local = std::max<qint64>(0, clamped - cursor);
+        const auto sourceTime = clip.source_in + clip.source_offset_for_timeline(local);
+        const auto current = std::upper_bound(first, last, sourceTime);
+        const auto offset = current == first ? 0 : std::distance(first, current) - 1;
+        return frameBase + offset;
+    }
+    return frameBase;
+}
+
+qint64 EditorController::frameCountBetween(qint64 first, qint64 second) const {
+    return std::abs(frameNumberAt(second) - frameNumberAt(first));
+}
+
 QUrl EditorController::uniqueOutputUrl(const QUrl& url) const {
     if (!url.isLocalFile()) return {};
     const QFileInfo info(url.toLocalFile());
@@ -1432,7 +1522,7 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
         return;
     }
     auto output = QFileInfo(url.toLocalFile()).absoluteFilePath();
-    if (QFileInfo(output).suffix().isEmpty()) output += ".mp4";
+    if (QFileInfo(output).suffix().isEmpty()) output += "." + exportExtension();
     if (QFileInfo::exists(output)) {
         setStatus("기존 파일을 덮어쓰지 않습니다. 새 이름을 선택하세요");
         return;
@@ -1440,6 +1530,8 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
 
     ffgui::ExportRequest request;
     request.output_path = std::filesystem::path(output.toStdWString());
+    request.prefer_stream_copy = export_codec_ == 2;
+    request.quality = static_cast<ffgui::ExportQuality>(export_quality_);
     const auto exportSnapshot = timeline_.snapshot();
     if (exportSnapshot.empty()) return;
     last_export_matched_preview_ = false;
@@ -1509,7 +1601,9 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
         queuePreviewOperation(false);
     }
 #endif
-    startExportProcess(ffgui::ExportVideoEncoder::h264_nvenc);
+    startExportProcess(export_codec_ == 1
+        ? ffgui::ExportVideoEncoder::hevc_nvenc
+        : ffgui::ExportVideoEncoder::h264_nvenc);
 }
 
 void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
@@ -1544,7 +1638,8 @@ void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
         export_process_.setArguments(arguments);
         export_stage_ = export_stream_copy_active_
             ? QStringLiteral("무손실 복사")
-            : (encoder == ffgui::ExportVideoEncoder::h264_nvenc
+            : (encoder == ffgui::ExportVideoEncoder::h264_nvenc ||
+               encoder == ffgui::ExportVideoEncoder::hevc_nvenc
                 ? QStringLiteral("NVENC 인코딩")
                 : QStringLiteral("CPU 인코딩"));
         if (export_log_file_ && export_log_file_->isOpen()) {
@@ -1559,7 +1654,8 @@ void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
                           << "log=" << export_log_path_;
         setStatus(export_stream_copy_active_
             ? "내보내는 중 · 무손실 복사"
-            : (encoder == ffgui::ExportVideoEncoder::h264_nvenc
+            : (encoder == ffgui::ExportVideoEncoder::h264_nvenc ||
+               encoder == ffgui::ExportVideoEncoder::hevc_nvenc
                 ? "내보내는 중 · NVENC"
                 : "내보내는 중 · CPU"));
         export_process_.start();
@@ -1672,9 +1768,11 @@ void EditorController::startPreviewOperation() {
     // gap-safe composition and regression suite.
     auto captions = std::vector<ffgui::CaptionCue>{};
     const auto seekTarget = pending_preview_seek_;
+    const bool accurateSeek = pending_preview_seek_accurate_;
     const bool shouldPlay = preview_should_play_;
     const bool shouldStop = preview_stop_requested_;
     pending_preview_seek_.reset();
+    pending_preview_seek_accurate_ = true;
     preview_stop_requested_ = false;
     preview_operation_pending_ = false;
     if (!preview_busy_) {
@@ -1697,6 +1795,7 @@ void EditorController::startPreviewOperation() {
          spans = std::move(spans),
          captions = std::move(captions),
          seekTarget,
+         accurateSeek,
          shouldPlay,
          shouldStop]() mutable {
             PreviewOperationResult result;
@@ -1715,8 +1814,10 @@ void EditorController::startPreviewOperation() {
                     player->stop();
                 } else {
                     if (seekTarget.has_value() && player->duration() > 0) {
-                        player->seek(std::clamp<qint64>(
-                            seekTarget.value(), 0, static_cast<qint64>(player->duration())));
+                        const auto target = std::clamp<qint64>(
+                            seekTarget.value(), 0, static_cast<qint64>(player->duration()));
+                        if (accurateSeek) player->seek(target);
+                        else player->seek_preview(target);
                     }
                     if (shouldPlay) {
                         player->play();

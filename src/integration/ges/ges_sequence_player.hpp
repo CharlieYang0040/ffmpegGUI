@@ -55,6 +55,7 @@ public:
         std::vector<TimelineSpan> timeline,
         std::vector<CaptionCue> captions);
     void seek(TimeNs timeline_position) override;
+    void seek_preview(TimeNs timeline_position);
     void play() override;
     void pause() override;
     void stop() override;
@@ -75,6 +76,7 @@ public:
     }
 
 private:
+    void seek_locked(TimeNs timeline_position, bool wait_for_preroll);
     void rebuild_pipeline_locked(
         const std::vector<TimelineSpan>& timeline,
         const std::vector<CaptionCue>& captions);

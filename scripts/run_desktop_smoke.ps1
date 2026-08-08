@@ -15,6 +15,7 @@ $clipB = Join-Path $mediaDir "shot-b.mkv"
 $clipVfr = Join-Path $mediaDir "shot-vfr.mkv"
 $roundtripProject = Join-Path $mediaDir "roundtrip.ffnext"
 $exportOutput = Join-Path $mediaDir "export-smoke.mp4"
+$hevcExportOutput = Join-Path $mediaDir "export-hevc-compact.mkv"
 $copySource = Join-Path $mediaDir "stream-copy-source.mp4"
 $copyProject = Join-Path $mediaDir "stream-copy.ffnext"
 $copyOutput = Join-Path $mediaDir "stream-copy-output.mp4"
@@ -70,6 +71,22 @@ if ($streams -notcontains "video" -or $streams -notcontains "audio") {
     throw "exported timeline must contain both video and audio streams"
 }
 Write-Output "Timeline export passed: rapid split/undo/redo, clip audio and burned captions produced a validated $exportDuration second MP4"
+
+if (Test-Path -LiteralPath $hevcExportOutput -PathType Leaf) {
+    Remove-Item -LiteralPath $hevcExportOutput -Force
+}
+$hevcExport = Start-Process -FilePath $application `
+    -ArgumentList @("--export-hevc-smoke", $hevcExportOutput, $clipA, $clipB, $clipVfr) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($hevcExport.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $hevcExportOutput -PathType Leaf)) {
+    throw "compact HEVC MKV preset export failed"
+}
+$hevcCodec = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
+    -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 $hevcExportOutput
+if ($hevcCodec.Trim() -ne "hevc") {
+    throw "HEVC MKV preset produced unexpected video codec: $hevcCodec"
+}
+Write-Output "Export preset passed: compact HEVC MKV was encoded and validated"
 
 if (-not (Test-Path -LiteralPath $copySource -PathType Leaf)) {
     & (Join-Path $root ".tools\ffmpeg\bin\ffmpeg.exe") -hide_banner -loglevel error -y `

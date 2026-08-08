@@ -12,7 +12,11 @@ namespace ffgui {
 enum class ExportVideoEncoder {
     h264_nvenc,
     libx264,
+    hevc_nvenc,
+    libx265,
 };
+
+enum class ExportQuality { high, balanced, compact };
 
 enum class ExportMode {
     stream_copy,
@@ -52,6 +56,7 @@ struct ExportRequest final {
     std::filesystem::path concat_script_path;
     std::vector<ExportCaptionInput> captions;
     std::filesystem::path subtitle_script_path;
+    ExportQuality quality{ExportQuality::balanced};
 };
 
 struct FfmpegExportPlan final {

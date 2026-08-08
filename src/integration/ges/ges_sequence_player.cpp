@@ -195,8 +195,17 @@ void GesSequencePlayer::set_timeline(
 }
 
 void GesSequencePlayer::seek(TimeNs timeline_position) {
-    const auto target = std::max<TimeNs>(0, std::min(timeline_position, duration_ns_.load()));
     std::unique_lock lock(mutex_);
+    seek_locked(timeline_position, true);
+}
+
+void GesSequencePlayer::seek_preview(TimeNs timeline_position) {
+    std::unique_lock lock(mutex_);
+    seek_locked(timeline_position, false);
+}
+
+void GesSequencePlayer::seek_locked(TimeNs timeline_position, bool wait_for_preroll) {
+    const auto target = std::max<TimeNs>(0, std::min(timeline_position, duration_ns_.load()));
     if (pipeline_ == nullptr) {
         return;
     }
@@ -231,7 +240,7 @@ void GesSequencePlayer::seek(TimeNs timeline_position) {
     while (auto* stale = gst_bus_pop_filtered(bus, GST_MESSAGE_ASYNC_DONE)) {
         gst_message_unref(stale);
     }
-    const auto waitForPreroll = state_.load() == PlaybackState::paused;
+    const auto waitForPreroll = wait_for_preroll && state_.load() == PlaybackState::paused;
     const auto flags = static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE);
     if (!gst_element_seek_simple(pipeline, GST_FORMAT_TIME, flags, target)) {
         gst_object_unref(bus);
@@ -259,7 +268,6 @@ void GesSequencePlayer::seek(TimeNs timeline_position) {
         gst_message_unref(message);
     }
     gst_object_unref(bus);
-    lock.unlock();
     position_ns_.store(target);
     if (notifyPaused) notify_state(PlaybackState::paused);
 }

@@ -120,8 +120,11 @@ ApplicationWindow {
         id: exportDialog
         title: "영상 내보내기"
         fileMode: FileDialog.SaveFile
-        defaultSuffix: "mp4"
-        nameFilters: ["MP4 영상 (*.mp4)"]
+        defaultSuffix: EditorController.exportExtension()
+        nameFilters: EditorController.exportContainer === 1
+                     ? ["Matroska 영상 (*.mkv)"]
+                     : EditorController.exportContainer === 2
+                       ? ["QuickTime 영상 (*.mov)"] : ["MP4 영상 (*.mp4)"]
         onAccepted: {
             if (EditorController.outputExists(selectedFile)) {
                 overwriteDialog.suggestedUrl = EditorController.uniqueOutputUrl(selectedFile)
@@ -437,8 +440,8 @@ ApplicationWindow {
                             }
                             Item { Layout.fillWidth: true }
                             Label {
-                                text: root.durationText(EditorController.playheadNs)
-                                      + " / " + root.durationText(EditorController.durationNs)
+                                text: EditorController.timeText(EditorController.playheadNs)
+                                      + "  ·  F" + EditorController.frameNumberAt(EditorController.playheadNs)
                                 color: "#8e9aaa"
                                 font.family: "Consolas"
                                 font.pixelSize: 12
@@ -496,11 +499,34 @@ ApplicationWindow {
                         width: Math.max(0, inspectorScroll.availableWidth - 40)
                         spacing: 12
                     Label { text: "출력"; font.pixelSize: 18; font.bold: true }
-                    Label { text: "H.264 · MP4"; color: "#8994a3" }
+                    Label { text: "화질"; color: "#b4bdc8" }
+                    ComboBox {
+                        Layout.fillWidth: true
+                        model: ["고화질", "균형", "용량 절약"]
+                        currentIndex: EditorController.exportQuality
+                        onActivated: EditorController.exportQuality = currentIndex
+                    }
+                    Label { text: "코덱"; color: "#b4bdc8" }
+                    ComboBox {
+                        Layout.fillWidth: true
+                        model: ["H.264 · 높은 호환성", "H.265 / HEVC · 작은 용량",
+                                "원본 스트림 복사 · 가능할 때"]
+                        currentIndex: EditorController.exportCodec
+                        onActivated: EditorController.exportCodec = currentIndex
+                    }
+                    Label { text: "파일 형식"; color: "#b4bdc8" }
+                    ComboBox {
+                        Layout.fillWidth: true
+                        model: ["MP4", "MKV", "MOV"]
+                        currentIndex: EditorController.exportContainer
+                        onActivated: EditorController.exportContainer = currentIndex
+                    }
                     Label {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
-                        text: "NVENC를 먼저 사용하고, 지원되지 않으면 CPU로 자동 전환합니다."
+                        text: EditorController.exportCodec === 2
+                              ? "컷 경계가 키프레임과 맞지 않으면 H.264 인코딩으로 전환합니다."
+                              : "NVENC를 먼저 사용하고, 지원되지 않으면 같은 코덱의 CPU 인코더로 전환합니다."
                         color: "#8994a3"
                     }
                     Rectangle {
@@ -809,13 +835,82 @@ ApplicationWindow {
                         selectedClipId: EditorController.selectedClipId
                         selectedClipIds: EditorController.selectedClipIds
                         interactionMode: root.timelineTool
-                        onSeekRequested: position => EditorController.seek(position)
+                        onSeekRequested: (position, finalPosition) =>
+                            EditorController.scrub(position, finalPosition)
                         onClipSelected: (clipId, selectionMode) =>
                             EditorController.selectClip(clipId, selectionMode)
                         onTrimCommitted: (clipId, sourceIn, duration) =>
                             EditorController.trimClip(clipId, sourceIn, duration)
                         onMoveCommitted: (clipIds, insertionIndex) =>
                             EditorController.moveClips(clipIds, insertionIndex)
+                    }
+
+                    Item {
+                        id: timelineRuler
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        height: 29
+                        z: 3
+                        Repeater {
+                            model: 9
+                            delegate: Item {
+                                required property int index
+                                x: 12 + (timelineRuler.width - 24) * index / 8
+                                width: 1
+                                height: timelineRuler.height
+                                readonly property double tickTime: timeline.viewportStartNs +
+                                    timeline.viewportDurationNs * index / 8
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    width: 1
+                                    height: index % 2 === 0 ? 8 : 5
+                                    color: "#647183"
+                                }
+                                Label {
+                                    visible: index < 8
+                                    x: 4
+                                    y: 2
+                                    text: EditorController.timeText(parent.tickTime)
+                                          + "  F" + EditorController.frameNumberAt(parent.tickTime)
+                                    color: "#7f8b9a"
+                                    font.family: "Consolas"
+                                    font.pixelSize: 9
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        visible: timeline.interactionActive
+                        z: 6
+                        x: Math.max(8, Math.min(timelineLayer.width - width - 8,
+                                               timeline.interactionX - width / 2))
+                        y: 34
+                        width: feedbackText.implicitWidth + 20
+                        height: 42
+                        radius: 6
+                        color: "#0a0d12"
+                        border.color: "#78a5ff"
+                        Label {
+                            id: feedbackText
+                            anchors.centerIn: parent
+                            text: timeline.interactionKind + "  "
+                                  + EditorController.timeText(timeline.interactionTimeNs)
+                                  + "  ·  F" + EditorController.frameNumberAt(timeline.interactionTimeNs)
+                                  + (timeline.interactionDeltaNs === 0 ? "" :
+                                     "\n" + (timeline.interactionDeltaNs > 0 ? "+" : "−")
+                                     + EditorController.frameCountBetween(
+                                           timeline.interactionTimeNs - timeline.interactionDeltaNs,
+                                           timeline.interactionTimeNs)
+                                     + "프레임  ·  "
+                                     + (Math.abs(timeline.interactionDeltaNs) / 1000000000).toFixed(3)
+                                     + "초")
+                            color: "#eaf2ff"
+                            font.family: "Consolas"
+                            font.pixelSize: 11
+                            horizontalAlignment: Text.AlignHCenter
+                        }
                     }
 
                     DropArea {

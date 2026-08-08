@@ -142,6 +142,7 @@ int main(int argc, char* argv[]) {
     QString exportProjectOutput;
     bool playbackSmoke = false;
     bool offscreenPresentationSmoke = false;
+    bool hevcExportSmoke = false;
     const auto arguments = application.arguments();
     for (int index = 1; index < arguments.size(); ++index) {
         if (arguments[index] == "--project-roundtrip" && index + 1 < arguments.size()) {
@@ -158,6 +159,11 @@ int main(int argc, char* argv[]) {
         }
         if (arguments[index] == "--export-smoke" && index + 1 < arguments.size()) {
             exportSmokeOutput = arguments[++index];
+            continue;
+        }
+        if (arguments[index] == "--export-hevc-smoke" && index + 1 < arguments.size()) {
+            exportSmokeOutput = arguments[++index];
+            hevcExportSmoke = true;
             continue;
         }
         if (arguments[index] == "--export-project-smoke" && index + 2 < arguments.size()) {
@@ -202,6 +208,12 @@ int main(int argc, char* argv[]) {
     if (!roundtripProject.isEmpty()) {
         const auto importedClips = controller.clips();
         if (importedClips.isEmpty()) return EXIT_FAILURE;
+        if (controller.frameNumberAt(0) != 0 ||
+            controller.frameNumberAt(controller.durationNs()) <= 0 ||
+            controller.frameCountBetween(0, controller.durationNs()) <= 0 ||
+            controller.timeText(1'234'000'000) != QStringLiteral("00:00:01.234")) {
+            return EXIT_FAILURE;
+        }
         const auto importedClipCount = importedClips.size();
         const auto first = importedClips.front().toMap();
         const auto firstId = first.value("id").toString();
@@ -366,6 +378,11 @@ int main(int argc, char* argv[]) {
             : EXIT_FAILURE;
     }
     if (!exportSmokeOutput.isEmpty()) {
+        if (hevcExportSmoke) {
+            controller.setExportCodec(1);
+            controller.setExportContainer(1);
+            controller.setExportQuality(2);
+        }
         const auto exportClips = controller.clips();
         if (exportClips.isEmpty()) return EXIT_FAILURE;
         controller.selectClip(exportClips.front().toMap().value("id").toString());
@@ -402,6 +419,7 @@ int main(int argc, char* argv[]) {
             : EXIT_FAILURE;
     }
     if (!exportProjectOutput.isEmpty()) {
+        controller.setExportCodec(2);
         bool exportSucceeded = false;
         QEventLoop exportLoop;
         QTimer exportTimeout;
@@ -435,7 +453,11 @@ int main(int argc, char* argv[]) {
         controller.seek(500'000'000);
         controller.addCaptionAtPlayhead();
         controller.updateSelectedCaption(QStringLiteral("미리보기 자막"), 1200);
-        QTimer::singleShot(150, &controller, &EditorController::togglePlayback);
+        QTimer::singleShot(700, &controller, [&controller] { controller.scrub(250'000'000, false); });
+        QTimer::singleShot(730, &controller, [&controller] { controller.scrub(900'000'000, false); });
+        QTimer::singleShot(760, &controller, [&controller] { controller.scrub(1'400'000'000, false); });
+        QTimer::singleShot(850, &controller, [&controller] { controller.scrub(500'000'000, true); });
+        QTimer::singleShot(1100, &controller, &EditorController::togglePlayback);
         QTimer::singleShot(
             5000,
             &application,

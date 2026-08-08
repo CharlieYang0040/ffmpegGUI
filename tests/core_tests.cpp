@@ -671,6 +671,38 @@ void test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts() {
             "non-keyframe boundary must fall back to transcoding");
 }
 
+void test_ffmpeg_export_plan_applies_codec_and_quality_presets() {
+    auto request = ffgui::ExportRequest{
+        {{std::filesystem::path{"A.mp4"}, 0, seconds(2), true}},
+        std::filesystem::path{"result.mov"},
+        ffgui::ExportVideoEncoder::hevc_nvenc};
+    request.prefer_stream_copy = false;
+    request.quality = ffgui::ExportQuality::high;
+    auto plan = ffgui::compile_ffmpeg_export(request);
+    std::string arguments;
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(arguments.contains("hevc_nvenc") && arguments.contains("-cq\n18\n") &&
+            arguments.contains("-tag:v\nhvc1"),
+            "high-quality HEVC preset must select NVENC CQ 18 and QuickTime-compatible tag");
+    require(arguments.contains("-b:a\n256k"), "high quality must use 256k audio");
+
+    request.output_path = std::filesystem::path{"result.mkv"};
+    plan = ffgui::compile_ffmpeg_export(request);
+    arguments.clear();
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(!arguments.contains("-movflags") && !arguments.contains("hvc1"),
+            "Matroska preset must not receive QuickTime-only muxer options");
+
+    request.video_encoder = ffgui::ExportVideoEncoder::libx264;
+    request.quality = ffgui::ExportQuality::compact;
+    plan = ffgui::compile_ffmpeg_export(request);
+    arguments.clear();
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(arguments.contains("libx264") && arguments.contains("-preset\nfast") &&
+            arguments.contains("-crf\n24") && arguments.contains("-b:a\n128k"),
+            "compact H.264 preset must trade quality for speed and size");
+}
+
 }  // namespace
 
 int main() {
@@ -704,6 +736,7 @@ int main() {
         {"ffmpeg_export_plan_applies_video_and_audio_speed", test_ffmpeg_export_plan_applies_video_and_audio_speed},
         {"ffmpeg_export_plan_rejects_invalid_requests", test_ffmpeg_export_plan_rejects_invalid_requests},
         {"ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts", test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts},
+        {"ffmpeg_export_plan_applies_codec_and_quality_presets", test_ffmpeg_export_plan_applies_codec_and_quality_presets},
     };
 
     int failed = 0;

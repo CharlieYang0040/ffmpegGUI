@@ -21,6 +21,11 @@ class TimelineView : public QQuickItem {
     Q_PROPERTY(qint64 viewportStartNs READ viewportStartNs NOTIFY viewportChanged)
     Q_PROPERTY(qint64 viewportDurationNs READ visibleDurationNs NOTIFY viewportChanged)
     Q_PROPERTY(int interactionMode READ interactionMode WRITE setInteractionMode NOTIFY interactionModeChanged)
+    Q_PROPERTY(bool interactionActive READ interactionActive NOTIFY interactionFeedbackChanged)
+    Q_PROPERTY(QString interactionKind READ interactionKind NOTIFY interactionFeedbackChanged)
+    Q_PROPERTY(qint64 interactionTimeNs READ interactionTimeNs NOTIFY interactionFeedbackChanged)
+    Q_PROPERTY(qint64 interactionDeltaNs READ interactionDeltaNs NOTIFY interactionFeedbackChanged)
+    Q_PROPERTY(qreal interactionX READ interactionX NOTIFY interactionFeedbackChanged)
 
 public:
     explicit TimelineView(QQuickItem* parent = nullptr);
@@ -49,6 +54,11 @@ public:
     [[nodiscard]] qint64 visibleDurationNs() const;
     [[nodiscard]] int interactionMode() const noexcept { return interaction_mode_; }
     void setInteractionMode(int mode);
+    [[nodiscard]] bool interactionActive() const noexcept { return interaction_active_; }
+    [[nodiscard]] QString interactionKind() const { return interaction_kind_; }
+    [[nodiscard]] qint64 interactionTimeNs() const noexcept { return interaction_time_ns_; }
+    [[nodiscard]] qint64 interactionDeltaNs() const noexcept { return drag_delta_ns_; }
+    [[nodiscard]] qreal interactionX() const noexcept { return interaction_x_; }
     Q_INVOKABLE qint64 timelineTimeAt(qreal x) const;
 
 signals:
@@ -61,10 +71,11 @@ signals:
     void zoomLevelChanged();
     void viewportChanged();
     void interactionModeChanged();
-    void seekRequested(qint64 timelineTime);
+    void seekRequested(qint64 timelineTime, bool finalPosition);
     void clipSelected(QString clipId, int selectionMode);
     void trimCommitted(QString clipId, qint64 sourceIn, qint64 duration);
     void moveCommitted(QStringList clipIds, int insertionIndex);
+    void interactionFeedbackChanged();
 
 protected:
     QSGNode* updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) override;
@@ -77,7 +88,7 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
 
 private:
-    void seekAt(qreal x);
+    void seekAt(qreal x, bool finalPosition = true);
     [[nodiscard]] QVariantList previewClips() const;
     [[nodiscard]] int clipIndexAt(qreal x) const;
     [[nodiscard]] int insertionIndexAt(qreal x) const;
@@ -105,4 +116,8 @@ private:
     qint64 painted_view_start_ns_{};
     qint64 painted_view_duration_ns_{1};
     int interaction_mode_{};
+    bool interaction_active_{};
+    QString interaction_kind_;
+    qint64 interaction_time_ns_{};
+    qreal interaction_x_{};
 };

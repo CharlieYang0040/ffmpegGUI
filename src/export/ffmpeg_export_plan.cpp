@@ -4,6 +4,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 
 namespace ffgui {
@@ -135,6 +136,11 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
     }
 
     FfmpegExportPlan plan;
+    auto extension = request.output_path.extension().string();
+    std::ranges::transform(extension, extension.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    const bool movFamily = extension == ".mp4" || extension == ".mov" || extension == ".m4v";
     plan.arguments = {"-hide_banner", "-y", "-progress", "pipe:2", "-nostats"};
     for (const auto& clip : request.clips) {
         if (clip.source_path.empty() || clip.duration <= 0 || clip.source_in < 0) {
@@ -167,8 +173,9 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         plan.arguments.insert(
             plan.arguments.end(),
             {"-f", "concat", "-safe", "0", "-i", path_string(request.concat_script_path),
-             "-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero",
-             "-movflags", "+faststart", path_string(request.output_path)});
+             "-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero"});
+        if (movFamily) plan.arguments.insert(plan.arguments.end(), {"-movflags", "+faststart"});
+        plan.arguments.push_back(path_string(request.output_path));
         return plan;
     }
 
@@ -235,19 +242,36 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         plan.arguments.end(),
         {"-filter_complex", std::move(filter), "-map", "[vout]", "-map", "[aout]"});
 
+    const bool high = request.quality == ExportQuality::high;
+    const bool compact = request.quality == ExportQuality::compact;
     if (request.video_encoder == ExportVideoEncoder::h264_nvenc) {
         plan.arguments.insert(
             plan.arguments.end(),
-            {"-c:v", "h264_nvenc", "-preset", "p4", "-cq", "19", "-b:v", "0"});
+            {"-c:v", "h264_nvenc", "-preset", high ? "p5" : (compact ? "p3" : "p4"),
+             "-cq", high ? "16" : (compact ? "25" : "20"), "-b:v", "0"});
+    } else if (request.video_encoder == ExportVideoEncoder::libx264) {
+        plan.arguments.insert(
+            plan.arguments.end(),
+            {"-c:v", "libx264", "-preset", high ? "slow" : (compact ? "fast" : "medium"),
+             "-crf", high ? "16" : (compact ? "24" : "20")});
+    } else if (request.video_encoder == ExportVideoEncoder::hevc_nvenc) {
+        plan.arguments.insert(
+            plan.arguments.end(),
+            {"-c:v", "hevc_nvenc", "-preset", high ? "p5" : (compact ? "p3" : "p4"),
+             "-cq", high ? "18" : (compact ? "28" : "23"), "-b:v", "0"});
+        if (movFamily) plan.arguments.insert(plan.arguments.end(), {"-tag:v", "hvc1"});
     } else {
         plan.arguments.insert(
             plan.arguments.end(),
-            {"-c:v", "libx264", "-preset", "medium", "-crf", "18"});
+            {"-c:v", "libx265", "-preset", high ? "slow" : (compact ? "fast" : "medium"),
+             "-crf", high ? "18" : (compact ? "28" : "23")});
+        if (movFamily) plan.arguments.insert(plan.arguments.end(), {"-tag:v", "hvc1"});
     }
     plan.arguments.insert(
         plan.arguments.end(),
-        {"-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
-         path_string(request.output_path)});
+        {"-c:a", "aac", "-b:a", high ? "256k" : (compact ? "128k" : "192k")});
+    if (movFamily) plan.arguments.insert(plan.arguments.end(), {"-movflags", "+faststart"});
+    plan.arguments.push_back(path_string(request.output_path));
     return plan;
 }
 

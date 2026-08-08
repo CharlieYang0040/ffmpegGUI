@@ -61,6 +61,9 @@ class EditorController final : public QObject {
     Q_PROPERTY(qreal exportProgress READ exportProgress NOTIFY exportProgressChanged)
     Q_PROPERTY(QString exportStage READ exportStage NOTIFY exportProgressChanged)
     Q_PROPERTY(QString exportOutputName READ exportOutputName NOTIFY exportProgressChanged)
+    Q_PROPERTY(int exportQuality READ exportQuality WRITE setExportQuality NOTIFY exportSettingsChanged)
+    Q_PROPERTY(int exportCodec READ exportCodec WRITE setExportCodec NOTIFY exportSettingsChanged)
+    Q_PROPERTY(int exportContainer READ exportContainer WRITE setExportContainer NOTIFY exportSettingsChanged)
 
 public:
     explicit EditorController(QObject* parent);
@@ -97,6 +100,9 @@ public:
     [[nodiscard]] qreal exportProgress() const noexcept { return export_progress_; }
     [[nodiscard]] QString exportStage() const { return export_stage_; }
     [[nodiscard]] QString exportOutputName() const { return export_output_name_; }
+    [[nodiscard]] int exportQuality() const noexcept { return export_quality_; }
+    [[nodiscard]] int exportCodec() const noexcept { return export_codec_; }
+    [[nodiscard]] int exportContainer() const noexcept { return export_container_; }
     [[nodiscard]] bool lastExportUsedStreamCopy() const noexcept {
         return last_export_stream_copy_;
     }
@@ -122,6 +128,7 @@ public:
 
 public slots:
     void seek(qint64 timelinePosition);
+    void scrub(qint64 timelinePosition, bool finalPosition);
     void togglePlayback();
     void stepFrame(int direction);
     void jumpEditPoint(int direction);
@@ -160,6 +167,13 @@ public slots:
     void loadProjectUrl(const QUrl& url);
     void exportTimelineUrl(const QUrl& url);
     void cancelExport();
+    void setExportQuality(int quality);
+    void setExportCodec(int codec);
+    void setExportContainer(int container);
+    [[nodiscard]] QString exportExtension() const;
+    [[nodiscard]] QString timeText(qint64 timelinePosition) const;
+    [[nodiscard]] qint64 frameNumberAt(qint64 timelinePosition) const;
+    [[nodiscard]] qint64 frameCountBetween(qint64 first, qint64 second) const;
     [[nodiscard]] bool outputExists(const QUrl& url) const;
     [[nodiscard]] QUrl uniqueOutputUrl(const QUrl& url) const;
     void attachVideoItem(QObject* item);
@@ -181,6 +195,7 @@ signals:
     void mediaImportFinished(bool success);
     void exportingChanged();
     void exportProgressChanged();
+    void exportSettingsChanged();
     void exportFinished(bool success, QUrl outputUrl);
 
 private:
@@ -243,6 +258,7 @@ private:
     bool preview_operation_pending_{};
     bool preview_should_play_{};
     bool preview_stop_requested_{};
+    bool pending_preview_seek_accurate_{true};
     mutable std::mutex pending_video_frame_mutex_;
     std::optional<ffgui::PreviewVideoFrame> pending_video_frame_;
     bool video_frame_delivery_queued_{};
@@ -268,6 +284,9 @@ private:
     QString export_log_path_;
     std::unique_ptr<QFile> export_log_file_;
     ffgui::TimeNs export_duration_ns_{};
+    int export_quality_{1};
+    int export_codec_{};
+    int export_container_{};
     QString export_concat_path_;
     QString export_subtitle_path_;
     static EditorController* singleton_instance_;
