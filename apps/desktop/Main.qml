@@ -22,6 +22,11 @@ ApplicationWindow {
     title: "ffmpegGUI Next"
     color: "#111419"
     property int timelineTool: 0 // 0: select/move, 1: scrub/seek
+    property bool showOutputNode: true
+    property bool showAudioNode: true
+    property bool showEffectsNode: false
+    property bool showGlobalTrimNode: false
+    property bool showOutputSettingsNode: false
 
     function durationText(nanoseconds) {
         const totalSeconds = Math.max(0, Math.floor(nanoseconds / 1000000000))
@@ -75,6 +80,70 @@ ApplicationWindow {
         implicitWidth: 1
         implicitHeight: 22
         color: "#35404d"
+    }
+
+    component InspectorNode: Rectangle {
+        id: node
+        property string title
+        property string summary
+        property bool expanded: false
+        signal removeRequested()
+        default property alias nodeContent: body.data
+        Layout.fillWidth: true
+        implicitHeight: 42 + (expanded ? body.implicitHeight + 18 : 0)
+        radius: 8
+        color: "#171d24"
+        border.color: expanded ? "#46566a" : "#303a46"
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+            Rectangle {
+                id: header
+                Layout.fillWidth: true
+                Layout.preferredHeight: 42
+                color: headerMouse.containsMouse ? "#222b35" : "transparent"
+                radius: 8
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 8
+                    Label { text: node.expanded ? "▾" : "▸"; color: "#8fa2b8" }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+                        Label { text: node.title; font.bold: true; color: "#e4ebf3" }
+                        Label {
+                            text: node.summary
+                            visible: !node.expanded && text.length > 0
+                            color: "#768395"
+                            font.pixelSize: 10
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                    }
+                    AppButton {
+                        text: "×"
+                        compact: true
+                        implicitWidth: 28
+                        onClicked: node.removeRequested()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "패널에서 노드 제거"
+                    }
+                }
+                HoverHandler { id: headerMouse }
+                TapHandler { onTapped: node.expanded = !node.expanded }
+            }
+            ColumnLayout {
+                id: body
+                Layout.fillWidth: true
+                Layout.leftMargin: 12
+                Layout.rightMargin: 12
+                Layout.bottomMargin: 10
+                visible: node.expanded
+                spacing: 8
+            }
+        }
     }
 
     Shortcut { sequences: [StandardKey.Undo]; enabled: EditorController.canUndo; onActivated: EditorController.undo() }
@@ -498,131 +567,170 @@ ApplicationWindow {
                         y: 20
                         width: Math.max(0, inspectorScroll.availableWidth - 40)
                         spacing: 12
-                    Label { text: "출력"; font.pixelSize: 18; font.bold: true }
-                    Label { text: "화질"; color: "#b4bdc8" }
-                    ComboBox {
+                    Label { text: "작업 노드"; font.pixelSize: 18; font.bold: true }
+                    RowLayout {
                         Layout.fillWidth: true
-                        model: ["고화질", "균형", "용량 절약"]
-                        currentIndex: EditorController.exportQuality
-                        onActivated: EditorController.exportQuality = currentIndex
+                        ComboBox {
+                            id: nodePicker
+                            Layout.fillWidth: true
+                            model: ["출력", "오디오", "이펙트", "전체 트림", "출력 설정"]
+                        }
+                        AppButton {
+                            text: "+ 추가"
+                            compact: true
+                            onClicked: {
+                                if (nodePicker.currentIndex === 0) root.showOutputNode = true
+                                else if (nodePicker.currentIndex === 1) root.showAudioNode = true
+                                else if (nodePicker.currentIndex === 2) root.showEffectsNode = true
+                                else if (nodePicker.currentIndex === 3) root.showGlobalTrimNode = true
+                                else root.showOutputSettingsNode = true
+                            }
+                        }
                     }
-                    Label { text: "코덱"; color: "#b4bdc8" }
-                    ComboBox {
-                        Layout.fillWidth: true
-                        model: ["H.264 · 높은 호환성", "H.265 / HEVC · 작은 용량",
-                                "원본 스트림 복사 · 가능할 때"]
-                        currentIndex: EditorController.exportCodec
-                        onActivated: EditorController.exportCodec = currentIndex
-                    }
-                    Label { text: "파일 형식"; color: "#b4bdc8" }
-                    ComboBox {
-                        Layout.fillWidth: true
-                        model: ["MP4", "MKV", "MOV"]
-                        currentIndex: EditorController.exportContainer
-                        onActivated: EditorController.exportContainer = currentIndex
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        wrapMode: Text.WordWrap
-                        text: EditorController.exportCodec === 2
-                              ? "컷 경계가 키프레임과 맞지 않으면 H.264 인코딩으로 전환합니다."
-                              : "NVENC를 먼저 사용하고, 지원되지 않으면 같은 코덱의 CPU 인코더로 전환합니다."
-                        color: "#8994a3"
-                    }
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        color: "#303844"
-                    }
-                    Label {
-                        text: EditorController.selectedClipIds.length > 1
-                              ? "오디오 · " + EditorController.selectedClipIds.length + "개 클립"
-                              : "클립 오디오"
-                        font.bold: true
-                        visible: EditorController.selectedClipIds.length > 0
-                    }
-                    GridLayout {
-                        Layout.fillWidth: true
-                        columns: 2
-                        visible: EditorController.selectedClipIds.length > 0
-                        columnSpacing: 8
-                        rowSpacing: 8
 
-                        Label { text: "볼륨"; color: "#b4bdc8" }
-                        SpinBox {
+                    InspectorNode {
+                        visible: root.showOutputNode
+                        title: "출력"
+                        summary: EditorController.exporting
+                                 ? EditorController.exportStage : "내보내기 실행과 진행 상황"
+                        expanded: true
+                        onRemoveRequested: root.showOutputNode = false
+                        Label {
                             Layout.fillWidth: true
-                            from: 0
-                            to: 400
-                            stepSize: 5
-                            editable: true
-                            value: EditorController.selectedClipVolumePercent
-                            textFromValue: function(value) { return value + "%" }
-                            valueFromText: function(text) { return parseInt(text) || 0 }
-                            onValueModified: EditorController.setSelectedClipVolumePercent(value)
+                            visible: EditorController.exporting
+                            text: EditorController.exportStage + "  "
+                                  + Math.round(EditorController.exportProgress * 100) + "%"
+                            color: "#b7c4d4"
                         }
-                        Label { text: "재생 속도"; color: "#b4bdc8" }
-                        SpinBox {
+                        ProgressBar {
                             Layout.fillWidth: true
-                            from: 25
-                            to: 400
-                            stepSize: 5
-                            editable: true
-                            value: EditorController.selectedClipSpeedPercent
-                            textFromValue: function(value) { return value + "%" }
-                            valueFromText: function(text) { return parseInt(text) || 100 }
-                            onValueModified: EditorController.setSelectedClipSpeedPercent(value)
+                            visible: EditorController.exporting
+                            from: 0; to: 1; value: EditorController.exportProgress
                         }
-                        Label { text: "페이드 인"; color: "#b4bdc8" }
-                        SpinBox {
+                        AppButton {
                             Layout.fillWidth: true
-                            from: 0
-                            to: 60000
-                            stepSize: 100
-                            editable: true
-                            value: EditorController.selectedClipFadeInMs
-                            textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
-                            valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
-                            onValueModified: EditorController.setSelectedClipFadeInMs(value)
-                        }
-                        Label { text: "페이드 아웃"; color: "#b4bdc8" }
-                        SpinBox {
-                            Layout.fillWidth: true
-                            from: 0
-                            to: 60000
-                            stepSize: 100
-                            editable: true
-                            value: EditorController.selectedClipFadeOutMs
-                            textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
-                            valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
-                            onValueModified: EditorController.setSelectedClipFadeOutMs(value)
+                            text: EditorController.exporting ? "취소" : "영상 내보내기"
+                            enabled: EditorController.exporting || EditorController.durationNs > 0
+                            onClicked: EditorController.exporting
+                                ? EditorController.cancelExport() : exportDialog.open()
                         }
                     }
-                    AppButton {
-                        Layout.fillWidth: true
-                        visible: EditorController.selectedClipIds.length > 0
-                        text: EditorController.selectedClipMuted ? "음소거 해제 (M)" : "음소거 (M)"
-                        highlighted: EditorController.selectedClipMuted
-                        onClicked: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted)
+
+                    InspectorNode {
+                        visible: root.showAudioNode
+                        title: "오디오"
+                        summary: EditorController.selectedClipIds.length > 0
+                                 ? EditorController.selectedClipIds.length + "개 클립" : "클립을 선택하세요"
+                        expanded: EditorController.selectedClipIds.length > 0
+                        onRemoveRequested: root.showAudioNode = false
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: 2
+                            enabled: EditorController.selectedClipIds.length > 0
+                            Label { text: "볼륨"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 0; to: 400; stepSize: 5; editable: true
+                                value: EditorController.selectedClipVolumePercent
+                                textFromValue: function(value) { return value + "%" }
+                                valueFromText: function(text) { return parseInt(text) || 0 }
+                                onValueModified: EditorController.setSelectedClipVolumePercent(value)
+                            }
+                            Label { text: "재생 속도"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 25; to: 400; stepSize: 5; editable: true
+                                value: EditorController.selectedClipSpeedPercent
+                                textFromValue: function(value) { return value + "%" }
+                                valueFromText: function(text) { return parseInt(text) || 100 }
+                                onValueModified: EditorController.setSelectedClipSpeedPercent(value)
+                            }
+                            Label { text: "페이드 인"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 0; to: 60000; stepSize: 100; editable: true
+                                value: EditorController.selectedClipFadeInMs
+                                textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                                valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
+                                onValueModified: EditorController.setSelectedClipFadeInMs(value)
+                            }
+                            Label { text: "페이드 아웃"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 0; to: 60000; stepSize: 100; editable: true
+                                value: EditorController.selectedClipFadeOutMs
+                                textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                                valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
+                                onValueModified: EditorController.setSelectedClipFadeOutMs(value)
+                            }
+                        }
+                        AppButton {
+                            Layout.fillWidth: true
+                            enabled: EditorController.selectedClipIds.length > 0
+                            text: EditorController.selectedClipMuted ? "음소거 해제 (M)" : "음소거 (M)"
+                            highlighted: EditorController.selectedClipMuted
+                            onClicked: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted)
+                        }
                     }
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        color: "#303844"
+
+                    InspectorNode {
+                        visible: root.showEffectsNode
+                        title: "이펙트"
+                        summary: "Color Grading · 선택 클립"
+                        expanded: true
+                        onRemoveRequested: root.showEffectsNode = false
+                        Label { text: "Color Grading"; font.bold: true }
+                        GridLayout {
+                            Layout.fillWidth: true; columns: 2
+                            enabled: EditorController.selectedClipIds.length > 0
+                            Label { text: "밝기"; color: "#b4bdc8" }
+                            SpinBox { Layout.fillWidth: true; from: -100; to: 100; value: EditorController.selectedClipBrightness; onValueModified: EditorController.setSelectedClipBrightness(value) }
+                            Label { text: "대비"; color: "#b4bdc8" }
+                            SpinBox { Layout.fillWidth: true; from: 0; to: 200; value: EditorController.selectedClipContrast; onValueModified: EditorController.setSelectedClipContrast(value) }
+                            Label { text: "채도"; color: "#b4bdc8" }
+                            SpinBox { Layout.fillWidth: true; from: 0; to: 200; value: EditorController.selectedClipSaturation; onValueModified: EditorController.setSelectedClipSaturation(value) }
+                        }
+                        Label {
+                            Layout.fillWidth: true; wrapMode: Text.WordWrap
+                            text: "디졸브는 인접 클립 오버랩 모델과 함께 다음 전환 단계에서 활성화됩니다."
+                            color: "#7f8c9c"; font.pixelSize: 11
+                        }
                     }
-                    ProgressBar {
-                        Layout.fillWidth: true
-                        visible: EditorController.exporting
-                        from: 0
-                        to: 1
-                        value: EditorController.exportProgress
+
+                    InspectorNode {
+                        visible: root.showGlobalTrimNode
+                        title: "전체 트림"
+                        summary: "모든 클립의 앞·뒤를 프레임 단위로 정리"
+                        expanded: true
+                        onRemoveRequested: root.showGlobalTrimNode = false
+                        GridLayout {
+                            Layout.fillWidth: true; columns: 2
+                            Label { text: "앞 프레임"; color: "#b4bdc8" }
+                            SpinBox { id: globalFrontFrames; Layout.fillWidth: true; from: 0; to: 999; editable: true }
+                            Label { text: "뒤 프레임"; color: "#b4bdc8" }
+                            SpinBox { id: globalBackFrames; Layout.fillWidth: true; from: 0; to: 999; editable: true }
+                        }
+                        AppButton {
+                            Layout.fillWidth: true
+                            text: "모든 클립에 적용"
+                            enabled: globalFrontFrames.value > 0 || globalBackFrames.value > 0
+                            onClicked: EditorController.trimAllClipEdges(
+                                globalFrontFrames.value, globalBackFrames.value)
+                        }
                     }
-                    AppButton {
-                        Layout.fillWidth: true
-                        text: EditorController.exporting ? "취소" : "영상 내보내기"
-                        enabled: EditorController.exporting || EditorController.durationNs > 0
-                        onClicked: EditorController.exporting
-                            ? EditorController.cancelExport()
-                            : exportDialog.open()
+
+                    InspectorNode {
+                        visible: root.showOutputSettingsNode
+                        title: "출력 설정"
+                        summary: ["MP4", "MKV", "MOV"][EditorController.exportContainer]
+                        expanded: true
+                        onRemoveRequested: root.showOutputSettingsNode = false
+                        Label { text: "화질"; color: "#b4bdc8" }
+                        ComboBox { Layout.fillWidth: true; model: ["고화질", "균형", "용량 절약"]; currentIndex: EditorController.exportQuality; onActivated: EditorController.exportQuality = currentIndex }
+                        Label { text: "코덱"; color: "#b4bdc8" }
+                        ComboBox { Layout.fillWidth: true; model: ["H.264 · 높은 호환성", "H.265 / HEVC · 작은 용량", "원본 스트림 복사 · 가능할 때"]; currentIndex: EditorController.exportCodec; onActivated: EditorController.exportCodec = currentIndex }
+                        Label { text: "파일 형식"; color: "#b4bdc8" }
+                        ComboBox { Layout.fillWidth: true; model: ["MP4", "MKV", "MOV"]; currentIndex: EditorController.exportContainer; onActivated: EditorController.exportContainer = currentIndex }
+                        Label { text: "해상도"; color: "#b4bdc8" }
+                        ComboBox { Layout.fillWidth: true; model: ["원본", "4K · 3840×2160", "FHD · 1920×1080", "HD · 1280×720"]; currentIndex: EditorController.exportResolution; onActivated: EditorController.exportResolution = currentIndex }
+                        Label { text: "프레임률"; color: "#b4bdc8" }
+                        ComboBox { Layout.fillWidth: true; model: ["원본", "60 fps", "30 fps", "24 fps"]; currentIndex: EditorController.exportFrameRate; onActivated: EditorController.exportFrameRate = currentIndex }
                     }
                         Item { Layout.preferredHeight: 20 }
                     }
@@ -760,6 +868,11 @@ ApplicationWindow {
                         elide: Text.ElideRight
                         color: EditorController.previewFailed ? "#ff7780"
                              : EditorController.previewBusy ? "#f0bd58" : "#8994a3"
+                    }
+                    Label {
+                        text: "휠·Shift+휠 이동  ·  가운데 드래그"
+                        color: "#687484"
+                        font.pixelSize: 10
                     }
                     Label {
                         text: Math.round(timeline.zoomLevel * 100) + "%"

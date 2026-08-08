@@ -197,6 +197,56 @@ void TimelineModel::trim_clip_to_frame_boundaries(
     trim_clip(clip_id, snappedIn, snappedOut - snappedIn);
 }
 
+void TimelineModel::trim_all_clip_edges(
+    std::size_t front_frames,
+    std::size_t back_frames) {
+    if (clips_.empty() || (front_frames == 0 && back_frames == 0)) return;
+
+    auto replacements = clips_;
+    bool changed = false;
+    for (std::size_t index = 0; index < clips_.size(); ++index) {
+        const auto& current = clips_[index];
+        const auto* sourceAsset = asset(current.asset_id);
+        if (sourceAsset == nullptr || sourceAsset->frame_pts().empty()) {
+            throw std::invalid_argument("global trim requires analyzed frame timestamps");
+        }
+        const auto& frames = sourceAsset->frame_pts();
+        const auto first = std::lower_bound(frames.begin(), frames.end(), current.source_in);
+        const auto last = std::lower_bound(frames.begin(), frames.end(), current.source_out());
+        const auto available = static_cast<std::size_t>(std::distance(first, last));
+        if (front_frames + back_frames >= available) {
+            throw std::invalid_argument("global trim must leave at least one frame in every clip");
+        }
+        const auto newIn = *(first + static_cast<std::ptrdiff_t>(front_frames));
+        const auto newOut = back_frames == 0
+            ? current.source_out()
+            : *(last - static_cast<std::ptrdiff_t>(back_frames));
+        replacements[index].source_in = newIn;
+        replacements[index].duration = newOut - newIn;
+        validate_clip(replacements[index], index);
+        changed = changed || replacements[index] != current;
+    }
+    if (!changed) return;
+
+    struct DurationChange final { TimeNs start; TimeNs old_duration; TimeNs new_duration; };
+    std::vector<DurationChange> changes;
+    TimeNs cursor = 0;
+    for (std::size_t index = 0; index < clips_.size(); ++index) {
+        changes.push_back(DurationChange{
+            cursor, clips_[index].timeline_duration(), replacements[index].timeline_duration()});
+        cursor = checked_add(cursor, clips_[index].timeline_duration());
+    }
+    record_edit();
+    for (auto change = changes.rbegin(); change != changes.rend(); ++change) {
+        if (change->new_duration < change->old_duration) {
+            ripple_captions_for_delete(
+                checked_add(change->start, change->new_duration),
+                checked_add(change->start, change->old_duration));
+        }
+    }
+    clips_ = std::move(replacements);
+}
+
 void TimelineModel::move_clip(const std::string& clip_id, std::size_t insertion_index) {
     move_clips({clip_id}, insertion_index);
 }
@@ -433,6 +483,32 @@ void TimelineModel::set_clips_playback_rate(
         }
     }
     clips_ = std::move(replacements);
+}
+
+void TimelineModel::set_clips_color(
+    const std::vector<std::string>& clip_ids,
+    ClipColor color) {
+    if (clip_ids.empty()) return;
+    if (!std::isfinite(color.brightness) || color.brightness < -1.0 ||
+        color.brightness > 1.0 || !std::isfinite(color.contrast) ||
+        color.contrast < 0.0 || color.contrast > 2.0 ||
+        !std::isfinite(color.saturation) || color.saturation < 0.0 ||
+        color.saturation > 2.0) {
+        throw std::invalid_argument("clip color settings are invalid");
+    }
+    const std::unordered_set<std::string> uniqueIds(clip_ids.begin(), clip_ids.end());
+    if (uniqueIds.size() != clip_ids.size()) {
+        throw std::invalid_argument("clip color selection contains duplicate ids");
+    }
+    bool changed = false;
+    for (const auto& id : uniqueIds) {
+        changed = changed || clips_[index_of(id)].color != color;
+    }
+    if (!changed) return;
+    record_edit();
+    for (auto& clip : clips_) {
+        if (uniqueIds.contains(clip.id)) clip.color = color;
+    }
 }
 
 void TimelineModel::split_at(

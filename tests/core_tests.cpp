@@ -79,6 +79,38 @@ void test_magnetic_trim_closes_space() {
     require(timeline.duration() == seconds(6), "timeline duration must be the active clip sum");
 }
 
+void test_global_frame_trim_is_atomic_magnetic_and_undoable() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"first", "asset-a", 0, seconds(7)});
+    timeline.append_clip(Clip{"second", "asset-a", 0, seconds(7)});
+    timeline.trim_all_clip_edges(1, 1);
+    require(timeline.clips()[0].source_in == seconds(1) &&
+            timeline.clips()[0].duration == seconds(3),
+            "global trim must use analyzed frame boundaries");
+    require(timeline.snapshot()[1].timeline_in == seconds(3) &&
+            timeline.duration() == seconds(6),
+            "global trim must magnetically close every shortened edge");
+    require(timeline.undo() && timeline.duration() == seconds(14),
+            "global trim must be one undoable edit");
+    const auto before = timeline.clips();
+    require_throws<std::invalid_argument>(
+        [&] { timeline.trim_all_clip_edges(4, 1); },
+        "global trim must reject settings that erase a clip");
+    require(timeline.clips() == before, "rejected global trim must be atomic");
+}
+
+void test_clip_color_is_atomic_and_validated() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"first", "asset-a", 0, seconds(2)});
+    timeline.append_clip(Clip{"second", "asset-a", seconds(2), seconds(2)});
+    timeline.set_clips_color({"first", "second"}, ffgui::ClipColor{0.2, 1.1, 0.8});
+    require(timeline.clips()[0].color == timeline.clips()[1].color,
+            "multi-selection color grading must apply atomically");
+    require_throws<std::invalid_argument>(
+        [&] { timeline.set_clips_color({"first"}, ffgui::ClipColor{2.0, 1.0, 1.0}); },
+        "out-of-range color grading must fail");
+}
+
 void test_snapshot_preserves_asset_audio_presence() {
     TimelineModel timeline;
     timeline.add_asset(MediaAsset{"silent", "silent.mp4", seconds(2)});
@@ -703,12 +735,38 @@ void test_ffmpeg_export_plan_applies_codec_and_quality_presets() {
             "compact H.264 preset must trade quality for speed and size");
 }
 
+void test_ffmpeg_export_plan_applies_resolution_fps_and_color() {
+    auto request = ffgui::ExportRequest{
+        {{std::filesystem::path{"A.mp4"}, 0, seconds(2), true}},
+        std::filesystem::path{"result.mp4"},
+        ffgui::ExportVideoEncoder::libx264};
+    request.prefer_stream_copy = true;
+    request.concat_script_path = std::filesystem::path{"job.ffconcat"};
+    request.output_width = 1920;
+    request.output_height = 1080;
+    request.output_fps = 30;
+    request.clips[0].brightness = 0.1;
+    request.clips[0].contrast = 1.2;
+    request.clips[0].saturation = 0.8;
+    const auto plan = ffgui::compile_ffmpeg_export(request);
+    require(plan.mode == ffgui::ExportMode::transcode,
+            "output transforms must disable stream copy");
+    std::string arguments;
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(arguments.contains("scale=1920:1080") && arguments.contains("fps=30"),
+            "resolution and frame-rate settings must reach the video graph");
+    require(arguments.contains("eq=brightness=0.100000:contrast=1.200000:saturation=0.800000"),
+            "color grading must reach the video graph");
+}
+
 }  // namespace
 
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests{
         {"vfr_frame_lookup", test_vfr_frame_lookup},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},
+        {"global_frame_trim_is_atomic_magnetic_and_undoable", test_global_frame_trim_is_atomic_magnetic_and_undoable},
+        {"clip_color_is_atomic_and_validated", test_clip_color_is_atomic_and_validated},
         {"snapshot_preserves_asset_audio_presence", test_snapshot_preserves_asset_audio_presence},
         {"sequence_to_source_mapping", test_sequence_to_source_mapping},
         {"vfr_frame_stepping_respects_trims_and_clip_boundaries", test_vfr_frame_stepping_respects_trims_and_clip_boundaries},
@@ -737,6 +795,7 @@ int main() {
         {"ffmpeg_export_plan_rejects_invalid_requests", test_ffmpeg_export_plan_rejects_invalid_requests},
         {"ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts", test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts},
         {"ffmpeg_export_plan_applies_codec_and_quality_presets", test_ffmpeg_export_plan_applies_codec_and_quality_presets},
+        {"ffmpeg_export_plan_applies_resolution_fps_and_color", test_ffmpeg_export_plan_applies_resolution_fps_and_color},
     };
 
     int failed = 0;

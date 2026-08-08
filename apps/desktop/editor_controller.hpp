@@ -10,6 +10,7 @@
 #include <QObject>
 #include <QFutureWatcher>
 #include <QHash>
+#include <QImage>
 #include <QProcess>
 #include <QStringList>
 #include <QTimer>
@@ -48,6 +49,9 @@ class EditorController final : public QObject {
     Q_PROPERTY(int selectedClipFadeInMs READ selectedClipFadeInMs NOTIFY selectedClipChanged)
     Q_PROPERTY(int selectedClipFadeOutMs READ selectedClipFadeOutMs NOTIFY selectedClipChanged)
     Q_PROPERTY(int selectedClipSpeedPercent READ selectedClipSpeedPercent NOTIFY selectedClipChanged)
+    Q_PROPERTY(int selectedClipBrightness READ selectedClipBrightness NOTIFY selectedClipChanged)
+    Q_PROPERTY(int selectedClipContrast READ selectedClipContrast NOTIFY selectedClipChanged)
+    Q_PROPERTY(int selectedClipSaturation READ selectedClipSaturation NOTIFY selectedClipChanged)
     Q_PROPERTY(QString selectedCaptionId READ selectedCaptionId NOTIFY captionSelectionChanged)
     Q_PROPERTY(QString selectedCaptionText READ selectedCaptionText NOTIFY captionSelectionChanged)
     Q_PROPERTY(int selectedCaptionDurationMs READ selectedCaptionDurationMs NOTIFY captionSelectionChanged)
@@ -64,6 +68,8 @@ class EditorController final : public QObject {
     Q_PROPERTY(int exportQuality READ exportQuality WRITE setExportQuality NOTIFY exportSettingsChanged)
     Q_PROPERTY(int exportCodec READ exportCodec WRITE setExportCodec NOTIFY exportSettingsChanged)
     Q_PROPERTY(int exportContainer READ exportContainer WRITE setExportContainer NOTIFY exportSettingsChanged)
+    Q_PROPERTY(int exportResolution READ exportResolution WRITE setExportResolution NOTIFY exportSettingsChanged)
+    Q_PROPERTY(int exportFrameRate READ exportFrameRate WRITE setExportFrameRate NOTIFY exportSettingsChanged)
 
 public:
     explicit EditorController(QObject* parent);
@@ -87,6 +93,9 @@ public:
     [[nodiscard]] int selectedClipFadeInMs() const noexcept;
     [[nodiscard]] int selectedClipFadeOutMs() const noexcept;
     [[nodiscard]] int selectedClipSpeedPercent() const noexcept;
+    [[nodiscard]] int selectedClipBrightness() const noexcept;
+    [[nodiscard]] int selectedClipContrast() const noexcept;
+    [[nodiscard]] int selectedClipSaturation() const noexcept;
     [[nodiscard]] QString selectedCaptionId() const { return selected_caption_id_; }
     [[nodiscard]] QString selectedCaptionText() const;
     [[nodiscard]] int selectedCaptionDurationMs() const noexcept;
@@ -103,6 +112,8 @@ public:
     [[nodiscard]] int exportQuality() const noexcept { return export_quality_; }
     [[nodiscard]] int exportCodec() const noexcept { return export_codec_; }
     [[nodiscard]] int exportContainer() const noexcept { return export_container_; }
+    [[nodiscard]] int exportResolution() const noexcept { return export_resolution_; }
+    [[nodiscard]] int exportFrameRate() const noexcept { return export_frame_rate_; }
     [[nodiscard]] bool lastExportUsedStreamCopy() const noexcept {
         return last_export_stream_copy_;
     }
@@ -118,6 +129,9 @@ public:
     [[nodiscard]] std::uint64_t videoFramesReceived() const noexcept;
     [[nodiscard]] std::uint64_t previewRebuildCount() const noexcept {
         return preview_rebuild_count_;
+    }
+    [[nodiscard]] std::uint64_t scrubFramesSubmitted() const noexcept {
+        return scrub_frames_submitted_;
     }
     [[nodiscard]] bool videoSurfaceExposed() const noexcept;
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
@@ -150,6 +164,10 @@ public slots:
     void setSelectedClipFadeInMs(int milliseconds);
     void setSelectedClipFadeOutMs(int milliseconds);
     void setSelectedClipSpeedPercent(int percent);
+    void setSelectedClipBrightness(int percent);
+    void setSelectedClipContrast(int percent);
+    void setSelectedClipSaturation(int percent);
+    void trimAllClipEdges(int frontFrames, int backFrames);
     void addCaptionAtPlayhead();
     void selectCaption(const QString& captionId);
     void updateSelectedCaption(const QString& text, int durationMs);
@@ -170,6 +188,8 @@ public slots:
     void setExportQuality(int quality);
     void setExportCodec(int codec);
     void setExportContainer(int container);
+    void setExportResolution(int resolution);
+    void setExportFrameRate(int frameRate);
     [[nodiscard]] QString exportExtension() const;
     [[nodiscard]] QString timeText(qint64 timelinePosition) const;
     [[nodiscard]] qint64 frameNumberAt(qint64 timelinePosition) const;
@@ -209,6 +229,7 @@ private:
     void setStatus(QString status);
     void queuePreviewOperation(bool restorePosition);
     void startPreviewOperation();
+    void submitCachedScrubFrame(qint64 timelinePosition);
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
     void startExportValidation();
     void finishExport(bool success);
@@ -258,12 +279,14 @@ private:
     bool preview_operation_pending_{};
     bool preview_should_play_{};
     bool preview_stop_requested_{};
-    bool pending_preview_seek_accurate_{true};
     mutable std::mutex pending_video_frame_mutex_;
     std::optional<ffgui::PreviewVideoFrame> pending_video_frame_;
     bool video_frame_delivery_queued_{};
 #endif
     QHash<QString, QString> thumbnail_atlases_;
+    QHash<QString, QImage> thumbnail_images_;
+    std::uint64_t scrub_frame_serial_{1ULL << 63};
+    std::uint64_t scrub_frames_submitted_{};
     mutable std::optional<QVariantList> clips_cache_;
     mutable std::optional<QVariantList> media_assets_cache_;
     mutable std::optional<QVariantList> captions_cache_;
@@ -287,6 +310,8 @@ private:
     int export_quality_{1};
     int export_codec_{};
     int export_container_{};
+    int export_resolution_{};
+    int export_frame_rate_{};
     QString export_concat_path_;
     QString export_subtitle_path_;
     static EditorController* singleton_instance_;

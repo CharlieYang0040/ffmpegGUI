@@ -20,6 +20,14 @@ struct ClipAudio final {
     bool operator==(const ClipAudio&) const = default;
 };
 
+struct ClipColor final {
+    double brightness{};
+    double contrast{1.0};
+    double saturation{1.0};
+
+    bool operator==(const ClipColor&) const = default;
+};
+
 struct Clip final {
     std::string id;
     std::string asset_id;
@@ -27,6 +35,7 @@ struct Clip final {
     TimeNs duration{};
     ClipAudio audio{};
     double playback_rate{1.0};
+    ClipColor color{};
 
     bool operator==(const Clip&) const = default;
 
@@ -94,6 +103,7 @@ public:
     void trim_clip(const std::string& clip_id, TimeNs source_in, TimeNs duration);
     void trim_clip_to_frame_boundaries(
         const std::string& clip_id, TimeNs source_in, TimeNs duration);
+    void trim_all_clip_edges(std::size_t front_frames, std::size_t back_frames);
     void move_clip(const std::string& clip_id, std::size_t insertion_index);
     void move_clips(const std::vector<std::string>& clip_ids, std::size_t insertion_index);
     void erase_clip(const std::string& clip_id);
@@ -106,6 +116,7 @@ public:
     void set_clips_playback_rate(
         const std::vector<std::string>& clip_ids,
         double playback_rate);
+    void set_clips_color(const std::vector<std::string>& clip_ids, ClipColor color);
     void add_caption(CaptionCue caption);
     void add_captions(std::vector<CaptionCue> captions);
     void update_caption(CaptionCue caption);

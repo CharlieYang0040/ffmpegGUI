@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -80,6 +81,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                     const auto assetId = item.asset.id();
                     const auto assetKey = QString::fromStdString(assetId);
                     waveform_cache_.remove(assetKey);
+                    thumbnail_images_.remove(assetKey);
                     const auto duration = item.asset.duration();
                     if (!item.thumbnail_atlas.isEmpty()) {
                         thumbnail_atlases_.insert(assetKey, std::move(item.thumbnail_atlas));
@@ -420,6 +422,9 @@ QVariantList EditorController::clips() const {
         value.insert("audioMuted", span.clip.audio.muted);
         value.insert("audioFadeInNs", static_cast<qint64>(span.clip.audio.fade_in));
         value.insert("audioFadeOutNs", static_cast<qint64>(span.clip.audio.fade_out));
+        value.insert("brightness", span.clip.color.brightness);
+        value.insert("contrast", span.clip.color.contrast);
+        value.insert("saturation", span.clip.color.saturation);
         const auto* asset = timeline_.asset(span.clip.asset_id);
         value.insert("assetDurationNs", static_cast<qint64>(asset ? asset->duration() : 0));
         value.insert(
@@ -552,6 +557,33 @@ int EditorController::selectedClipSpeedPercent() const noexcept {
     return 100;
 }
 
+int EditorController::selectedClipBrightness() const noexcept {
+    for (const auto& clip : timeline_.clips()) {
+        if (clip.id == selected_clip_id_.toStdString()) {
+            return static_cast<int>(std::lround(clip.color.brightness * 100.0));
+        }
+    }
+    return 0;
+}
+
+int EditorController::selectedClipContrast() const noexcept {
+    for (const auto& clip : timeline_.clips()) {
+        if (clip.id == selected_clip_id_.toStdString()) {
+            return static_cast<int>(std::lround(clip.color.contrast * 100.0));
+        }
+    }
+    return 100;
+}
+
+int EditorController::selectedClipSaturation() const noexcept {
+    for (const auto& clip : timeline_.clips()) {
+        if (clip.id == selected_clip_id_.toStdString()) {
+            return static_cast<int>(std::lround(clip.color.saturation * 100.0));
+        }
+    }
+    return 100;
+}
+
 QString EditorController::selectedCaptionText() const {
     const auto id = selected_caption_id_.toStdString();
     const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
@@ -659,7 +691,6 @@ void EditorController::seek(qint64 timelinePosition) {
 #ifdef FFGUI_HAS_GES
     preview_should_play_ = false;
     pending_preview_seek_ = playhead_ns_;
-    pending_preview_seek_accurate_ = true;
     queuePreviewOperation(false);
 #endif
 }
@@ -667,13 +698,57 @@ void EditorController::seek(qint64 timelinePosition) {
 void EditorController::scrub(qint64 timelinePosition, bool finalPosition) {
     playhead_ns_ = std::clamp<qint64>(timelinePosition, 0, durationNs());
     emit playheadChanged();
+    submitCachedScrubFrame(playhead_ns_);
 #ifdef FFGUI_HAS_GES
     preview_should_play_ = false;
+    if (!finalPosition) return;
     pending_preview_seek_ = playhead_ns_;
-    pending_preview_seek_accurate_ = finalPosition;
     queuePreviewOperation(false);
 #else
     static_cast<void>(finalPosition);
+#endif
+}
+
+void EditorController::submitCachedScrubFrame(qint64 timelinePosition) {
+#ifdef FFGUI_HAS_GES
+    auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
+    const auto mapped = timeline_.locate(timelinePosition);
+    if (item == nullptr || !mapped.has_value()) return;
+    const auto assetId = QString::fromStdString(mapped->asset_id);
+    const auto atlasPath = thumbnail_atlases_.value(assetId);
+    const auto* asset = timeline_.asset(mapped->asset_id);
+    if (atlasPath.isEmpty() || asset == nullptr || asset->duration() <= 0) return;
+    auto found = thumbnail_images_.find(assetId);
+    if (found == thumbnail_images_.end()) {
+        QImage loaded(atlasPath);
+        if (loaded.isNull()) return;
+        found = thumbnail_images_.insert(assetId, loaded.convertToFormat(QImage::Format_ARGB32));
+    }
+    const auto& atlas = found.value();
+    constexpr int tileWidth = 160;
+    constexpr int tileHeight = 90;
+    const auto tileCount = std::max(1, atlas.width() / tileWidth);
+    const auto ratio = std::clamp(
+        static_cast<double>(mapped->source_time) / static_cast<double>(asset->duration()),
+        0.0,
+        0.999999);
+    const auto tileIndex = std::clamp(
+        static_cast<int>(ratio * tileCount), 0, tileCount - 1);
+    const auto tile = atlas.copy(tileIndex * tileWidth, 0, tileWidth, tileHeight);
+    if (tile.isNull()) return;
+    ffgui::PreviewVideoFrame frame;
+    frame.width = tile.width();
+    frame.height = tile.height();
+    frame.cpu_stride = tile.bytesPerLine();
+    frame.cpu_pixels = std::make_shared<std::vector<std::uint8_t>>(
+        static_cast<std::size_t>(frame.cpu_stride) * frame.height);
+    std::memcpy(frame.cpu_pixels->data(), tile.constBits(), frame.cpu_pixels->size());
+    frame.pts = timelinePosition;
+    frame.serial = ++scrub_frame_serial_;
+    ++scrub_frames_submitted_;
+    item->submitFrame(std::move(frame));
+#else
+    static_cast<void>(timelinePosition);
 #endif
 }
 
@@ -1032,6 +1107,62 @@ void EditorController::setSelectedClipSpeedPercent(int percent) {
     }
 }
 
+void EditorController::setSelectedClipBrightness(int percent) {
+    if (selected_clip_ids_.isEmpty()) return;
+    auto color = ffgui::ClipColor{
+        static_cast<double>(std::clamp(percent, -100, 100)) / 100.0,
+        static_cast<double>(selectedClipContrast()) / 100.0,
+        static_cast<double>(selectedClipSaturation()) / 100.0};
+    try {
+        std::vector<std::string> ids;
+        for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
+        timeline_.set_clips_color(ids, color);
+        publishTimeline();
+        setStatus(QStringLiteral("밝기 · %1").arg(percent));
+    } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
+}
+
+void EditorController::setSelectedClipContrast(int percent) {
+    if (selected_clip_ids_.isEmpty()) return;
+    auto color = ffgui::ClipColor{
+        static_cast<double>(selectedClipBrightness()) / 100.0,
+        static_cast<double>(std::clamp(percent, 0, 200)) / 100.0,
+        static_cast<double>(selectedClipSaturation()) / 100.0};
+    try {
+        std::vector<std::string> ids;
+        for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
+        timeline_.set_clips_color(ids, color);
+        publishTimeline();
+        setStatus(QStringLiteral("대비 · %1%").arg(percent));
+    } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
+}
+
+void EditorController::setSelectedClipSaturation(int percent) {
+    if (selected_clip_ids_.isEmpty()) return;
+    auto color = ffgui::ClipColor{
+        static_cast<double>(selectedClipBrightness()) / 100.0,
+        static_cast<double>(selectedClipContrast()) / 100.0,
+        static_cast<double>(std::clamp(percent, 0, 200)) / 100.0};
+    try {
+        std::vector<std::string> ids;
+        for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
+        timeline_.set_clips_color(ids, color);
+        publishTimeline();
+        setStatus(QStringLiteral("채도 · %1%").arg(percent));
+    } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
+}
+
+void EditorController::trimAllClipEdges(int frontFrames, int backFrames) {
+    try {
+        timeline_.trim_all_clip_edges(
+            static_cast<std::size_t>(std::max(0, frontFrames)),
+            static_cast<std::size_t>(std::max(0, backFrames)));
+        publishTimeline();
+        setStatus(QStringLiteral("전체 트림 · 앞 %1프레임 / 뒤 %2프레임")
+            .arg(frontFrames).arg(backFrames));
+    } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
+}
+
 void EditorController::addCaptionAtPlayhead() {
     if (durationNs() <= 0 || playhead_ns_ >= durationNs()) return;
     try {
@@ -1291,7 +1422,10 @@ void EditorController::saveProject(const QString& path) {
                 {"audioMuted", clip.audio.muted},
                 {"audioFadeInNs", timeString(clip.audio.fade_in)},
                 {"audioFadeOutNs", timeString(clip.audio.fade_out)},
-                {"playbackRate", clip.playback_rate}});
+                {"playbackRate", clip.playback_rate},
+                {"brightness", clip.color.brightness},
+                {"contrast", clip.color.contrast},
+                {"saturation", clip.color.saturation}});
         }
         QJsonArray captions;
         for (const auto& caption : timeline_.captions()) {
@@ -1381,7 +1515,11 @@ void EditorController::loadProject(const QString& path) {
                     object.contains("audioFadeOutNs")
                         ? parseTime(object.value("audioFadeOutNs"), "audioFadeOutNs") : 0},
                 object.contains("playbackRate")
-                    ? object.value("playbackRate").toDouble() : 1.0});
+                    ? object.value("playbackRate").toDouble() : 1.0,
+                ffgui::ClipColor{
+                    object.value("brightness").toDouble(0.0),
+                    object.contains("contrast") ? object.value("contrast").toDouble() : 1.0,
+                    object.contains("saturation") ? object.value("saturation").toDouble() : 1.0}});
         }
         for (const auto value : root.value("captions").toArray()) {
             const auto object = value.toObject();
@@ -1394,6 +1532,7 @@ void EditorController::loadProject(const QString& path) {
         loaded.clear_history();
         timeline_ = std::move(loaded);
         thumbnail_atlases_ = std::move(loadedAtlases);
+        thumbnail_images_.clear();
         waveform_cache_.clear();
         setSingleSelection(timeline_.clips().empty()
             ? QString{}
@@ -1443,6 +1582,20 @@ void EditorController::setExportContainer(int container) {
     container = std::clamp(container, 0, 2);
     if (export_container_ == container) return;
     export_container_ = container;
+    emit exportSettingsChanged();
+}
+
+void EditorController::setExportResolution(int resolution) {
+    resolution = std::clamp(resolution, 0, 3);
+    if (export_resolution_ == resolution) return;
+    export_resolution_ = resolution;
+    emit exportSettingsChanged();
+}
+
+void EditorController::setExportFrameRate(int frameRate) {
+    frameRate = std::clamp(frameRate, 0, 3);
+    if (export_frame_rate_ == frameRate) return;
+    export_frame_rate_ = frameRate;
     emit exportSettingsChanged();
 }
 
@@ -1532,6 +1685,16 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     request.output_path = std::filesystem::path(output.toStdWString());
     request.prefer_stream_copy = export_codec_ == 2;
     request.quality = static_cast<ffgui::ExportQuality>(export_quality_);
+    if (export_resolution_ == 1) {
+        request.output_width = 3840; request.output_height = 2160;
+    } else if (export_resolution_ == 2) {
+        request.output_width = 1920; request.output_height = 1080;
+    } else if (export_resolution_ == 3) {
+        request.output_width = 1280; request.output_height = 720;
+    }
+    if (export_frame_rate_ == 1) request.output_fps = 60;
+    else if (export_frame_rate_ == 2) request.output_fps = 30;
+    else if (export_frame_rate_ == 3) request.output_fps = 24;
     const auto exportSnapshot = timeline_.snapshot();
     if (exportSnapshot.empty()) return;
     last_export_matched_preview_ = false;
@@ -1548,7 +1711,10 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             span.clip.audio.muted,
             span.clip.audio.fade_in,
             span.clip.audio.fade_out,
-            span.clip.playback_rate});
+            span.clip.playback_rate,
+            span.clip.color.brightness,
+            span.clip.color.contrast,
+            span.clip.color.saturation});
     }
     for (const auto& caption : timeline_.captions()) {
         request.captions.push_back(ffgui::ExportCaptionInput{
@@ -1768,11 +1934,9 @@ void EditorController::startPreviewOperation() {
     // gap-safe composition and regression suite.
     auto captions = std::vector<ffgui::CaptionCue>{};
     const auto seekTarget = pending_preview_seek_;
-    const bool accurateSeek = pending_preview_seek_accurate_;
     const bool shouldPlay = preview_should_play_;
     const bool shouldStop = preview_stop_requested_;
     pending_preview_seek_.reset();
-    pending_preview_seek_accurate_ = true;
     preview_stop_requested_ = false;
     preview_operation_pending_ = false;
     if (!preview_busy_) {
@@ -1795,7 +1959,6 @@ void EditorController::startPreviewOperation() {
          spans = std::move(spans),
          captions = std::move(captions),
          seekTarget,
-         accurateSeek,
          shouldPlay,
          shouldStop]() mutable {
             PreviewOperationResult result;
@@ -1816,8 +1979,7 @@ void EditorController::startPreviewOperation() {
                     if (seekTarget.has_value() && player->duration() > 0) {
                         const auto target = std::clamp<qint64>(
                             seekTarget.value(), 0, static_cast<qint64>(player->duration()));
-                        if (accurateSeek) player->seek(target);
-                        else player->seek_preview(target);
+                        player->seek(target);
                     }
                     if (shouldPlay) {
                         player->play();

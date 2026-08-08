@@ -46,7 +46,8 @@ std::pair<TimeNs, TimeNs> normalized_fades(const ExportClipInput& clip) {
 
 bool can_stream_copy(const ExportRequest& request) {
     if (!request.prefer_stream_copy || request.concat_script_path.empty() ||
-        request.clips.empty() || !request.captions.empty()) {
+        request.clips.empty() || !request.captions.empty() || request.output_width > 0 ||
+        request.output_height > 0 || request.output_fps > 0) {
         return false;
     }
     const auto& source = request.clips.front().source_path;
@@ -54,7 +55,8 @@ bool can_stream_copy(const ExportRequest& request) {
         return clip.source_path == source && clip.asset_duration > 0 &&
                clip.audio_gain == 1.0 && !clip.audio_muted &&
                clip.audio_fade_in == 0 && clip.audio_fade_out == 0 &&
-               clip.playback_rate == 1.0 &&
+               clip.playback_rate == 1.0 && clip.brightness == 0.0 &&
+               clip.contrast == 1.0 && clip.saturation == 1.0 &&
                is_boundary(clip, clip.source_in) &&
                is_boundary(clip, checked_add(clip.source_in, clip.duration));
     });
@@ -134,6 +136,11 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
     if (request.output_path.empty()) {
         throw std::invalid_argument("export output path is empty");
     }
+    if ((request.output_width == 0) != (request.output_height == 0) ||
+        request.output_width < 0 || request.output_height < 0 || request.output_fps < 0 ||
+        request.output_fps > 240) {
+        throw std::invalid_argument("export resolution or frame rate is invalid");
+    }
 
     FfmpegExportPlan plan;
     auto extension = request.output_path.extension().string();
@@ -153,6 +160,13 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         if (!std::isfinite(clip.playback_rate) || clip.playback_rate < 0.25 ||
             clip.playback_rate > 4.0 || clip.timeline_duration() <= 0) {
             throw std::invalid_argument("export clip has invalid playback rate");
+        }
+        if (!std::isfinite(clip.brightness) || clip.brightness < -1.0 ||
+            clip.brightness > 1.0 || !std::isfinite(clip.contrast) ||
+            clip.contrast < 0.0 || clip.contrast > 2.0 ||
+            !std::isfinite(clip.saturation) || clip.saturation < 0.0 ||
+            clip.saturation > 2.0) {
+            throw std::invalid_argument("export clip has invalid color settings");
         }
         plan.duration = checked_add(plan.duration, clip.timeline_duration());
     }
@@ -189,8 +203,24 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
              "-i", path_string(clip.source_path)});
 
         const auto suffix = std::to_string(index);
-        filter += "[" + suffix + ":v:0]setpts=(PTS-STARTPTS)/" +
-                  decimal(clip.playback_rate) + "[v" + suffix + "];";
+        filter += "[" + suffix + ":v:0]";
+        if (request.output_width > 0) {
+            filter += "scale=" + std::to_string(request.output_width) + ":" +
+                std::to_string(request.output_height) +
+                ":force_original_aspect_ratio=decrease,pad=" +
+                std::to_string(request.output_width) + ":" +
+                std::to_string(request.output_height) + ":(ow-iw)/2:(oh-ih)/2,setsar=1,";
+        }
+        if (request.output_fps > 0) {
+            filter += "fps=" + std::to_string(request.output_fps) + ",";
+        }
+        if (clip.brightness != 0.0 || clip.contrast != 1.0 || clip.saturation != 1.0) {
+            filter += "eq=brightness=" + decimal(clip.brightness) +
+                ":contrast=" + decimal(clip.contrast) +
+                ":saturation=" + decimal(clip.saturation) + ",";
+        }
+        filter += "setpts=(PTS-STARTPTS)/" + decimal(clip.playback_rate) +
+                  "[v" + suffix + "];";
         if (clip.has_audio) {
             filter += "[" + suffix + ":a:0]aresample=48000:async=1:first_pts=0,"
                       "apad=whole_dur=" + seconds(clip.duration) +

@@ -356,6 +356,9 @@ int main(int argc, char* argv[]) {
         controller.undo();
         if (controller.durationNs() != beforeSpeedDuration) return EXIT_FAILURE;
         controller.redo();
+        controller.setSelectedClipBrightness(10);
+        controller.setSelectedClipContrast(115);
+        controller.setSelectedClipSaturation(85);
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);
@@ -370,6 +373,9 @@ int main(int argc, char* argv[]) {
                loadedAudio.value("audioFadeInNs").toLongLong() == 200'000'000 &&
                loadedAudio.value("audioFadeOutNs").toLongLong() == 300'000'000 &&
                std::abs(loadedAudio.value("playbackRate").toDouble() - 1.5) < 0.0001 &&
+               std::abs(loadedAudio.value("brightness").toDouble() - 0.1) < 0.0001 &&
+               std::abs(loadedAudio.value("contrast").toDouble() - 1.15) < 0.0001 &&
+               std::abs(loadedAudio.value("saturation").toDouble() - 0.85) < 0.0001 &&
                controller.captions().size() == 1 &&
                controller.captions().front().toMap().value("text").toString() ==
                    QStringLiteral("회귀 테스트 자막") &&
@@ -389,6 +395,11 @@ int main(int argc, char* argv[]) {
         controller.setSelectedClipVolumePercent(80);
         controller.setSelectedClipFadeInMs(150);
         controller.setSelectedClipFadeOutMs(250);
+        controller.setSelectedClipBrightness(10);
+        controller.setSelectedClipContrast(115);
+        controller.setSelectedClipSaturation(85);
+        controller.setExportResolution(3);
+        controller.setExportFrameRate(3);
         controller.seek(500'000'000);
         controller.addCaptionAtPlayhead();
         controller.updateSelectedCaption(QStringLiteral("출력 자막"), 1200);
@@ -450,6 +461,9 @@ int main(int argc, char* argv[]) {
         controller.setSelectedClipFadeInMs(200);
         controller.setSelectedClipFadeOutMs(300);
         controller.setSelectedClipSpeedPercent(150);
+        controller.setSelectedClipBrightness(10);
+        controller.setSelectedClipContrast(115);
+        controller.setSelectedClipSaturation(85);
         controller.seek(500'000'000);
         controller.addCaptionAtPlayhead();
         controller.updateSelectedCaption(QStringLiteral("미리보기 자막"), 1200);
@@ -466,6 +480,7 @@ int main(int argc, char* argv[]) {
                                   << "received=" << controller.videoFramesReceived()
                                   << "delivered=" << controller.videoFramesDelivered()
                                   << "presented=" << controller.videoFramesPresented()
+                                  << "scrub_cached=" << controller.scrubFramesSubmitted()
                                   << "surface_exposed=" << controller.videoSurfaceExposed()
                                   << "playhead_ns=" << controller.playheadNs()
                                   << "failed=" << controller.previewFailed();
@@ -473,6 +488,7 @@ int main(int argc, char* argv[]) {
                 else if (controller.playheadNs() <= 750'000'000) application.exit(10);
                 else if (controller.inProcessPreview() && controller.videoFramesReceived() < 10) application.exit(11);
                 else if (controller.inProcessPreview() && controller.videoFramesDelivered() < 10) application.exit(12);
+                else if (controller.scrubFramesSubmitted() < 4) application.exit(16);
                 else if (offscreenPresentationSmoke && !controller.videoSurfaceExposed()) application.exit(15);
                 else if (controller.inProcessPreview() && controller.videoSurfaceExposed() &&
                          controller.videoFramesPresented() < 10) application.exit(13);

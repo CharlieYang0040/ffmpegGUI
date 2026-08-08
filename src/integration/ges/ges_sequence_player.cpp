@@ -113,6 +113,21 @@ void add_speed_effect(GESUriClip* uri_clip, double playback_rate, bool has_audio
     }
 }
 
+void add_color_effect(GESUriClip* uri_clip, const ClipColor& color) {
+    if (color == ClipColor{}) return;
+    std::ostringstream description;
+    description << std::fixed << std::setprecision(6)
+                << "videobalance brightness=" << color.brightness
+                << " contrast=" << color.contrast
+                << " saturation=" << color.saturation;
+    auto* effect = ges_effect_new(description.str().c_str());
+    if (effect == nullptr ||
+        !ges_container_add(GES_CONTAINER(uri_clip), GES_TIMELINE_ELEMENT(effect))) {
+        if (effect != nullptr) gst_object_unref(effect);
+        throw std::runtime_error("failed to attach clip color effect");
+    }
+}
+
 std::string path_to_utf8(const std::filesystem::path& path) {
     const auto value = path.u8string();
     return {reinterpret_cast<const char*>(value.data()), value.size()};
@@ -196,15 +211,6 @@ void GesSequencePlayer::set_timeline(
 
 void GesSequencePlayer::seek(TimeNs timeline_position) {
     std::unique_lock lock(mutex_);
-    seek_locked(timeline_position, true);
-}
-
-void GesSequencePlayer::seek_preview(TimeNs timeline_position) {
-    std::unique_lock lock(mutex_);
-    seek_locked(timeline_position, false);
-}
-
-void GesSequencePlayer::seek_locked(TimeNs timeline_position, bool wait_for_preroll) {
     const auto target = std::max<TimeNs>(0, std::min(timeline_position, duration_ns_.load()));
     if (pipeline_ == nullptr) {
         return;
@@ -240,7 +246,7 @@ void GesSequencePlayer::seek_locked(TimeNs timeline_position, bool wait_for_prer
     while (auto* stale = gst_bus_pop_filtered(bus, GST_MESSAGE_ASYNC_DONE)) {
         gst_message_unref(stale);
     }
-    const auto waitForPreroll = wait_for_preroll && state_.load() == PlaybackState::paused;
+    const auto waitForPreroll = state_.load() == PlaybackState::paused;
     const auto flags = static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE);
     if (!gst_element_seek_simple(pipeline, GST_FORMAT_TIME, flags, target)) {
         gst_object_unref(bus);
@@ -268,6 +274,7 @@ void GesSequencePlayer::seek_locked(TimeNs timeline_position, bool wait_for_prer
         gst_message_unref(message);
     }
     gst_object_unref(bus);
+    lock.unlock();
     position_ns_.store(target);
     if (notifyPaused) notify_state(PlaybackState::paused);
 }
@@ -538,6 +545,7 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 ges_timeline_element_set_duration(element, timelineDuration);
             if (configured) {
                 add_speed_effect(uri_clip, span.clip.playback_rate, span.has_audio);
+                add_color_effect(uri_clip, span.clip.color);
             }
             if (configured && span.has_audio && span.clip.audio != ClipAudio{}) {
                 add_audio_effect(uri_clip, span.clip, timelineDuration);

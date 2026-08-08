@@ -35,6 +35,9 @@ struct ExportClipInput final {
     TimeNs audio_fade_in{};
     TimeNs audio_fade_out{};
     double playback_rate{1.0};
+    double brightness{};
+    double contrast{1.0};
+    double saturation{1.0};
 
     [[nodiscard]] TimeNs timeline_duration() const {
         return static_cast<TimeNs>(std::llround(
@@ -57,6 +60,9 @@ struct ExportRequest final {
     std::vector<ExportCaptionInput> captions;
     std::filesystem::path subtitle_script_path;
     ExportQuality quality{ExportQuality::balanced};
+    int output_width{};
+    int output_height{};
+    int output_fps{};
 };
 
 struct FfmpegExportPlan final {

@@ -42,7 +42,7 @@ void setVertex(
 
 TimelineView::TimelineView(QQuickItem* parent) : QQuickItem(parent) {
     setFlag(ItemHasContents, true);
-    setAcceptedMouseButtons(Qt::LeftButton);
+    setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton);
     setAcceptHoverEvents(true);
 }
 
@@ -368,6 +368,19 @@ void TimelineView::geometryChange(const QRectF& newGeometry, const QRectF& oldGe
 }
 
 void TimelineView::mousePressEvent(QMouseEvent* event) {
+    if (event->button() == Qt::MiddleButton) {
+        drag_mode_ = DragMode::pan;
+        drag_origin_x_ = event->position().x();
+        pan_origin_viewport_ns_ = viewport_start_ns_;
+        interaction_active_ = true;
+        interaction_kind_ = QStringLiteral("타임라인 이동");
+        interaction_x_ = event->position().x();
+        interaction_time_ns_ = timeAt(interaction_x_);
+        setCursor(QCursor(Qt::ClosedHandCursor));
+        emit interactionFeedbackChanged();
+        event->accept();
+        return;
+    }
     if (interaction_mode_ == 1) {
         drag_mode_ = DragMode::none;
         drag_clip_index_ = -1;
@@ -489,6 +502,21 @@ void TimelineView::hoverLeaveEvent(QHoverEvent* event) {
 }
 
 void TimelineView::mouseMoveEvent(QMouseEvent* event) {
+    if (event->buttons().testFlag(Qt::MiddleButton) && drag_mode_ == DragMode::pan) {
+        const auto contentWidth = std::max<qreal>(1.0, width() - kHorizontalPadding * 2.0);
+        const auto delta = static_cast<qint64>(
+            (event->position().x() - drag_origin_x_) / contentWidth * visibleDurationNs());
+        viewport_start_ns_ = pan_origin_viewport_ns_ - delta;
+        clampViewport();
+        timeline_geometry_dirty_ = true;
+        interaction_x_ = event->position().x();
+        interaction_time_ns_ = timeAt(interaction_x_);
+        emit viewportChanged();
+        emit interactionFeedbackChanged();
+        update();
+        event->accept();
+        return;
+    }
     if (event->buttons().testFlag(Qt::LeftButton)) {
         if (interaction_mode_ == 1) {
             interaction_x_ = event->position().x();
@@ -543,6 +571,14 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::MiddleButton && drag_mode_ == DragMode::pan) {
+        drag_mode_ = DragMode::none;
+        interaction_active_ = false;
+        setCursor(QCursor(Qt::ArrowCursor));
+        emit interactionFeedbackChanged();
+        event->accept();
+        return;
+    }
     if (interaction_mode_ == 1) {
         seekAt(event->position().x(), true);
         interaction_active_ = false;
@@ -598,7 +634,11 @@ void TimelineView::wheelEvent(QWheelEvent* event) {
         event->ignore();
         return;
     }
-    const auto steps = static_cast<qreal>(event->angleDelta().y()) / 120.0;
+    const auto wheelDelta = event->modifiers().testFlag(Qt::ShiftModifier) &&
+            event->angleDelta().x() != 0
+        ? event->angleDelta().x()
+        : event->angleDelta().y();
+    const auto steps = static_cast<qreal>(wheelDelta) / 120.0;
     if (event->modifiers().testFlag(Qt::ControlModifier)) {
         const auto anchor = timeAt(event->position().x());
         const auto ratio = std::clamp(

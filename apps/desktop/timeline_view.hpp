@@ -95,7 +95,7 @@ private:
     [[nodiscard]] qint64 timeAt(qreal x) const;
     void clampViewport();
 
-    enum class DragMode { none, trim_left, trim_right, move };
+    enum class DragMode { none, trim_left, trim_right, move, pan };
 
     QVariantList clips_;
     qint64 duration_ns_{};
@@ -107,6 +107,7 @@ private:
     DragMode drag_mode_{DragMode::none};
     int drag_clip_index_{-1};
     qreal drag_origin_x_{};
+    qint64 pan_origin_viewport_ns_{};
     qint64 drag_delta_ns_{};
     int move_target_index_{-1};
     int hover_clip_index_{-1};
