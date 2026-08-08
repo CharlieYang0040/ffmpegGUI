@@ -57,6 +57,7 @@ bool can_stream_copy(const ExportRequest& request) {
                clip.audio_fade_in == 0 && clip.audio_fade_out == 0 &&
                clip.playback_rate == 1.0 && clip.brightness == 0.0 &&
                clip.contrast == 1.0 && clip.saturation == 1.0 &&
+               clip.transition_in == 0 &&
                is_boundary(clip, clip.source_in) &&
                is_boundary(clip, checked_add(clip.source_in, clip.duration));
     });
@@ -149,7 +150,8 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
     });
     const bool movFamily = extension == ".mp4" || extension == ".mov" || extension == ".m4v";
     plan.arguments = {"-hide_banner", "-y", "-progress", "pipe:2", "-nostats"};
-    for (const auto& clip : request.clips) {
+    for (std::size_t index = 0; index < request.clips.size(); ++index) {
+        const auto& clip = request.clips[index];
         if (clip.source_path.empty() || clip.duration <= 0 || clip.source_in < 0) {
             throw std::invalid_argument("export clip has an invalid source range");
         }
@@ -168,7 +170,13 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
             clip.saturation > 2.0) {
             throw std::invalid_argument("export clip has invalid color settings");
         }
+        const auto maximumTransition = index == 0 ? 0 : std::min(
+            request.clips[index - 1].timeline_duration(), clip.timeline_duration()) / 2;
+        if (clip.transition_in < 0 || clip.transition_in > maximumTransition) {
+            throw std::invalid_argument("export clip has invalid dissolve duration");
+        }
         plan.duration = checked_add(plan.duration, clip.timeline_duration());
+        if (index > 0) plan.duration -= clip.transition_in;
     }
     for (const auto& caption : request.captions) {
         if (caption.text.empty() || caption.timeline_in < 0 || caption.duration <= 0 ||
@@ -194,7 +202,6 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
     }
 
     std::string filter;
-    std::string concatInputs;
     for (std::size_t index = 0; index < request.clips.size(); ++index) {
         const auto& clip = request.clips[index];
         plan.arguments.insert(
@@ -219,7 +226,7 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
                 ":contrast=" + decimal(clip.contrast) +
                 ":saturation=" + decimal(clip.saturation) + ",";
         }
-        filter += "setpts=(PTS-STARTPTS)/" + decimal(clip.playback_rate) +
+        filter += "settb=AVTB,setpts=(PTS-STARTPTS)/" + decimal(clip.playback_rate) +
                   "[v" + suffix + "];";
         if (clip.has_audio) {
             filter += "[" + suffix + ":a:0]aresample=48000:async=1:first_pts=0,"
@@ -241,16 +248,39 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
                       ":d=" + seconds(fadeOut);
         }
         filter += "[a" + suffix + "];";
-        concatInputs += "[v" + suffix + "][a" + suffix + "]";
     }
-    filter += concatInputs + "concat=n=" + std::to_string(request.clips.size()) + ":v=1:a=1";
+    std::string videoLabel = "v0";
+    std::string audioLabel = "a0";
+    TimeNs composedDuration = request.clips.front().timeline_duration();
+    for (std::size_t index = 1; index < request.clips.size(); ++index) {
+        const auto suffix = std::to_string(index);
+        const auto transition = request.clips[index].transition_in;
+        const auto nextVideo = "vc" + suffix;
+        const auto nextAudio = "ac" + suffix;
+        if (transition > 0) {
+            filter += "[" + videoLabel + "][v" + suffix + "]xfade=transition=fade:duration=" +
+                seconds(transition) + ":offset=" + seconds(composedDuration - transition) +
+                "[" + nextVideo + "];";
+            filter += "[" + audioLabel + "][a" + suffix + "]acrossfade=d=" +
+                seconds(transition) + ":c1=tri:c2=tri[" + nextAudio + "];";
+        } else {
+            filter += "[" + videoLabel + "][" + audioLabel + "][v" + suffix +
+                "][a" + suffix + "]concat=n=2:v=1:a=1[" + nextVideo + "][" +
+                nextAudio + "];";
+        }
+        composedDuration = checked_add(composedDuration, request.clips[index].timeline_duration()) -
+            transition;
+        videoLabel = nextVideo;
+        audioLabel = nextAudio;
+    }
     if (request.captions.empty()) {
-        filter += "[vout][aout]";
+        filter += "[" + videoLabel + "]null[vout];[" + audioLabel + "]anull[aout]";
     } else {
         if (request.subtitle_script_path.empty()) {
             throw std::invalid_argument("caption export requires an ASS script path");
         }
-        filter += "[vbase][aout];[vbase]ass=filename='" +
+        filter += "[" + videoLabel + "]null[vbase];[" + audioLabel +
+                  "]anull[aout];[vbase]ass=filename='" +
                   filter_path(request.subtitle_script_path) + "'[vout]";
         plan.subtitle_script =
             "[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n"

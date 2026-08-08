@@ -1,6 +1,7 @@
 #include "timeline_view.hpp"
 
 #include <QGuiApplication>
+#include <QMouseEvent>
 #include <QSGNode>
 #include <QVariantMap>
 
@@ -15,6 +16,24 @@ public:
     using TimelineView::TimelineView;
 
     QSGNode* render(QSGNode* oldNode) { return updatePaintNode(oldNode, nullptr); }
+    void press(QPointF position) {
+        QMouseEvent event(
+            QEvent::MouseButtonPress, position, position, position,
+            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        mousePressEvent(&event);
+    }
+    void move(QPointF position) {
+        QMouseEvent event(
+            QEvent::MouseMove, position, position, position,
+            Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        mouseMoveEvent(&event);
+    }
+    void release(QPointF position) {
+        QMouseEvent event(
+            QEvent::MouseButtonRelease, position, position, position,
+            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        mouseReleaseEvent(&event);
+    }
 };
 
 void require(bool condition, const char* message) {
@@ -43,19 +62,35 @@ int main(int argc, char* argv[]) {
         clip.insert("sourceInNs", 0);
         clip.insert("durationNs", clipDuration);
         clip.insert("assetDurationNs", clipDuration);
-        clip.insert("color", index % 2 == 0 ? "#315a94" : "#3b6599");
+        clip.insert("color", index % 2 == 0 ? "#343b43" : "#3a424b");
         clips.push_back(clip);
     }
     timeline.setClips(clips);
     timeline.setDurationNs(static_cast<qint64>(clipCount) * clipDuration);
-    timeline.setInteractionMode(1);
-    require(timeline.interactionMode() == 1, "scrub interaction mode must be selectable");
-    timeline.setInteractionMode(0);
-    require(timeline.interactionMode() == 0, "clip editing mode must be restorable");
     require(timeline.timelineTimeAt(12) == 0, "left track edge must map to sequence start");
     require(
         timeline.timelineTimeAt(1908) == static_cast<qint64>(clipCount) * clipDuration,
         "right track edge must map to sequence end for media drops");
+
+    int seekEvents = 0;
+    bool finalSeek = false;
+    int selectionEvents = 0;
+    QObject::connect(&timeline, &TimelineView::seekRequested,
+        [&](qint64, bool finalPosition) {
+            ++seekEvents;
+            finalSeek = finalPosition;
+        });
+    QObject::connect(&timeline, &TimelineView::clipSelected,
+        [&](const QString&, int) { ++selectionEvents; });
+    timeline.press(QPointF{300, 10});
+    timeline.move(QPointF{420, 10});
+    timeline.release(QPointF{420, 10});
+    require(seekEvents == 3 && finalSeek,
+            "ruler drag must scrub continuously and finish with an exact seek");
+    timeline.press(QPointF{300, 80});
+    timeline.release(QPointF{300, 80});
+    require(selectionEvents == 1,
+            "clip body click must select instead of entering a separate scrub tool");
 
     auto* root = timeline.render(nullptr);
     require(root != nullptr, "timeline must create a scene graph root");

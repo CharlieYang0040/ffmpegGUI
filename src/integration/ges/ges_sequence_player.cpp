@@ -513,6 +513,7 @@ void GesSequencePlayer::rebuild_pipeline_locked(
         gst_object_unref(new_timeline);
         throw std::runtime_error("failed to add GES layer");
     }
+    g_object_set(layer, "auto-transition", TRUE, nullptr);
     GESLayer* captionLayer = nullptr;
     if (!captions.empty()) {
         captionLayer = ges_layer_new();

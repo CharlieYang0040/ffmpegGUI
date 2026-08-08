@@ -20,7 +20,6 @@ class TimelineView : public QQuickItem {
     Q_PROPERTY(qreal zoomLevel READ zoomLevel WRITE setZoomLevel NOTIFY zoomLevelChanged)
     Q_PROPERTY(qint64 viewportStartNs READ viewportStartNs NOTIFY viewportChanged)
     Q_PROPERTY(qint64 viewportDurationNs READ visibleDurationNs NOTIFY viewportChanged)
-    Q_PROPERTY(int interactionMode READ interactionMode WRITE setInteractionMode NOTIFY interactionModeChanged)
     Q_PROPERTY(bool interactionActive READ interactionActive NOTIFY interactionFeedbackChanged)
     Q_PROPERTY(QString interactionKind READ interactionKind NOTIFY interactionFeedbackChanged)
     Q_PROPERTY(qint64 interactionTimeNs READ interactionTimeNs NOTIFY interactionFeedbackChanged)
@@ -52,8 +51,6 @@ public:
     void setZoomLevel(qreal zoom);
     [[nodiscard]] qint64 viewportStartNs() const noexcept { return viewport_start_ns_; }
     [[nodiscard]] qint64 visibleDurationNs() const;
-    [[nodiscard]] int interactionMode() const noexcept { return interaction_mode_; }
-    void setInteractionMode(int mode);
     [[nodiscard]] bool interactionActive() const noexcept { return interaction_active_; }
     [[nodiscard]] QString interactionKind() const { return interaction_kind_; }
     [[nodiscard]] qint64 interactionTimeNs() const noexcept { return interaction_time_ns_; }
@@ -70,7 +67,6 @@ signals:
     void selectedClipIdsChanged();
     void zoomLevelChanged();
     void viewportChanged();
-    void interactionModeChanged();
     void seekRequested(qint64 timelineTime, bool finalPosition);
     void clipSelected(QString clipId, int selectionMode);
     void trimCommitted(QString clipId, qint64 sourceIn, qint64 duration);
@@ -95,7 +91,7 @@ private:
     [[nodiscard]] qint64 timeAt(qreal x) const;
     void clampViewport();
 
-    enum class DragMode { none, trim_left, trim_right, move, pan };
+    enum class DragMode { none, trim_left, trim_right, move, pan, scrub };
 
     QVariantList clips_;
     qint64 duration_ns_{};
@@ -116,7 +112,6 @@ private:
     bool timeline_geometry_dirty_{true};
     qint64 painted_view_start_ns_{};
     qint64 painted_view_duration_ns_{1};
-    int interaction_mode_{};
     bool interaction_active_{};
     QString interaction_kind_;
     qint64 interaction_time_ns_{};

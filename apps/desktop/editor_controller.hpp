@@ -52,6 +52,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(int selectedClipBrightness READ selectedClipBrightness NOTIFY selectedClipChanged)
     Q_PROPERTY(int selectedClipContrast READ selectedClipContrast NOTIFY selectedClipChanged)
     Q_PROPERTY(int selectedClipSaturation READ selectedClipSaturation NOTIFY selectedClipChanged)
+    Q_PROPERTY(int selectedClipDissolveMs READ selectedClipDissolveMs NOTIFY selectedClipChanged)
     Q_PROPERTY(QString selectedCaptionId READ selectedCaptionId NOTIFY captionSelectionChanged)
     Q_PROPERTY(QString selectedCaptionText READ selectedCaptionText NOTIFY captionSelectionChanged)
     Q_PROPERTY(int selectedCaptionDurationMs READ selectedCaptionDurationMs NOTIFY captionSelectionChanged)
@@ -96,6 +97,7 @@ public:
     [[nodiscard]] int selectedClipBrightness() const noexcept;
     [[nodiscard]] int selectedClipContrast() const noexcept;
     [[nodiscard]] int selectedClipSaturation() const noexcept;
+    [[nodiscard]] int selectedClipDissolveMs() const noexcept;
     [[nodiscard]] QString selectedCaptionId() const { return selected_caption_id_; }
     [[nodiscard]] QString selectedCaptionText() const;
     [[nodiscard]] int selectedCaptionDurationMs() const noexcept;
@@ -167,6 +169,7 @@ public slots:
     void setSelectedClipBrightness(int percent);
     void setSelectedClipContrast(int percent);
     void setSelectedClipSaturation(int percent);
+    void setSelectedClipDissolveMs(int milliseconds);
     void trimAllClipEdges(int frontFrames, int backFrames);
     void addCaptionAtPlayhead();
     void selectCaption(const QString& captionId);

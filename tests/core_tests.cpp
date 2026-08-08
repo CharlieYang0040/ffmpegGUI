@@ -111,6 +111,46 @@ void test_clip_color_is_atomic_and_validated() {
         "out-of-range color grading must fail");
 }
 
+void test_dissolve_overlaps_adjacent_clips_and_is_undoable() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"first", "asset-a", 0, seconds(4)});
+    timeline.append_clip(Clip{"second", "asset-a", seconds(2), seconds(4)});
+    timeline.set_clip_dissolve("second", seconds(1));
+    const auto spans = timeline.snapshot();
+    require(timeline.duration() == seconds(7),
+            "one-second dissolve must shorten the sequence by its overlap");
+    require(spans[0].timeline_out == seconds(4) &&
+            spans[1].timeline_in == seconds(3),
+            "incoming clip must overlap the outgoing clip on the same boundary");
+    const auto mapped = timeline.locate(3'500'000'000);
+    require(mapped.has_value() && mapped->clip_id == "second" &&
+            mapped->clip_time == 500'000'000,
+            "overlap seeking must prefer the incoming clip coordinate");
+    require(timeline.undo() && timeline.duration() == seconds(8),
+            "dissolve must be one undoable edit");
+    require_throws<std::invalid_argument>(
+        [&] { timeline.set_clip_dissolve("first", seconds(1)); },
+        "first clip cannot have an incoming dissolve");
+}
+
+void test_insert_uses_overlapped_timeline_coordinates() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"first", "asset-a", 0, seconds(4)});
+    timeline.append_clip(Clip{"second", "asset-a", seconds(2), seconds(4)});
+    timeline.set_clip_dissolve("second", seconds(1));
+    timeline.insert_clip_at(
+        seconds(5), Clip{"inserted", "asset-a", seconds(7), seconds(1)},
+        "second-left", "second-right");
+    const auto& clips = timeline.clips();
+    require(clips.size() == 4 && clips[1].id == "second-left" &&
+            clips[1].duration == seconds(2) && clips[2].id == "inserted" &&
+            clips[3].id == "second-right" && clips[3].source_in == seconds(4),
+            "insertion after a dissolve must split the incoming clip at its overlapped coordinate");
+    require(clips[1].transition_in == seconds(1) && clips[3].transition_in == 0 &&
+            timeline.duration() == seconds(8),
+            "split remainders must not duplicate an incoming transition");
+}
+
 void test_snapshot_preserves_asset_audio_presence() {
     TimelineModel timeline;
     timeline.add_asset(MediaAsset{"silent", "silent.mp4", seconds(2)});
@@ -759,6 +799,26 @@ void test_ffmpeg_export_plan_applies_resolution_fps_and_color() {
             "color grading must reach the video graph");
 }
 
+void test_ffmpeg_export_plan_compiles_video_and_audio_dissolve() {
+    auto request = ffgui::ExportRequest{
+        {
+            {std::filesystem::path{"A.mp4"}, 0, seconds(4), true},
+            {std::filesystem::path{"B.mp4"}, 0, seconds(4), true},
+        },
+        std::filesystem::path{"result.mp4"},
+        ffgui::ExportVideoEncoder::libx264};
+    request.clips[1].transition_in = seconds(1);
+    const auto plan = ffgui::compile_ffmpeg_export(request);
+    require(plan.duration == seconds(7),
+            "dissolve export duration must subtract the overlap");
+    std::string arguments;
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(arguments.contains("xfade=transition=fade:duration=1.000000000:offset=3.000000000"),
+            "video dissolve must use the cumulative overlap offset");
+    require(arguments.contains("acrossfade=d=1.000000000:c1=tri:c2=tri"),
+            "audio dissolve must match the video overlap duration");
+}
+
 }  // namespace
 
 int main() {
@@ -767,6 +827,8 @@ int main() {
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},
         {"global_frame_trim_is_atomic_magnetic_and_undoable", test_global_frame_trim_is_atomic_magnetic_and_undoable},
         {"clip_color_is_atomic_and_validated", test_clip_color_is_atomic_and_validated},
+        {"dissolve_overlaps_adjacent_clips_and_is_undoable", test_dissolve_overlaps_adjacent_clips_and_is_undoable},
+        {"insert_uses_overlapped_timeline_coordinates", test_insert_uses_overlapped_timeline_coordinates},
         {"snapshot_preserves_asset_audio_presence", test_snapshot_preserves_asset_audio_presence},
         {"sequence_to_source_mapping", test_sequence_to_source_mapping},
         {"vfr_frame_stepping_respects_trims_and_clip_boundaries", test_vfr_frame_stepping_respects_trims_and_clip_boundaries},
@@ -796,6 +858,7 @@ int main() {
         {"ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts", test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts},
         {"ffmpeg_export_plan_applies_codec_and_quality_presets", test_ffmpeg_export_plan_applies_codec_and_quality_presets},
         {"ffmpeg_export_plan_applies_resolution_fps_and_color", test_ffmpeg_export_plan_applies_resolution_fps_and_color},
+        {"ffmpeg_export_plan_compiles_video_and_audio_dissolve", test_ffmpeg_export_plan_compiles_video_and_audio_dissolve},
     };
 
     int failed = 0;

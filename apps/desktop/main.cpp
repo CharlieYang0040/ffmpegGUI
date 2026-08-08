@@ -356,6 +356,17 @@ int main(int argc, char* argv[]) {
         controller.undo();
         if (controller.durationNs() != beforeSpeedDuration) return EXIT_FAILURE;
         controller.redo();
+        const auto dissolveClips = controller.clips();
+        if (dissolveClips.size() < 3) return EXIT_FAILURE;
+        const auto dissolveClipIndex = 2;
+        const auto dissolveClipId = dissolveClips.at(dissolveClipIndex).toMap().value("id").toString();
+        controller.selectClip(dissolveClipId);
+        controller.setSelectedClipDissolveMs(300);
+        if (controller.clips().at(dissolveClipIndex).toMap().value("transitionInNs").toLongLong() !=
+            300'000'000) {
+            return EXIT_FAILURE;
+        }
+        controller.selectClip(audioClipId);
         controller.setSelectedClipBrightness(10);
         controller.setSelectedClipContrast(115);
         controller.setSelectedClipSaturation(85);
@@ -367,6 +378,7 @@ int main(int argc, char* argv[]) {
         }
         controller.loadProject(roundtripProject);
         const auto loadedAudio = controller.clips().front().toMap();
+        const auto loadedDissolve = controller.clips().at(dissolveClipIndex).toMap();
         return controller.durationNs() == expectedDuration && expectedDuration > 0 &&
                controller.clips().size() == expectedClipCount &&
                loadedAudio.value("audioGain").toDouble() == 1.25 &&
@@ -376,6 +388,7 @@ int main(int argc, char* argv[]) {
                std::abs(loadedAudio.value("brightness").toDouble() - 0.1) < 0.0001 &&
                std::abs(loadedAudio.value("contrast").toDouble() - 1.15) < 0.0001 &&
                std::abs(loadedAudio.value("saturation").toDouble() - 0.85) < 0.0001 &&
+               loadedDissolve.value("transitionInNs").toLongLong() == 300'000'000 &&
                controller.captions().size() == 1 &&
                controller.captions().front().toMap().value("text").toString() ==
                    QStringLiteral("회귀 테스트 자막") &&
@@ -398,6 +411,10 @@ int main(int argc, char* argv[]) {
         controller.setSelectedClipBrightness(10);
         controller.setSelectedClipContrast(115);
         controller.setSelectedClipSaturation(85);
+        if (exportClips.size() < 2) return EXIT_FAILURE;
+        controller.selectClip(exportClips.at(1).toMap().value("id").toString());
+        controller.setSelectedClipDissolveMs(300);
+        controller.selectClip(exportClips.front().toMap().value("id").toString());
         controller.setExportResolution(3);
         controller.setExportFrameRate(3);
         controller.seek(500'000'000);
@@ -464,6 +481,10 @@ int main(int argc, char* argv[]) {
         controller.setSelectedClipBrightness(10);
         controller.setSelectedClipContrast(115);
         controller.setSelectedClipSaturation(85);
+        if (playbackClips.size() < 2) return EXIT_FAILURE;
+        controller.selectClip(playbackClips.at(1).toMap().value("id").toString());
+        controller.setSelectedClipDissolveMs(300);
+        controller.selectClip(playbackClips.front().toMap().value("id").toString());
         controller.seek(500'000'000);
         controller.addCaptionAtPlayhead();
         controller.updateSelectedCaption(QStringLiteral("미리보기 자막"), 1200);

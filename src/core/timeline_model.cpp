@@ -31,13 +31,12 @@ void TimelineModel::insert_clip(std::size_t index, Clip clip) {
         throw std::out_of_range("clip insertion index is outside the timeline");
     }
     validate_clip(clip);
-    TimeNs insertionTime = 0;
-    for (std::size_t candidate = 0; candidate < index; ++candidate) {
-        insertionTime = checked_add(insertionTime, clips_[candidate].timeline_duration());
-    }
+    const auto spans = snapshot();
+    const auto insertionTime = index < spans.size() ? spans[index].timeline_in : duration();
     record_edit();
     ripple_captions_for_insert(insertionTime, clip.timeline_duration());
     clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), std::move(clip));
+    normalize_transitions();
 }
 
 void TimelineModel::insert_clips(std::size_t index, std::vector<Clip> clips) {
@@ -52,12 +51,12 @@ void TimelineModel::insert_clips(std::size_t index, std::vector<Clip> clips) {
             throw std::invalid_argument("duplicate clip id in insertion batch: " + clip.id);
         }
     }
-    TimeNs insertionTime = 0;
-    for (std::size_t candidate = 0; candidate < index; ++candidate) {
-        insertionTime = checked_add(insertionTime, clips_[candidate].timeline_duration());
-    }
+    const auto spans = snapshot();
+    const auto insertionTime = index < spans.size() ? spans[index].timeline_in : duration();
     TimeNs insertedDuration = 0;
-    for (const auto& clip : clips) {
+    for (std::size_t candidate = 0; candidate < clips.size(); ++candidate) {
+        const auto& clip = clips[candidate];
+        if (candidate > 0) insertedDuration -= clip.transition_in;
         insertedDuration = checked_add(insertedDuration, clip.timeline_duration());
     }
     record_edit();
@@ -66,6 +65,7 @@ void TimelineModel::insert_clips(std::size_t index, std::vector<Clip> clips) {
         clips_.begin() + static_cast<std::ptrdiff_t>(index),
         std::make_move_iterator(clips.begin()),
         std::make_move_iterator(clips.end()));
+    normalize_transitions();
 }
 
 void TimelineModel::insert_clip_at(
@@ -79,17 +79,21 @@ void TimelineModel::insert_clip_at(
     }
     validate_clip(clip);
 
-    TimeNs cursor = 0;
-    for (std::size_t index = 0; index < clips_.size(); ++index) {
-        const auto clipEnd = checked_add(cursor, clips_[index].timeline_duration());
-        if (timeline_position == cursor) {
+    if (timeline_position < total) {
+        const auto mapped = locate(timeline_position);
+        if (!mapped.has_value()) {
+            throw std::out_of_range("clip insertion time is outside the timeline");
+        }
+        const auto index = index_of(mapped->clip_id);
+        const auto spans = snapshot();
+        if (timeline_position == spans[index].timeline_in) {
             record_edit();
             ripple_captions_for_insert(timeline_position, clip.timeline_duration());
             clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index), std::move(clip));
+            normalize_transitions();
             return;
         }
-        if (timeline_position < clipEnd) {
-            const auto& original = clips_[index];
+        const auto& original = clips_[index];
             if (left_clip_id.empty() || right_clip_id.empty() ||
                 left_clip_id == right_clip_id || left_clip_id == clip.id ||
                 right_clip_id == clip.id) {
@@ -105,7 +109,7 @@ void TimelineModel::insert_clip_at(
                 throw std::invalid_argument("insert split id already exists");
             }
 
-            const auto localTimeline = timeline_position - cursor;
+            const auto localTimeline = timeline_position - spans[index].timeline_in;
             if (original.duration <= 1) {
                 throw std::invalid_argument("clip is too short to split for insertion");
             }
@@ -119,6 +123,7 @@ void TimelineModel::insert_clip_at(
             right.id = std::move(right_clip_id);
             right.source_in = checked_add(original.source_in, local);
             right.duration = original.duration - local;
+            right.transition_in = 0;
             right.audio.fade_in = 0;
             validate_clip(left, index);
             validate_clip(right, index);
@@ -129,14 +134,14 @@ void TimelineModel::insert_clip_at(
                 clips_.begin() + static_cast<std::ptrdiff_t>(index + 1), std::move(clip));
             clips_.insert(
                 clips_.begin() + static_cast<std::ptrdiff_t>(index + 2), std::move(right));
+            normalize_transitions();
             return;
-        }
-        cursor = clipEnd;
     }
 
     record_edit();
     ripple_captions_for_insert(timeline_position, clip.timeline_duration());
     clips_.push_back(std::move(clip));
+    normalize_transitions();
 }
 
 void TimelineModel::trim_clip(const std::string& clip_id, TimeNs source_in, TimeNs range_duration) {
@@ -149,10 +154,7 @@ void TimelineModel::trim_clip(const std::string& clip_id, TimeNs source_in, Time
         replacement.duration == clips_[index].duration) {
         return;
     }
-    TimeNs clipStart = 0;
-    for (std::size_t candidate = 0; candidate < index; ++candidate) {
-        clipStart = checked_add(clipStart, clips_[candidate].timeline_duration());
-    }
+    const auto clipStart = snapshot()[index].timeline_in;
     const auto oldDuration = clips_[index].timeline_duration();
     const auto newDuration = replacement.timeline_duration();
     record_edit();
@@ -163,6 +165,7 @@ void TimelineModel::trim_clip(const std::string& clip_id, TimeNs source_in, Time
         ripple_captions_for_insert(checked_add(clipStart, oldDuration), newDuration - oldDuration);
     }
     clips_[index] = std::move(replacement);
+    normalize_transitions();
 }
 
 void TimelineModel::trim_clip_to_frame_boundaries(
@@ -230,11 +233,12 @@ void TimelineModel::trim_all_clip_edges(
 
     struct DurationChange final { TimeNs start; TimeNs old_duration; TimeNs new_duration; };
     std::vector<DurationChange> changes;
-    TimeNs cursor = 0;
+    const auto spans = snapshot();
     for (std::size_t index = 0; index < clips_.size(); ++index) {
         changes.push_back(DurationChange{
-            cursor, clips_[index].timeline_duration(), replacements[index].timeline_duration()});
-        cursor = checked_add(cursor, clips_[index].timeline_duration());
+            spans[index].timeline_in,
+            clips_[index].timeline_duration(),
+            replacements[index].timeline_duration()});
     }
     record_edit();
     for (auto change = changes.rbegin(); change != changes.rend(); ++change) {
@@ -245,6 +249,7 @@ void TimelineModel::trim_all_clip_edges(
         }
     }
     clips_ = std::move(replacements);
+    normalize_transitions();
 }
 
 void TimelineModel::move_clip(const std::string& clip_id, std::size_t insertion_index) {
@@ -278,18 +283,16 @@ void TimelineModel::move_clips(
     if (remaining == clips_) return;
     record_edit();
     clips_ = std::move(remaining);
+    normalize_transitions();
 }
 
 void TimelineModel::erase_clip(const std::string& clip_id) {
     const auto index = index_of(clip_id);
-    TimeNs timelineIn = 0;
-    for (std::size_t candidate = 0; candidate < index; ++candidate) {
-        timelineIn = checked_add(timelineIn, clips_[candidate].timeline_duration());
-    }
+    const auto span = snapshot()[index];
     record_edit();
-    ripple_captions_for_delete(
-        timelineIn, checked_add(timelineIn, clips_[index].timeline_duration()));
+    ripple_captions_for_delete(span.timeline_in, span.timeline_out);
     clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(index));
+    normalize_transitions();
 }
 
 void TimelineModel::erase_clips(const std::vector<std::string>& clip_ids) {
@@ -299,11 +302,10 @@ void TimelineModel::erase_clips(const std::vector<std::string>& clip_ids) {
         static_cast<void>(index_of(id));
     }
     std::vector<std::pair<TimeNs, TimeNs>> ranges;
-    TimeNs cursor = 0;
-    for (const auto& clip : clips_) {
-        const auto end = checked_add(cursor, clip.timeline_duration());
-        if (uniqueIds.contains(clip.id)) ranges.emplace_back(cursor, end);
-        cursor = end;
+    for (const auto& span : snapshot()) {
+        if (uniqueIds.contains(span.clip.id)) {
+            ranges.emplace_back(span.timeline_in, span.timeline_out);
+        }
     }
     record_edit();
     for (auto iterator = ranges.rbegin(); iterator != ranges.rend(); ++iterator) {
@@ -312,6 +314,7 @@ void TimelineModel::erase_clips(const std::vector<std::string>& clip_ids) {
     std::erase_if(clips_, [&uniqueIds](const Clip& clip) {
         return uniqueIds.contains(clip.id);
     });
+    normalize_transitions();
 }
 
 void TimelineModel::erase_range(
@@ -325,17 +328,18 @@ void TimelineModel::erase_range(
 
     std::vector<Clip> candidate;
     candidate.reserve(clips_.size() + 1);
-    TimeNs cursor = 0;
-    for (const auto& clip : clips_) {
-        const auto clipTimelineDuration = clip.timeline_duration();
-        const auto clipEnd = checked_add(cursor, clipTimelineDuration);
-        if (clipEnd <= timeline_in || cursor >= timeline_out) {
+    const auto spans = snapshot();
+    for (const auto& span : spans) {
+        const auto& clip = span.clip;
+        const auto clipStart = span.timeline_in;
+        const auto clipEnd = span.timeline_out;
+        if (clipEnd <= timeline_in || clipStart >= timeline_out) {
             candidate.push_back(clip);
-            cursor = clipEnd;
             continue;
         }
 
-        const auto leftTimelineDuration = timeline_in > cursor ? timeline_in - cursor : TimeNs{0};
+        const auto leftTimelineDuration = timeline_in > clipStart
+            ? timeline_in - clipStart : TimeNs{0};
         const auto rightTimelineDuration = timeline_out < clipEnd ? clipEnd - timeline_out : TimeNs{0};
         if (leftTimelineDuration > 0) {
             auto left = clip;
@@ -356,10 +360,10 @@ void TimelineModel::erase_range(
                     throw std::invalid_argument("range split remainder id must not be empty");
                 }
                 right.id = std::move(right_remainder_id);
+                right.transition_in = 0;
             }
             candidate.push_back(std::move(right));
         }
-        cursor = clipEnd;
     }
 
     std::unordered_set<std::string> ids;
@@ -375,6 +379,7 @@ void TimelineModel::erase_range(
     record_edit();
     ripple_captions_for_delete(timeline_in, timeline_out);
     clips_ = std::move(candidate);
+    normalize_transitions();
 }
 
 void TimelineModel::add_caption(CaptionCue caption) {
@@ -460,14 +465,13 @@ void TimelineModel::set_clips_playback_rate(
     for (const auto index : indices) replacements[index].playback_rate = playback_rate;
     struct RateChange final { TimeNs start; TimeNs old_duration; TimeNs new_duration; };
     std::vector<RateChange> changes;
-    TimeNs cursor = 0;
+    const auto spans = snapshot();
     for (std::size_t index = 0; index < clips_.size(); ++index) {
         const auto oldDuration = clips_[index].timeline_duration();
         if (uniqueIds.contains(clips_[index].id)) {
             changes.push_back(RateChange{
-                cursor, oldDuration, replacements[index].timeline_duration()});
+                spans[index].timeline_in, oldDuration, replacements[index].timeline_duration()});
         }
-        cursor = checked_add(cursor, oldDuration);
     }
 
     record_edit();
@@ -483,6 +487,7 @@ void TimelineModel::set_clips_playback_rate(
         }
     }
     clips_ = std::move(replacements);
+    normalize_transitions();
 }
 
 void TimelineModel::set_clips_color(
@@ -511,6 +516,30 @@ void TimelineModel::set_clips_color(
     }
 }
 
+void TimelineModel::set_clip_dissolve(const std::string& clip_id, TimeNs transition_duration) {
+    const auto index = index_of(clip_id);
+    if (index == 0) {
+        if (transition_duration == 0) return;
+        throw std::invalid_argument("the first clip cannot have an incoming dissolve");
+    }
+    const auto maximum = std::min(
+        clips_[index - 1].timeline_duration(), clips_[index].timeline_duration()) / 2;
+    if (transition_duration < 0 || transition_duration > maximum) {
+        throw std::invalid_argument("dissolve duration exceeds the adjacent clip handles");
+    }
+    const auto previous = clips_[index].transition_in;
+    if (previous == transition_duration) return;
+    const auto oldStart = snapshot()[index].timeline_in;
+    record_edit();
+    clips_[index].transition_in = transition_duration;
+    if (transition_duration > previous) {
+        const auto delta = transition_duration - previous;
+        ripple_captions_for_delete(std::max<TimeNs>(0, oldStart - delta), oldStart);
+    } else {
+        ripple_captions_for_insert(oldStart, previous - transition_duration);
+    }
+}
+
 void TimelineModel::split_at(
     TimeNs timeline_position,
     std::string left_clip_id,
@@ -536,6 +565,7 @@ void TimelineModel::split_at(
     right.id = std::move(right_clip_id);
     right.source_in = checked_add(original.source_in, mapped->source_offset);
     right.duration = original.duration - mapped->source_offset;
+    right.transition_in = 0;
     right.audio.fade_in = 0;
 
     validate_clip(left);
@@ -543,6 +573,7 @@ void TimelineModel::split_at(
     record_edit();
     clips_[index] = std::move(left);
     clips_.insert(clips_.begin() + static_cast<std::ptrdiff_t>(index + 1), std::move(right));
+    normalize_transitions();
 }
 
 bool TimelineModel::undo() {
@@ -584,7 +615,9 @@ std::vector<TimelineSpan> TimelineModel::snapshot() const {
     std::vector<TimelineSpan> spans;
     spans.reserve(clips_.size());
     TimeNs cursor = 0;
-    for (const auto& clip : clips_) {
+    for (std::size_t index = 0; index < clips_.size(); ++index) {
+        const auto& clip = clips_[index];
+        if (index > 0) cursor -= clip.transition_in;
         const auto end = checked_add(cursor, clip.timeline_duration());
         const auto* source_asset = asset(clip.asset_id);
         if (source_asset == nullptr) {
@@ -603,7 +636,9 @@ std::vector<TimelineSpan> TimelineModel::snapshot() const {
 
 TimeNs TimelineModel::duration() const {
     TimeNs total = 0;
-    for (const auto& clip : clips_) {
+    for (std::size_t index = 0; index < clips_.size(); ++index) {
+        const auto& clip = clips_[index];
+        if (index > 0) total -= clip.transition_in;
         total = checked_add(total, clip.timeline_duration());
     }
     return total;
@@ -613,10 +648,13 @@ std::optional<MappedPosition> TimelineModel::locate(TimeNs timeline_position) co
     if (timeline_position < 0) {
         return std::nullopt;
     }
-    TimeNs cursor = 0;
-    for (const auto& clip : clips_) {
-        const auto end = checked_add(cursor, clip.timeline_duration());
+    const auto spans = snapshot();
+    for (auto iterator = spans.rbegin(); iterator != spans.rend(); ++iterator) {
+        const auto& clip = iterator->clip;
+        const auto cursor = iterator->timeline_in;
+        const auto end = iterator->timeline_out;
         if (timeline_position < end) {
+            if (timeline_position < cursor) continue;
             const auto local = timeline_position - cursor;
             const auto sourceOffset = std::clamp<TimeNs>(
                 clip.source_offset_for_timeline(local), 0, clip.duration);
@@ -631,7 +669,6 @@ std::optional<MappedPosition> TimelineModel::locate(TimeNs timeline_position) co
                 source,
                 source_asset ? source_asset->frame_at_or_before(source) : std::nullopt};
         }
-        cursor = end;
     }
     return std::nullopt;
 }
@@ -639,16 +676,16 @@ std::optional<MappedPosition> TimelineModel::locate(TimeNs timeline_position) co
 std::optional<TimeNs> TimelineModel::timeline_time_for_source(
     const std::string& clip_id,
     TimeNs source_time) const {
-    TimeNs cursor = 0;
-    for (const auto& clip : clips_) {
+    const auto spans = snapshot();
+    for (const auto& span : spans) {
+        const auto& clip = span.clip;
         if (clip.id == clip_id) {
             if (source_time < clip.source_in || source_time >= clip.source_out()) {
                 return std::nullopt;
             }
             return checked_add(
-                cursor, clip.timeline_offset_for_source(source_time - clip.source_in));
+                span.timeline_in, clip.timeline_offset_for_source(source_time - clip.source_in));
         }
-        cursor = checked_add(cursor, clip.timeline_duration());
     }
     return std::nullopt;
 }
@@ -658,27 +695,28 @@ std::optional<TimeNs> TimelineModel::next_frame_time(TimeNs timeline_position) c
     if (clips_.empty() || timeline_position < 0 || timeline_position >= total) {
         return std::nullopt;
     }
-    TimeNs cursor = 0;
-    for (const auto& clip : clips_) {
-        const auto clipEnd = checked_add(cursor, clip.timeline_duration());
-        if (timeline_position < clipEnd) {
+    const auto spans = snapshot();
+    for (auto iterator = spans.rbegin(); iterator != spans.rend(); ++iterator) {
+        const auto& clip = iterator->clip;
+        const auto clipStart = iterator->timeline_in;
+        const auto clipEnd = iterator->timeline_out;
+        if (timeline_position >= clipStart && timeline_position < clipEnd) {
             const auto* sourceAsset = asset(clip.asset_id);
             if (sourceAsset == nullptr) return std::nullopt;
             const auto sourceTime = checked_add(
                 clip.source_in,
                 std::clamp<TimeNs>(
-                    clip.source_offset_for_timeline(timeline_position - cursor),
+                    clip.source_offset_for_timeline(timeline_position - clipStart),
                     0,
                     clip.duration));
             const auto& framePts = sourceAsset->frame_pts();
             const auto next = std::upper_bound(framePts.begin(), framePts.end(), sourceTime);
             if (next != framePts.end() && *next < clip.source_out()) {
                 return checked_add(
-                    cursor, clip.timeline_offset_for_source(*next - clip.source_in));
+                    clipStart, clip.timeline_offset_for_source(*next - clip.source_in));
             }
             return clipEnd;
         }
-        cursor = clipEnd;
     }
     return std::nullopt;
 }
@@ -688,14 +726,16 @@ std::optional<TimeNs> TimelineModel::previous_frame_time(TimeNs timeline_positio
     if (clips_.empty() || timeline_position <= 0 || timeline_position > total) {
         return std::nullopt;
     }
-    TimeNs cursor = 0;
-    for (const auto& clip : clips_) {
-        const auto clipEnd = checked_add(cursor, clip.timeline_duration());
-        if (timeline_position <= clipEnd) {
+    const auto spans = snapshot();
+    for (auto iterator = spans.rbegin(); iterator != spans.rend(); ++iterator) {
+        const auto& clip = iterator->clip;
+        const auto clipStart = iterator->timeline_in;
+        const auto clipEnd = iterator->timeline_out;
+        if (timeline_position > clipStart && timeline_position <= clipEnd) {
             const auto* sourceAsset = asset(clip.asset_id);
             if (sourceAsset == nullptr) return std::nullopt;
             const auto localTime = std::min(
-                timeline_position - cursor, clip.timeline_duration());
+                timeline_position - clipStart, clip.timeline_duration());
             const auto sourceTime = checked_add(
                 clip.source_in,
                 std::clamp<TimeNs>(
@@ -706,12 +746,11 @@ std::optional<TimeNs> TimelineModel::previous_frame_time(TimeNs timeline_positio
                 --previous;
                 if (*previous >= clip.source_in) {
                     return checked_add(
-                        cursor, clip.timeline_offset_for_source(*previous - clip.source_in));
+                        clipStart, clip.timeline_offset_for_source(*previous - clip.source_in));
                 }
             }
-            return cursor;
+            return clipStart;
         }
-        cursor = clipEnd;
     }
     return std::nullopt;
 }
@@ -821,7 +860,7 @@ void TimelineModel::validate_clip(const Clip& clip, std::optional<std::size_t> r
         throw std::invalid_argument("clip audio settings are invalid");
     }
     if (!std::isfinite(clip.playback_rate) || clip.playback_rate < 0.25 ||
-        clip.playback_rate > 4.0 || clip.timeline_duration() <= 0) {
+        clip.playback_rate > 4.0 || clip.timeline_duration() <= 0 || clip.transition_in < 0) {
         throw std::invalid_argument("clip playback rate must be between 0.25 and 4.0");
     }
     for (std::size_t index = 0; index < clips_.size(); ++index) {
@@ -831,6 +870,17 @@ void TimelineModel::validate_clip(const Clip& clip, std::optional<std::size_t> r
         if (clips_[index].id == clip.id) {
             throw std::invalid_argument("duplicate clip id: " + clip.id);
         }
+    }
+}
+
+void TimelineModel::normalize_transitions() noexcept {
+    if (clips_.empty()) return;
+    clips_.front().transition_in = 0;
+    for (std::size_t index = 1; index < clips_.size(); ++index) {
+        const auto maximum = std::min(
+            clips_[index - 1].timeline_duration(), clips_[index].timeline_duration()) / 2;
+        clips_[index].transition_in = std::clamp<TimeNs>(
+            clips_[index].transition_in, 0, std::max<TimeNs>(0, maximum));
     }
 }
 

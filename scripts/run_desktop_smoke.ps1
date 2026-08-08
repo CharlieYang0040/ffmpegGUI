@@ -62,7 +62,7 @@ if ($export.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $exportOutput -PathT
 $probe = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
     -v error -show_entries format=duration -of default=nw=1:nk=1 $exportOutput
 $exportDuration = [double]::Parse($probe, [Globalization.CultureInfo]::InvariantCulture)
-if ($exportDuration -lt 6.0 -or $exportDuration -gt 6.4) {
+if ($exportDuration -lt 5.7 -or $exportDuration -gt 6.1) {
     throw "exported timeline duration is outside the expected range: $exportDuration"
 }
 $streams = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
@@ -70,7 +70,7 @@ $streams = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
 if ($streams -notcontains "video" -or $streams -notcontains "audio") {
     throw "exported timeline must contain both video and audio streams"
 }
-Write-Output "Timeline export passed: rapid split/undo/redo, clip audio and burned captions produced a validated $exportDuration second MP4"
+Write-Output "Timeline export passed: rapid split/undo/redo, 300ms dissolve, clip audio and burned captions produced a validated $exportDuration second MP4"
 
 if (Test-Path -LiteralPath $hevcExportOutput -PathType Leaf) {
     Remove-Item -LiteralPath $hevcExportOutput -Force

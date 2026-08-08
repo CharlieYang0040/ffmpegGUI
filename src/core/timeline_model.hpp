@@ -36,6 +36,7 @@ struct Clip final {
     ClipAudio audio{};
     double playback_rate{1.0};
     ClipColor color{};
+    TimeNs transition_in{};
 
     bool operator==(const Clip&) const = default;
 
@@ -117,6 +118,7 @@ public:
         const std::vector<std::string>& clip_ids,
         double playback_rate);
     void set_clips_color(const std::vector<std::string>& clip_ids, ClipColor color);
+    void set_clip_dissolve(const std::string& clip_id, TimeNs duration);
     void add_caption(CaptionCue caption);
     void add_captions(std::vector<CaptionCue> captions);
     void update_caption(CaptionCue caption);
@@ -159,6 +161,7 @@ private:
     void ripple_captions_for_insert(TimeNs timeline_position, TimeNs inserted_duration);
     void ripple_captions_for_delete(TimeNs timeline_in, TimeNs timeline_out);
     void record_edit();
+    void normalize_transitions() noexcept;
 
     std::unordered_map<std::string, MediaAsset> assets_;
     std::vector<Clip> clips_;

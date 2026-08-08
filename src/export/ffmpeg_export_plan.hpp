@@ -38,6 +38,7 @@ struct ExportClipInput final {
     double brightness{};
     double contrast{1.0};
     double saturation{1.0};
+    TimeNs transition_in{};
 
     [[nodiscard]] TimeNs timeline_duration() const {
         return static_cast<TimeNs>(std::llround(

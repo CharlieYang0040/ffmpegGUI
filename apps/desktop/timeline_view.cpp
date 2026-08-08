@@ -50,16 +50,6 @@ qint64 TimelineView::timelineTimeAt(qreal x) const {
     return timeAt(x);
 }
 
-void TimelineView::setInteractionMode(int mode) {
-    mode = std::clamp(mode, 0, 1);
-    if (interaction_mode_ == mode) return;
-    interaction_mode_ = mode;
-    drag_mode_ = DragMode::none;
-    drag_clip_index_ = -1;
-    setCursor(QCursor(mode == 1 ? Qt::PointingHandCursor : Qt::ArrowCursor));
-    emit interactionModeChanged();
-}
-
 void TimelineView::setClips(QVariantList clips) {
     // QML only publishes this property when the timeline revision changes. A deep QVariant
     // comparison walks every clip and every waveform sample and can freeze the UI on large edits.
@@ -166,10 +156,7 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
 
         const qreal trackHeight = std::max<qreal>(1.0, height() - kTrackTop - kTrackBottomPadding);
         const auto visibleClips = previewClips();
-        qint64 totalDuration = 0;
-        for (const auto& value : visibleClips) {
-            totalDuration += value.toMap().value("durationNs").toLongLong();
-        }
+        const qint64 totalDuration = duration_ns_;
         const auto viewDuration = std::max<qint64>(1, static_cast<qint64>(
             static_cast<qreal>(totalDuration) / zoom_level_));
         const auto viewStart = std::min(
@@ -227,14 +214,14 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             const auto right = kHorizontalPadding +
                 contentWidth * static_cast<qreal>(std::min(start + duration, viewEnd) - viewStart) /
                     static_cast<qreal>(viewDuration);
-            QColor color(clip.value("color", index % 2 == 0 ? "#315a94" : "#3f6b9f").toString());
+            QColor color(clip.value("color", index % 2 == 0 ? "#343b43" : "#3a424b").toString());
             if (index == hover_clip_index_) {
                 color = color.lighter(118);
             }
             if (selected_clip_ids_.contains(clip.value("id").toString())) {
                 color = color.lighter(125);
             }
-            color.setAlpha(index == hover_clip_index_ ? 205 : 165);
+            color.setAlpha(index == hover_clip_index_ ? 190 : 118);
             const auto x1 = left + 1.0;
             const auto x2 = std::max(x1 + 1.0, right - 1.0);
             const auto y1 = kTrackTop;
@@ -253,6 +240,24 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
         clipNode->setMaterial(new QSGVertexColorMaterial());
         clipNode->setFlag(QSGNode::OwnsMaterial);
         contentRoot->appendChildNode(clipNode);
+
+        for (const auto& value : visibleClips) {
+            const auto clip = value.toMap();
+            const auto transition = clip.value("transitionInNs").toLongLong();
+            const auto start = clip.value("timelineInNs").toLongLong();
+            if (transition <= 0 || start + transition <= viewStart || start >= viewEnd) continue;
+            const auto left = kHorizontalPadding + contentWidth *
+                static_cast<qreal>(std::max(start, viewStart) - viewStart) /
+                static_cast<qreal>(viewDuration);
+            const auto right = kHorizontalPadding + contentWidth *
+                static_cast<qreal>(std::min(start + transition, viewEnd) - viewStart) /
+                static_cast<qreal>(viewDuration);
+            QColor transitionColor("#d7aa55");
+            transitionColor.setAlpha(210);
+            contentRoot->appendChildNode(new QSGSimpleRectNode(
+                QRectF(left, kTrackTop, std::max<qreal>(2.0, right - left), 5.0),
+                transitionColor));
+        }
 
         std::vector<QPointF> waveformLines;
         const auto waveformCenter = kTrackTop + trackHeight * 0.62;
@@ -381,8 +386,8 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
-    if (interaction_mode_ == 1) {
-        drag_mode_ = DragMode::none;
+    if (event->button() == Qt::LeftButton && event->position().y() < kTrackTop) {
+        drag_mode_ = DragMode::scrub;
         drag_clip_index_ = -1;
         interaction_active_ = true;
         interaction_kind_ = QStringLiteral("탐색");
@@ -451,7 +456,7 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
 }
 
 void TimelineView::hoverMoveEvent(QHoverEvent* event) {
-    if (interaction_mode_ == 1) {
+    if (event->position().y() < kTrackTop) {
         if (hover_clip_index_ >= 0) {
             hover_clip_index_ = -1;
             timeline_geometry_dirty_ = true;
@@ -518,7 +523,7 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
     if (event->buttons().testFlag(Qt::LeftButton)) {
-        if (interaction_mode_ == 1) {
+        if (drag_mode_ == DragMode::scrub) {
             interaction_x_ = event->position().x();
             interaction_time_ns_ = timeAt(interaction_x_);
             emit interactionFeedbackChanged();
@@ -579,8 +584,9 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
-    if (interaction_mode_ == 1) {
+    if (event->button() == Qt::LeftButton && drag_mode_ == DragMode::scrub) {
         seekAt(event->position().x(), true);
+        drag_mode_ = DragMode::none;
         interaction_active_ = false;
         emit interactionFeedbackChanged();
         setCursor(QCursor(Qt::PointingHandCursor));
@@ -695,6 +701,7 @@ QVariantList TimelineView::previewClips() const {
     qint64 cursor = 0;
     for (int index = 0; index < result.size(); ++index) {
         auto clip = result[index].toMap();
+        if (index > 0) cursor -= clip.value("transitionInNs").toLongLong();
         clip.insert("timelineInNs", cursor);
         cursor += clip.value("durationNs").toLongLong();
         result[index] = clip;
@@ -707,7 +714,7 @@ int TimelineView::clipIndexAt(qreal x) const {
         return -1;
     }
     const auto timelinePosition = timeAt(x);
-    for (int index = 0; index < clips_.size(); ++index) {
+    for (int index = clips_.size() - 1; index >= 0; --index) {
         const auto clip = clips_[index].toMap();
         const auto start = clip.value("timelineInNs").toLongLong();
         const auto end = start + clip.value("durationNs").toLongLong();
@@ -715,7 +722,7 @@ int TimelineView::clipIndexAt(qreal x) const {
             return index;
         }
     }
-    return clips_.size() - 1;
+    return -1;
 }
 
 int TimelineView::insertionIndexAt(qreal x) const {

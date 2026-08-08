@@ -100,6 +100,11 @@ TimelineModel
 클립 하나가 아니라 편집 결과 전체가 재생된다. Qt의 재생 헤드는 GStreamer 재생
 시계를 따라가며 seek 또한 항상 시퀀스 나노초 좌표를 사용한다.
 
+디졸브는 뒤 클립의 `transition_in`에 저장한다. `TimelineModel::snapshot()`은 그 길이만큼
+뒤 클립의 시작을 앞으로 당겨 두 `TimelineSpan`을 겹치고, 전체 시퀀스 길이와 원본 프레임
+매핑도 같은 겹침을 반영한다. GES 레이어의 자동 전환은 겹친 소스 구간에 영상·오디오
+전환을 만들며, 겹침 구간의 편집 좌표는 화면 위에 놓이는 뒤 클립을 우선한다.
+
 현재 기본 영상 출력은 `d3d11upload ! d3d11convert ! RGBA D3D11 appsink`이며 별도
 네이티브 `QWindow`, HWND와 `d3d11videosink`를 사용하지 않는다. Qt와 GStreamer가 같은
 D3D11 장치를 쓰고 멀티스레드 보호를 켠 상태에서 셰이더 리소스 텍스처를 Scene Graph에
@@ -179,6 +184,9 @@ NVENC 실패 시 선택한 코덱의 CPU 인코더로만 전환하며 MP4/MOV �
 클립 밝기·대비·채도는 GES `videobalance`와 FFmpeg `eq`로 같은 모델 값을 사용한다.
 해상도 변경은 비율 유지 scale/pad, FPS 변경은 `fps` 필터로 컴파일하며 이 변환이나
 색보정이 하나라도 있으면 stream-copy 조건에서 제외한다.
+디졸브는 FFmpeg 영상 `xfade`와 오디오 `acrossfade`로 컴파일한다. 각 전환의 offset은
+앞에서 이미 합성한 길이에서 현재 겹침을 뺀 시퀀스 좌표이며, 전환이 하나라도 있으면
+stream-copy 대신 재인코딩한다.
 자막은 출력 시 UTF-8 ASS 스크립트로 컴파일해 FFmpeg `ass` 필터로 영상에 번인한다.
 GES `GESTextOverlayClip` 미리보기는 정확 seek 중 `NleComposition` 하위 영상 연결을
 잃는 오류가 확인되어 기본 편집기 모드에서 제외한다. 자막이 있는 출력은 화면 합성이

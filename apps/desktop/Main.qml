@@ -21,7 +21,6 @@ ApplicationWindow {
     minimumHeight: 700
     title: "ffmpegGUI Next"
     color: "#111419"
-    property int timelineTool: 0 // 0: select/move, 1: scrub/seek
     property bool showOutputNode: true
     property bool showAudioNode: true
     property bool showEffectsNode: false
@@ -161,8 +160,6 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.duplicateSelectedClip() }
     Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.deleteSelectedClip() }
     Shortcut { sequence: "M"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted) }
-    Shortcut { sequence: "V"; onActivated: root.timelineTool = 0 }
-    Shortcut { sequence: "A"; onActivated: root.timelineTool = 1 }
     FileDialog {
         id: mediaDialog
         title: "영상 추가"
@@ -672,7 +669,7 @@ ApplicationWindow {
                     InspectorNode {
                         visible: root.showEffectsNode
                         title: "이펙트"
-                        summary: "Color Grading · 선택 클립"
+                        summary: "디졸브 · Color Grading"
                         expanded: true
                         onRemoveRequested: root.showEffectsNode = false
                         Label { text: "Color Grading"; font.bold: true }
@@ -686,9 +683,26 @@ ApplicationWindow {
                             Label { text: "채도"; color: "#b4bdc8" }
                             SpinBox { Layout.fillWidth: true; from: 0; to: 200; value: EditorController.selectedClipSaturation; onValueModified: EditorController.setSelectedClipSaturation(value) }
                         }
+                        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#303844" }
+                        Label { text: "클립 사이 전환"; font.bold: true }
+                        GridLayout {
+                            Layout.fillWidth: true; columns: 2
+                            Label { text: "디졸브"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true
+                                from: 0; to: 5000; stepSize: 100; editable: true
+                                enabled: EditorController.selectedClipIds.length === 1 &&
+                                         EditorController.clips.length > 0 &&
+                                         EditorController.selectedClipId !== EditorController.clips[0].id
+                                value: EditorController.selectedClipDissolveMs
+                                textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                                valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
+                                onValueModified: EditorController.setSelectedClipDissolveMs(value)
+                            }
+                        }
                         Label {
                             Layout.fillWidth: true; wrapMode: Text.WordWrap
-                            text: "디졸브는 인접 클립 오버랩 모델과 함께 다음 전환 단계에서 활성화됩니다."
+                            text: "선택 클립과 바로 앞 클립을 겹쳐 영상·오디오를 함께 전환합니다."
                             color: "#7f8c9c"; font.pixelSize: 11
                         }
                     }
@@ -753,23 +767,6 @@ ApplicationWindow {
                     Layout.leftMargin: 6
                     Layout.rightMargin: 8
                     spacing: 5
-                    AppButton {
-                        text: "V  선택"
-                        compact: true
-                        highlighted: root.timelineTool === 0
-                        onClicked: root.timelineTool = 0
-                        ToolTip.visible: hovered
-                        ToolTip.text: "클립 선택·이동·트림"
-                    }
-                    AppButton {
-                        text: "A  탐색"
-                        compact: true
-                        highlighted: root.timelineTool === 1
-                        onClicked: root.timelineTool = 1
-                        ToolTip.visible: hovered
-                        ToolTip.text: "타임라인을 드래그하며 미리보기 탐색"
-                    }
-                    ToolDivider { }
                     AppButton {
                         text: EditorController.playing ? "Ⅱ  일시정지" : "▶  재생"
                         enabled: EditorController.durationNs > 0
@@ -870,7 +867,7 @@ ApplicationWindow {
                              : EditorController.previewBusy ? "#f0bd58" : "#8994a3"
                     }
                     Label {
-                        text: "휠·Shift+휠 이동  ·  가운데 드래그"
+                        text: "눈금 드래그 탐색  ·  클립 드래그 이동  ·  Ctrl+휠 확대"
                         color: "#687484"
                         font.pixelSize: 10
                     }
@@ -932,7 +929,7 @@ ApplicationWindow {
                                 fillMode: Image.Stretch
                                 asynchronous: true
                                 cache: true
-                                opacity: 0.58
+                                opacity: 0.82
                             }
                         }
                     }
@@ -947,7 +944,6 @@ ApplicationWindow {
                         clips: EditorController.clips
                         selectedClipId: EditorController.selectedClipId
                         selectedClipIds: EditorController.selectedClipIds
-                        interactionMode: root.timelineTool
                         onSeekRequested: (position, finalPosition) =>
                             EditorController.scrub(position, finalPosition)
                         onClipSelected: (clipId, selectionMode) =>

@@ -425,6 +425,7 @@ QVariantList EditorController::clips() const {
         value.insert("brightness", span.clip.color.brightness);
         value.insert("contrast", span.clip.color.contrast);
         value.insert("saturation", span.clip.color.saturation);
+        value.insert("transitionInNs", static_cast<qint64>(span.clip.transition_in));
         const auto* asset = timeline_.asset(span.clip.asset_id);
         value.insert("assetDurationNs", static_cast<qint64>(asset ? asset->duration() : 0));
         value.insert(
@@ -443,7 +444,7 @@ QVariantList EditorController::clips() const {
             }
         }
         value.insert("waveform", waveform);
-        value.insert("color", index % 2 == 0 ? "#315a94" : "#3b6599");
+        value.insert("color", index % 2 == 0 ? "#343b43" : "#3a424b");
         result.push_back(value);
     }
     clips_cache_ = std::move(result);
@@ -582,6 +583,15 @@ int EditorController::selectedClipSaturation() const noexcept {
         }
     }
     return 100;
+}
+
+int EditorController::selectedClipDissolveMs() const noexcept {
+    for (const auto& clip : timeline_.clips()) {
+        if (clip.id == selected_clip_id_.toStdString()) {
+            return static_cast<int>(clip.transition_in / 1'000'000);
+        }
+    }
+    return 0;
 }
 
 QString EditorController::selectedCaptionText() const {
@@ -1152,6 +1162,19 @@ void EditorController::setSelectedClipSaturation(int percent) {
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
 
+void EditorController::setSelectedClipDissolveMs(int milliseconds) {
+    if (selected_clip_id_.isEmpty()) return;
+    try {
+        timeline_.set_clip_dissolve(
+            selected_clip_id_.toStdString(),
+            static_cast<ffgui::TimeNs>(std::max(0, milliseconds)) * 1'000'000);
+        publishTimeline();
+        setStatus(milliseconds > 0
+            ? QStringLiteral("디졸브 · %1초").arg(milliseconds / 1000.0, 0, 'f', 2)
+            : QStringLiteral("디졸브 제거"));
+    } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
+}
+
 void EditorController::trimAllClipEdges(int frontFrames, int backFrames) {
     try {
         timeline_.trim_all_clip_edges(
@@ -1425,7 +1448,8 @@ void EditorController::saveProject(const QString& path) {
                 {"playbackRate", clip.playback_rate},
                 {"brightness", clip.color.brightness},
                 {"contrast", clip.color.contrast},
-                {"saturation", clip.color.saturation}});
+                {"saturation", clip.color.saturation},
+                {"transitionInNs", timeString(clip.transition_in)}});
         }
         QJsonArray captions;
         for (const auto& caption : timeline_.captions()) {
@@ -1519,7 +1543,9 @@ void EditorController::loadProject(const QString& path) {
                 ffgui::ClipColor{
                     object.value("brightness").toDouble(0.0),
                     object.contains("contrast") ? object.value("contrast").toDouble() : 1.0,
-                    object.contains("saturation") ? object.value("saturation").toDouble() : 1.0}});
+                    object.contains("saturation") ? object.value("saturation").toDouble() : 1.0},
+                object.contains("transitionInNs")
+                    ? parseTime(object.value("transitionInNs"), "transitionInNs") : 0});
         }
         for (const auto value : root.value("captions").toArray()) {
             const auto object = value.toObject();
@@ -1714,7 +1740,8 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             span.clip.playback_rate,
             span.clip.color.brightness,
             span.clip.color.contrast,
-            span.clip.color.saturation});
+            span.clip.color.saturation,
+            span.clip.transition_in});
     }
     for (const auto& caption : timeline_.captions()) {
         request.captions.push_back(ffgui::ExportCaptionInput{
