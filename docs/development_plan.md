@@ -242,6 +242,7 @@
 - [x] OpenColorIO 2.5.2와 ACES 2.0 Studio Config 의존성 잠금
 - [x] premultiplied 알파 분리/복원, 입력→ACEScg→그레이드→출력 CPU 기준 렌더
 - [x] OCIO D3D11 HLSL·1D/3D LUT texture·binding 추출 및 shader cache ID
+- [x] 타임라인 ns→트림/속도/원본 프레임→시퀀스 번호→nearest 누락 대체→float 컬러 처리 서버
 - [x] Legacy/ACES Managed/Custom OCIO 프로젝트 모델과 HDR 메타데이터 설정 기반
 - [x] 클립별 순서형 GradeGraph, 노드 추가·삭제·순서·bypass·mix·기본 파라미터 UI
 - [x] 미디어 오프라인·누락·관리형 입력 색공간 미확정 출력 사전 검사

@@ -6,6 +6,7 @@
 #include "color/color_frame_processor.hpp"
 #include "media/oiio_probe.hpp"
 #include "media/oiio_frame_source.hpp"
+#include "render/timeline_frame_server.hpp"
 #include "core/ffprobe_parser.hpp"
 #include "core/timeline_model.hpp"
 #include "core/subtitle_srt.hpp"
@@ -233,6 +234,42 @@ void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
     cache.invalidate(path);
     require(cache.entry_count() == 0 && cache.byte_size() == 0,
             "frame cache invalidation must remove changed source frames");
+
+    const auto frame1001 = root / "plate.1001.exr";
+    const auto frame1003 = root / "plate.1003.exr";
+    std::filesystem::copy_file(path, frame1001);
+    std::filesystem::copy_file(path, frame1003);
+    ffgui::ImageSequenceDescriptor sequence;
+    sequence.directory = root;
+    sequence.prefix = "plate.";
+    sequence.suffix = ".exr";
+    sequence.padding = 4;
+    sequence.first_frame = 1001;
+    sequence.last_frame = 1003;
+    sequence.frame_rate = {1, 1};
+    sequence.present_frames = {1001, 1003};
+    sequence.missing_frames = {1002};
+    sequence.exr_part = "part0";
+    sequence.exr_layer = "beauty";
+    sequence.channel_mapping = {"beauty.R", "beauty.G", "beauty.B", "beauty.A"};
+    ffgui::SourceColorDescriptor sourceColor;
+    sourceColor.input_color_space = "ACEScg";
+    TimelineModel sequenceTimeline;
+    sequenceTimeline.add_asset(MediaAsset{
+        "sequence", frame1001, seconds(3), {0, seconds(1), seconds(2)}, {}, {},
+        ffgui::MediaKind::image_sequence, sequence, sourceColor, frame1001, frame1001});
+    Clip sequenceClip{"sequence-clip", "sequence", 0, seconds(3)};
+    auto exposure = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "exposure");
+    exposure.parameters["exposure"] = 1.0;
+    sequenceClip.grade.add(std::move(exposure));
+    sequenceTimeline.append_clip(std::move(sequenceClip));
+    ffgui::TimelineFrameServer frameServer(1024);
+    const auto timelineFrame = frameServer.render(sequenceTimeline, seconds(1), {}, {});
+    require(timelineFrame.requested_sequence_frame == 1002 &&
+                timelineFrame.resolved_sequence_frame == 1001 &&
+                timelineFrame.substituted_missing_frame &&
+                std::abs(timelineFrame.processed.rgba[0] - 0.2F) < 0.00001F,
+            "timeline frame server must map trimmed time, substitute nearest missing frame and grade it");
     std::filesystem::remove_all(root);
 }
 

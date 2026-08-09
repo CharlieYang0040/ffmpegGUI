@@ -32,6 +32,7 @@ add_library(ffgui_core STATIC
     src/core/timeline_model.cpp
     src/media/oiio_probe.cpp
     src/media/oiio_frame_source.cpp
+    src/render/timeline_frame_server.cpp
     src/export/ffmpeg_export_plan.cpp
 )
 add_library(ffgui::core ALIAS ffgui_core)
