@@ -140,6 +140,8 @@ void test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube() {
     const auto spaces = engine.color_spaces();
     require(std::ranges::find(spaces, "ACEScg") != spaces.end(),
             "ACES Studio config must expose ACEScg");
+    require(std::ranges::find(spaces, "sRGB - Display") != spaces.end(),
+            "ACES Studio config must expose the default SDR preview output space");
     float pixel[]{0.18F, 0.18F, 0.18F, 0.5F};
     engine.transform_rgba32f(pixel, 1, 1, "ACEScg", "ACES2065-1");
     require(pixel[0] > 0.0F && pixel[1] > 0.0F && pixel[2] > 0.0F &&

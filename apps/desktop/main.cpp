@@ -403,6 +403,27 @@ int main(int argc, char* argv[]) {
         const auto gradeId = gradeNodes.front().toMap().value("id").toString();
         controller.setGradeParameter(gradeId, QStringLiteral("exposure"), 1.25);
         controller.setGradeNodeMix(gradeId, 80);
+        if (importedAssets.front().toMap().value("kind").toString() == "imageSequence") {
+            const auto submittedBefore = controller.scrubFramesSubmitted();
+            controller.scrub(0, true);
+            QEventLoop floatPreviewLoop;
+            QTimer floatPreviewPoll;
+            QTimer floatPreviewTimeout;
+            floatPreviewPoll.setInterval(10);
+            floatPreviewTimeout.setSingleShot(true);
+            QObject::connect(&floatPreviewPoll, &QTimer::timeout, &floatPreviewLoop, [&] {
+                if (controller.scrubFramesSubmitted() > submittedBefore) floatPreviewLoop.quit();
+            });
+            QObject::connect(&floatPreviewTimeout, &QTimer::timeout,
+                             &floatPreviewLoop, &QEventLoop::quit);
+            floatPreviewPoll.start();
+            floatPreviewTimeout.start(5'000);
+            floatPreviewLoop.exec();
+            if (controller.scrubFramesSubmitted() <= submittedBefore ||
+                !controller.status().contains(QStringLiteral("float 프레임"))) {
+                return EXIT_FAILURE;
+            }
+        }
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);

@@ -3,6 +3,7 @@
 #include "d3d11_video_item.hpp"
 #include "core/subtitle_srt.hpp"
 #include "core/render_preflight.hpp"
+#include "color/color_frame_processor.hpp"
 
 #include <QFile>
 #include <QCoreApplication>
@@ -444,6 +445,42 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                         : QStringLiteral("미리보기 준비 완료")));
             }
         });
+    connect(
+        &float_scrub_watcher_,
+        &QFutureWatcher<FloatScrubResult>::finished,
+        this,
+        [this] {
+            auto result = float_scrub_watcher_.result();
+            float_scrub_active_ = false;
+            if (result.elapsed_ms >= 100 || result.requested_frame != result.resolved_frame) {
+                qInfo().noquote() << "float scrub frame completed"
+                                  << "elapsed_ms=" << result.elapsed_ms
+                                  << "frame=" << result.requested_frame
+                                  << "resolved=" << result.resolved_frame;
+            }
+            if (pending_float_scrub_ns_.has_value()) {
+                const auto next = *pending_float_scrub_ns_;
+                pending_float_scrub_ns_.reset();
+                startFloatScrubFrame(next);
+                return;
+            }
+            if (!result.error.isEmpty()) {
+                qWarning().noquote() << "float scrub frame failed" << result.error;
+                setStatus(result.error);
+                return;
+            }
+            if (result.generation != float_scrub_generation_) return;
+            if (auto* item = qobject_cast<VideoPreviewItem*>(video_item_)) {
+                ++scrub_frames_submitted_;
+                item->submitFrame(std::move(result.frame));
+                if (result.requested_frame != result.resolved_frame) {
+                    setStatus(QStringLiteral("누락 프레임 %1 · %2 프레임으로 대체")
+                        .arg(result.requested_frame).arg(result.resolved_frame));
+                } else {
+                    setStatus(QStringLiteral("원본 float 프레임 표시 완료"));
+                }
+            }
+        });
 #endif
 }
 
@@ -471,8 +508,12 @@ void EditorController::openLogFolder() {
 
 EditorController::~EditorController() {
 #ifdef FFGUI_HAS_GES
+    pending_float_scrub_ns_.reset();
+    ++float_scrub_generation_;
+    if (float_scrub_watcher_.isRunning()) float_scrub_watcher_.waitForFinished();
     if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
 #endif
+    if (import_watcher_.isRunning()) import_watcher_.waitForFinished();
     if (export_process_.state() != QProcess::NotRunning) {
         export_process_.kill();
         export_process_.waitForFinished(3'000);
@@ -983,6 +1024,7 @@ void EditorController::seek(qint64 timelinePosition) {
     emit playheadChanged();
 #ifdef FFGUI_HAS_GES
     preview_should_play_ = false;
+    if (submitFloatScrubFrame(playhead_ns_)) return;
     pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
 #endif
@@ -991,14 +1033,109 @@ void EditorController::seek(qint64 timelinePosition) {
 void EditorController::scrub(qint64 timelinePosition, bool finalPosition) {
     playhead_ns_ = std::clamp<qint64>(timelinePosition, 0, durationNs());
     emit playheadChanged();
-    submitCachedScrubFrame(playhead_ns_);
+    const auto floatSubmitted = submitFloatScrubFrame(playhead_ns_);
+    if (!floatSubmitted) submitCachedScrubFrame(playhead_ns_);
 #ifdef FFGUI_HAS_GES
     preview_should_play_ = false;
-    if (!finalPosition) return;
+    if (!finalPosition || floatSubmitted) return;
     pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
 #else
     static_cast<void>(finalPosition);
+#endif
+}
+
+bool EditorController::submitFloatScrubFrame(qint64 timelinePosition) {
+#ifdef FFGUI_HAS_GES
+    if (video_item_ == nullptr) return false;
+    const auto mapped = timeline_.locate(timelinePosition);
+    if (!mapped.has_value()) return false;
+    const auto* asset = timeline_.asset(mapped->asset_id);
+    if (asset == nullptr || !asset->image_sequence().has_value()) return false;
+    if (float_scrub_active_) {
+        pending_float_scrub_ns_ = timelinePosition;
+    } else {
+        startFloatScrubFrame(timelinePosition);
+    }
+    return true;
+#else
+    static_cast<void>(timelinePosition);
+    return false;
+#endif
+}
+
+void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
+#ifdef FFGUI_HAS_GES
+    const auto mapped = timeline_.locate(timelinePosition);
+    if (!mapped.has_value()) return;
+    const auto* asset = timeline_.asset(mapped->asset_id);
+    if (asset == nullptr || !asset->image_sequence().has_value()) return;
+    const auto clip = std::ranges::find(timeline_.clips(), mapped->clip_id, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    const auto sequence = *asset->image_sequence();
+    const auto offset = mapped->source_frame.has_value()
+        ? static_cast<int>(*mapped->source_frame)
+        : static_cast<int>(std::max<ffgui::TimeNs>(0, mapped->source_time) /
+                           std::max<ffgui::TimeNs>(1, sequence.frame_rate.frame_duration()));
+    const auto requested = std::clamp(
+        sequence.first_frame + offset, sequence.first_frame, sequence.last_frame);
+    const auto resolved = sequence.has_frame(requested)
+        ? requested : sequence.nearest_present_frame(requested);
+    const auto request = ffgui::ImageFrameRequest{
+        sequence.frame_path(resolved), sequence.exr_part, sequence.channel_mapping};
+    const auto sourceColor = asset->source_color();
+    const auto settings = color_pipeline_;
+    const auto grade = clip->grade;
+    const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
+        ? std::string{}
+        : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
+    const auto generation = ++float_scrub_generation_;
+    float_scrub_active_ = true;
+    float_scrub_watcher_.setFuture(QtConcurrent::run(
+        [this, request, sourceColor, settings, grade, outputSpace, timelinePosition,
+         generation, requested, resolved] {
+            FloatScrubResult result;
+            result.generation = generation;
+            result.requested_frame = requested;
+            result.resolved_frame = resolved;
+            QElapsedTimer elapsed;
+            elapsed.start();
+            try {
+                const auto source = float_frame_cache_.get(request);
+                const auto processed = ffgui::process_color_frame(
+                    *source, sourceColor, settings, grade, outputSpace);
+                result.frame.width = static_cast<std::uint32_t>(processed.width);
+                result.frame.height = static_cast<std::uint32_t>(processed.height);
+                result.frame.cpu_stride = result.frame.width * 4;
+                result.frame.cpu_pixels = std::make_shared<std::vector<std::uint8_t>>(
+                    static_cast<std::size_t>(result.frame.cpu_stride) * result.frame.height);
+                const auto pixels = static_cast<std::size_t>(processed.width) * processed.height;
+                for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
+                    const auto* rgba = processed.rgba.data() + pixel * 4;
+                    auto alpha = std::clamp(std::isfinite(rgba[3]) ? rgba[3] : 0.0F, 0.0F, 1.0F);
+                    auto red = std::isfinite(rgba[0]) ? rgba[0] : 0.0F;
+                    auto green = std::isfinite(rgba[1]) ? rgba[1] : 0.0F;
+                    auto blue = std::isfinite(rgba[2]) ? rgba[2] : 0.0F;
+                    if (processed.premultiplied && alpha > 0.0F) {
+                        red /= alpha; green /= alpha; blue /= alpha;
+                    }
+                    auto* bgra = result.frame.cpu_pixels->data() + pixel * 4;
+                    bgra[0] = static_cast<std::uint8_t>(std::lround(std::clamp(blue, 0.0F, 1.0F) * 255.0F));
+                    bgra[1] = static_cast<std::uint8_t>(std::lround(std::clamp(green, 0.0F, 1.0F) * 255.0F));
+                    bgra[2] = static_cast<std::uint8_t>(std::lround(std::clamp(red, 0.0F, 1.0F) * 255.0F));
+                    bgra[3] = static_cast<std::uint8_t>(std::lround(alpha * 255.0F));
+                }
+                result.frame.pts = timelinePosition;
+                result.frame.serial = (1ULL << 62) + generation;
+            } catch (const std::exception& error) {
+                result.error = QStringLiteral("float 미리보기 실패: %1")
+                    .arg(QString::fromUtf8(error.what()));
+            }
+            result.elapsed_ms = elapsed.elapsed();
+            return result;
+        }));
+#else
+    static_cast<void>(timelinePosition);
 #endif
 }
 

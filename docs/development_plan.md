@@ -243,6 +243,9 @@
 - [x] premultiplied 알파 분리/복원, 입력→ACEScg→그레이드→출력 CPU 기준 렌더
 - [x] OCIO D3D11 HLSL·1D/3D LUT texture·binding 추출 및 shader cache ID
 - [x] 타임라인 ns→트림/속도/원본 프레임→시퀀스 번호→nearest 누락 대체→float 컬러 처리 서버
+- [x] 이미지 시퀀스 정지·스크럽의 float 결과를 프로그램 모니터 CPU 프레임으로 실제 표시
+- [x] 빠른 스크럽 최신 요청 병합과 watcher 완료 콜백 직렬화·종료 수명 보장
+- [x] 노드 파라미터 프레임 단위 컴파일로 640×360 Primary 처리 5초 이상→약 47ms
 - [x] Legacy/ACES Managed/Custom OCIO 프로젝트 모델과 HDR 메타데이터 설정 기반
 - [x] 클립별 순서형 GradeGraph, 노드 추가·삭제·순서·bypass·mix·기본 파라미터 UI
 - [x] 미디어 오프라인·누락·관리형 입력 색공간 미확정 출력 사전 검사
