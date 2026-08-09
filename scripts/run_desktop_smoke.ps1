@@ -20,6 +20,7 @@ $clipVfr = Join-Path $mediaDir "shot-vfr.mkv"
 $roundtripProject = Join-Path $mediaDir "roundtrip.ffnext"
 $exportOutput = Join-Path $mediaDir "export-smoke.mp4"
 $hevcExportOutput = Join-Path $mediaDir "export-hevc-compact.mkv"
+$gifExportOutput = Join-Path $mediaDir "export-lightweight.gif"
 $copySource = Join-Path $mediaDir "stream-copy-source.mp4"
 $copyProject = Join-Path $mediaDir "stream-copy.ffnext"
 $copyOutput = Join-Path $mediaDir "stream-copy-output.mp4"
@@ -87,6 +88,31 @@ if (($frameHashes | Sort-Object -Unique).Count -lt 4) {
     throw "video dissolve froze instead of producing changing transition frames"
 }
 Write-Output "Timeline export passed: rapid split/undo/redo, 300ms dissolve, clip audio, positioned text and letterbox stamp produced a validated $exportDuration second MP4"
+
+if (Test-Path -LiteralPath $gifExportOutput -PathType Leaf) {
+    Remove-Item -LiteralPath $gifExportOutput -Force
+}
+$gifExport = Start-Process -FilePath $application `
+    -ArgumentList @("--export-gif-smoke", $gifExportOutput, $clipA, $clipB, $clipVfr) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($gifExport.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $gifExportOutput -PathType Leaf)) {
+    throw "palette-optimized GIF export failed"
+}
+$gifStreams = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
+    -v error -show_entries stream=codec_type,codec_name,width,height,r_frame_rate `
+    -of json $gifExportOutput | ConvertFrom-Json
+$gifVideo = @($gifStreams.streams | Where-Object { $_.codec_type -eq "video" })
+$gifAudio = @($gifStreams.streams | Where-Object { $_.codec_type -eq "audio" })
+if ($gifVideo.Count -ne 1 -or $gifAudio.Count -ne 0 -or
+    $gifVideo[0].codec_name -ne "gif" -or $gifVideo[0].width -ne 480 -or
+    $gifVideo[0].height -ne 270 -or $gifVideo[0].r_frame_rate -ne "8/1") {
+    throw "GIF preset did not produce 480x270, 8fps video-only output"
+}
+$gifMegabytes = (Get-Item -LiteralPath $gifExportOutput).Length / 1MB
+if ($gifMegabytes -gt 10) {
+    throw "lightweight GIF exceeded the 10MB regression ceiling: $gifMegabytes MB"
+}
+Write-Output ("GIF export passed: 480x270, 8fps, 64-color palette, no audio, {0:N2} MB" -f $gifMegabytes)
 
 if (Test-Path -LiteralPath $hevcExportOutput -PathType Leaf) {
     Remove-Item -LiteralPath $hevcExportOutput -Force

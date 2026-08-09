@@ -45,6 +45,11 @@ std::pair<TimeNs, TimeNs> normalized_fades(const ExportClipInput& clip) {
 }
 
 bool can_stream_copy(const ExportRequest& request) {
+    auto extension = request.output_path.extension().string();
+    std::ranges::transform(extension, extension.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    if (extension == ".gif" || request.gif.enabled) return false;
     if (!request.prefer_stream_copy || request.concat_script_path.empty() ||
         request.clips.empty() || !request.captions.empty() || request.stamp.enabled ||
         request.output_width > 0 ||
@@ -157,6 +162,14 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         return static_cast<char>(std::tolower(value));
     });
     const bool movFamily = extension == ".mp4" || extension == ".mov" || extension == ".m4v";
+    const bool gifOutput = extension == ".gif" || request.gif.enabled;
+    if (gifOutput &&
+        (request.gif.width < 16 || request.gif.width > 4096 ||
+         request.gif.height < 16 || request.gif.height > 4096 ||
+         request.gif.fps < 1 || request.gif.fps > 60 ||
+         request.gif.colors < 2 || request.gif.colors > 256)) {
+        throw std::invalid_argument("GIF output settings are invalid");
+    }
     plan.arguments = {"-hide_banner", "-y", "-progress", "pipe:2", "-nostats"};
     for (std::size_t index = 0; index < request.clips.size(); ++index) {
         const auto& clip = request.clips[index];
@@ -225,8 +238,8 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         [](const ExportClipInput& clip) { return clip.transition_in > 0; });
     // xfade requires both inputs to use a constant, identical frame rate.  Keeping VFR
     // timestamps here can make framesync hold the outgoing clip throughout the dissolve.
-    const auto compositionFps = request.output_fps > 0
-        ? request.output_fps : (hasTransitions ? 30 : 0);
+    const auto compositionFps = gifOutput ? request.gif.fps :
+        (request.output_fps > 0 ? request.output_fps : (hasTransitions ? 30 : 0));
     std::string filter;
     for (std::size_t index = 0; index < request.clips.size(); ++index) {
         const auto& clip = request.clips[index];
@@ -261,26 +274,28 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         // Rebase once more after trim/fps so every xfade input starts at zero with the
         // same time base and pixel format, including MKV and VFR sources.
         filter += ",format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[v" + suffix + "];";
-        if (clip.has_audio) {
+        if (!gifOutput && clip.has_audio) {
             filter += "[" + suffix + ":a:0]aresample=48000:async=1:first_pts=0,"
                       "apad=whole_dur=" + seconds(clip.duration) +
                       ",atrim=duration=" + seconds(clip.duration) +
                       ",asetpts=PTS-STARTPTS" + atempo_chain(clip.playback_rate);
-        } else {
+        } else if (!gifOutput) {
             filter += "anullsrc=r=48000:cl=stereo:d=" + seconds(clip.duration) +
                       atempo_chain(clip.playback_rate);
         }
-        const auto gain = clip.audio_muted ? 0.0 : clip.audio_gain;
-        filter += ",volume=" + std::to_string(gain);
-        const auto [fadeIn, fadeOut] = normalized_fades(clip);
-        if (fadeIn > 0) {
-            filter += ",afade=t=in:st=0:d=" + seconds(fadeIn);
+        if (!gifOutput) {
+            const auto gain = clip.audio_muted ? 0.0 : clip.audio_gain;
+            filter += ",volume=" + std::to_string(gain);
+            const auto [fadeIn, fadeOut] = normalized_fades(clip);
+            if (fadeIn > 0) {
+                filter += ",afade=t=in:st=0:d=" + seconds(fadeIn);
+            }
+            if (fadeOut > 0) {
+                filter += ",afade=t=out:st=" + seconds(clip.timeline_duration() - fadeOut) +
+                          ":d=" + seconds(fadeOut);
+            }
+            filter += "[a" + suffix + "];";
         }
-        if (fadeOut > 0) {
-            filter += ",afade=t=out:st=" + seconds(clip.timeline_duration() - fadeOut) +
-                      ":d=" + seconds(fadeOut);
-        }
-        filter += "[a" + suffix + "];";
     }
     std::string videoLabel = "v0";
     std::string audioLabel = "a0";
@@ -294,8 +309,13 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
             filter += "[" + videoLabel + "][v" + suffix + "]xfade=transition=fade:duration=" +
                 seconds(transition) + ":offset=" + seconds(composedDuration - transition) +
                 "[" + nextVideo + "];";
-            filter += "[" + audioLabel + "][a" + suffix + "]acrossfade=d=" +
-                seconds(transition) + ":c1=tri:c2=tri[" + nextAudio + "];";
+            if (!gifOutput) {
+                filter += "[" + audioLabel + "][a" + suffix + "]acrossfade=d=" +
+                    seconds(transition) + ":c1=tri:c2=tri[" + nextAudio + "];";
+            }
+        } else if (gifOutput) {
+            filter += "[" + videoLabel + "][v" + suffix +
+                "]concat=n=2:v=1:a=0[" + nextVideo + "];";
         } else {
             filter += "[" + videoLabel + "][" + audioLabel + "][v" + suffix +
                 "][a" + suffix + "]concat=n=2:v=1:a=1[" + nextVideo + "][" +
@@ -304,7 +324,7 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         composedDuration = checked_add(composedDuration, request.clips[index].timeline_duration()) -
             transition;
         videoLabel = nextVideo;
-        audioLabel = nextAudio;
+        if (!gifOutput) audioLabel = nextAudio;
     }
     const auto stampBarHeight = request.stamp.enabled
         ? 720 * request.stamp.bar_percent / 100 : 0;
@@ -326,13 +346,15 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
     }
     const bool hasGraphics = !request.captions.empty() || request.stamp.enabled;
     if (!hasGraphics) {
-        filter += "[" + videoLabel + "]null[vout];[" + audioLabel + "]anull[aout]";
+        filter += "[" + videoLabel + "]null[vout]";
+        if (!gifOutput) filter += ";[" + audioLabel + "]anull[aout]";
     } else {
         if (request.subtitle_script_path.empty()) {
             throw std::invalid_argument("graphic overlay export requires an ASS script path");
         }
-        filter += "[" + videoLabel + "]null[vbase];[" + audioLabel +
-                  "]anull[aout];[vbase]ass=filename='" +
+        filter += "[" + videoLabel + "]null[vbase];";
+        if (!gifOutput) filter += "[" + audioLabel + "]anull[aout];";
+        filter += "[vbase]ass=filename='" +
                   filter_path(request.subtitle_script_path) + "'[vout]";
         plan.subtitle_script =
             "[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: " +
@@ -412,6 +434,29 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
                 ass_text(caption.text) + '\n';
         }
     }
+    if (gifOutput) {
+        const auto dither = request.gif.dither == GifDither::bayer ? "bayer" :
+            (request.gif.dither == GifDither::sierra2_4a ? "sierra2_4a" : "none");
+        filter += ";[vout]fps=" + std::to_string(request.gif.fps) +
+            ",scale=" + std::to_string(request.gif.width) + ":" +
+            std::to_string(request.gif.height) +
+            ":force_original_aspect_ratio=decrease:flags=lanczos,pad=" +
+            std::to_string(request.gif.width) + ":" + std::to_string(request.gif.height) +
+            ":(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,split[gifframes][gifpalettein];";
+        filter += "[gifpalettein]palettegen=max_colors=" +
+            std::to_string(request.gif.colors) +
+            ":reserve_transparent=0:stats_mode=diff[gifpalette];";
+        filter += "[gifframes][gifpalette]paletteuse=dither=" + std::string{dither} +
+            (request.gif.dither == GifDither::bayer ? ":bayer_scale=3" : "") +
+            ":diff_mode=rectangle[gifout]";
+        plan.arguments.insert(
+            plan.arguments.end(),
+            {"-filter_complex", std::move(filter), "-map", "[gifout]", "-an",
+             "-loop", request.gif.loop ? "0" : "-1", "-final_delay", "0",
+             path_string(request.output_path)});
+        return plan;
+    }
+
     plan.arguments.insert(
         plan.arguments.end(),
         {"-filter_complex", std::move(filter), "-map", "[vout]", "-map", "[aout]"});

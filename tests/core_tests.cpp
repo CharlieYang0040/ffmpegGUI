@@ -849,6 +849,26 @@ void test_ffmpeg_export_plan_compiles_video_and_audio_dissolve() {
             "dissolve input normalization must preserve the exact clip duration");
 }
 
+void test_ffmpeg_export_plan_builds_palette_optimized_gif_without_audio() {
+    auto request = ffgui::ExportRequest{
+        {{std::filesystem::path{"source.mkv"}, 0, seconds(3), true}},
+        std::filesystem::path{"result.gif"},
+        ffgui::ExportVideoEncoder::h264_nvenc};
+    request.gif = {true, 480, 270, 8, 64, ffgui::GifDither::bayer, false};
+    const auto plan = ffgui::compile_ffmpeg_export(request);
+    require(plan.mode == ffgui::ExportMode::transcode,
+            "GIF output must never enter stream-copy mode");
+    std::string arguments;
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(arguments.contains("fps=8,scale=480:270") &&
+            arguments.contains("palettegen=max_colors=64:reserve_transparent=0:stats_mode=diff") &&
+            arguments.contains("paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle"),
+            "GIF output must use bounded resolution, frame rate and a generated palette");
+    require(arguments.contains("\n-an\n") && arguments.contains("\n-loop\n-1\n") &&
+            !arguments.contains("[aout]") && !arguments.contains("-c:a"),
+            "GIF output must omit audio and honor one-shot playback");
+}
+
 }  // namespace
 
 int main() {
@@ -889,6 +909,7 @@ int main() {
         {"ffmpeg_export_plan_applies_codec_and_quality_presets", test_ffmpeg_export_plan_applies_codec_and_quality_presets},
         {"ffmpeg_export_plan_applies_resolution_fps_and_color", test_ffmpeg_export_plan_applies_resolution_fps_and_color},
         {"ffmpeg_export_plan_compiles_video_and_audio_dissolve", test_ffmpeg_export_plan_compiles_video_and_audio_dissolve},
+        {"ffmpeg_export_plan_builds_palette_optimized_gif_without_audio", test_ffmpeg_export_plan_builds_palette_optimized_gif_without_audio},
     };
 
     int failed = 0;

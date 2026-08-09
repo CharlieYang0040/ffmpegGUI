@@ -36,6 +36,13 @@ ApplicationWindow {
         return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
     }
 
+    function requestExport() {
+        if (EditorController.exportContainer === 3 && EditorController.gifSizeRisk === 2)
+            gifSizeWarning.open()
+        else
+            exportDialog.open()
+    }
+
     palette.window: "#111419"
     palette.windowText: "#e8edf2"
     palette.base: "#171b21"
@@ -195,7 +202,9 @@ ApplicationWindow {
         nameFilters: EditorController.exportContainer === 1
                      ? ["Matroska 영상 (*.mkv)"]
                      : EditorController.exportContainer === 2
-                       ? ["QuickTime 영상 (*.mov)"] : ["MP4 영상 (*.mp4)"]
+                       ? ["QuickTime 영상 (*.mov)"]
+                       : EditorController.exportContainer === 3
+                         ? ["애니메이션 GIF (*.gif)"] : ["MP4 영상 (*.mp4)"]
         onAccepted: {
             if (EditorController.outputExists(selectedFile)) {
                 overwriteDialog.suggestedUrl = EditorController.uniqueOutputUrl(selectedFile)
@@ -234,6 +243,21 @@ ApplicationWindow {
             wrapMode: Text.WordWrap
             text: "기존 파일은 유지하고 새 번호를 붙여 저장합니다.\n\n"
                   + overwriteDialog.suggestedUrl.toString().split('/').pop()
+        }
+    }
+    Dialog {
+        id: gifSizeWarning
+        anchors.centerIn: parent
+        modal: true
+        title: "GIF 예상 용량이 큽니다"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onAccepted: exportDialog.open()
+        Label {
+            width: 430
+            wrapMode: Text.WordWrap
+            text: EditorController.gifEstimatedSizeText +
+                  "\n\nGIF는 장면의 움직임에 따라 예상보다 더 커질 수 있습니다. " +
+                  "계속 저장하려면 확인을 누르고, 취소한 뒤 크기·FPS·색상 수를 낮출 수 있습니다."
         }
     }
 
@@ -299,7 +323,7 @@ ApplicationWindow {
                 AppButton {
                     text: EditorController.exporting ? "내보내는 중…" : "내보내기"
                     enabled: EditorController.durationNs > 0 && !EditorController.exporting
-                    onClicked: exportDialog.open()
+                    onClicked: root.requestExport()
                 }
             }
         }
@@ -776,7 +800,7 @@ ApplicationWindow {
                             text: EditorController.exporting ? "취소" : "영상 내보내기"
                             enabled: EditorController.exporting || EditorController.durationNs > 0
                             onClicked: EditorController.exporting
-                                ? EditorController.cancelExport() : exportDialog.open()
+                                ? EditorController.cancelExport() : root.requestExport()
                         }
                     }
 
@@ -1061,21 +1085,107 @@ ApplicationWindow {
                         visible: root.showOutputSettingsNode
                         nodeKey: "outputSettings"
                         title: "출력 설정"
-                        summary: ["MP4", "MKV", "MOV"][EditorController.exportContainer]
+                        summary: ["MP4", "MKV", "MOV", "GIF"][EditorController.exportContainer]
                         onRemoveRequested: {
                             root.showOutputSettingsNode = false
                             if (root.expandedNode === nodeKey) root.expandedNode = ""
                         }
-                        Label { text: "화질"; color: "#b4bdc8" }
-                        ComboBox { Layout.fillWidth: true; model: ["고화질", "균형", "용량 절약"]; currentIndex: EditorController.exportQuality; onActivated: EditorController.exportQuality = currentIndex }
-                        Label { text: "코덱"; color: "#b4bdc8" }
-                        ComboBox { Layout.fillWidth: true; model: ["H.264 · 높은 호환성", "H.265 / HEVC · 작은 용량", "원본 스트림 복사 · 가능할 때"]; currentIndex: EditorController.exportCodec; onActivated: EditorController.exportCodec = currentIndex }
                         Label { text: "파일 형식"; color: "#b4bdc8" }
-                        ComboBox { Layout.fillWidth: true; model: ["MP4", "MKV", "MOV"]; currentIndex: EditorController.exportContainer; onActivated: EditorController.exportContainer = currentIndex }
-                        Label { text: "해상도"; color: "#b4bdc8" }
-                        ComboBox { Layout.fillWidth: true; model: ["원본", "4K · 3840×2160", "FHD · 1920×1080", "HD · 1280×720"]; currentIndex: EditorController.exportResolution; onActivated: EditorController.exportResolution = currentIndex }
-                        Label { text: "프레임률"; color: "#b4bdc8" }
-                        ComboBox { Layout.fillWidth: true; model: ["원본", "60 fps", "30 fps", "24 fps"]; currentIndex: EditorController.exportFrameRate; onActivated: EditorController.exportFrameRate = currentIndex }
+                        ComboBox { Layout.fillWidth: true; model: ["MP4", "MKV", "MOV", "GIF"]; currentIndex: EditorController.exportContainer; onActivated: EditorController.exportContainer = currentIndex }
+                        Label { visible: EditorController.exportContainer !== 3; text: "화질"; color: "#b4bdc8" }
+                        ComboBox { visible: EditorController.exportContainer !== 3; Layout.fillWidth: true; model: ["고화질", "균형", "용량 절약"]; currentIndex: EditorController.exportQuality; onActivated: EditorController.exportQuality = currentIndex }
+                        Label { visible: EditorController.exportContainer !== 3; text: "코덱"; color: "#b4bdc8" }
+                        ComboBox { visible: EditorController.exportContainer !== 3; Layout.fillWidth: true; model: ["H.264 · 높은 호환성", "H.265 / HEVC · 작은 용량", "원본 스트림 복사 · 가능할 때"]; currentIndex: EditorController.exportCodec; onActivated: EditorController.exportCodec = currentIndex }
+                        Label { visible: EditorController.exportContainer !== 3; text: "해상도"; color: "#b4bdc8" }
+                        ComboBox { visible: EditorController.exportContainer !== 3; Layout.fillWidth: true; model: ["원본", "4K · 3840×2160", "FHD · 1920×1080", "HD · 1280×720"]; currentIndex: EditorController.exportResolution; onActivated: EditorController.exportResolution = currentIndex }
+                        Label { visible: EditorController.exportContainer !== 3; text: "프레임률"; color: "#b4bdc8" }
+                        ComboBox { visible: EditorController.exportContainer !== 3; Layout.fillWidth: true; model: ["원본", "60 fps", "30 fps", "24 fps"]; currentIndex: EditorController.exportFrameRate; onActivated: EditorController.exportFrameRate = currentIndex }
+
+                        Label {
+                            visible: EditorController.exportContainer === 3
+                            text: "GIF 용량 프리셋"
+                            color: "#b4bdc8"
+                        }
+                        ComboBox {
+                            visible: EditorController.exportContainer === 3
+                            Layout.fillWidth: true
+                            model: ["가볍게 · 공유용", "균형 · 권장", "부드럽게 · 큰 용량", "사용자 설정"]
+                            currentIndex: EditorController.gifPreset
+                            onActivated: EditorController.setGifPreset(currentIndex)
+                        }
+                        GridLayout {
+                            visible: EditorController.exportContainer === 3
+                            Layout.fillWidth: true
+                            columns: 2
+                            Label { text: "크기"; color: "#b4bdc8" }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: ["480×270", "640×360", "960×540"]
+                                currentIndex: EditorController.gifResolution
+                                onActivated: EditorController.setGifResolution(currentIndex)
+                            }
+                            Label { text: "초당 프레임"; color: "#b4bdc8" }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: ["8 fps · 작게", "12 fps · 권장", "15 fps", "20 fps · 매우 큼"]
+                                currentIndex: EditorController.gifFrameRate
+                                onActivated: EditorController.setGifFrameRate(currentIndex)
+                            }
+                            Label { text: "색상 수"; color: "#b4bdc8" }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: ["64색 · 작게", "128색 · 권장", "256색 · 선명"]
+                                currentIndex: EditorController.gifColors
+                                onActivated: EditorController.setGifColors(currentIndex)
+                            }
+                            Label { text: "디더링"; color: "#b4bdc8" }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: ["Bayer · 용량 안정", "Sierra · 그라데이션 우선", "없음 · 단순 화면"]
+                                currentIndex: EditorController.gifDither
+                                onActivated: EditorController.setGifDither(currentIndex)
+                            }
+                        }
+                        Switch {
+                            visible: EditorController.exportContainer === 3
+                            text: "계속 반복 재생"
+                            checked: EditorController.gifLoop
+                            onToggled: EditorController.setGifLoop(checked)
+                        }
+                        Rectangle {
+                            visible: EditorController.exportContainer === 3
+                            Layout.fillWidth: true
+                            implicitHeight: gifEstimate.implicitHeight + 20
+                            radius: 6
+                            color: EditorController.gifSizeRisk === 2 ? "#3d2023"
+                                 : EditorController.gifSizeRisk === 1 ? "#3a3020" : "#18271f"
+                            border.color: EditorController.gifSizeRisk === 2 ? "#d45b65"
+                                        : EditorController.gifSizeRisk === 1 ? "#c79b45" : "#3d7352"
+                            Label {
+                                id: gifEstimate
+                                anchors.fill: parent
+                                anchors.margins: 10
+                                text: {
+                                    return EditorController.gifEstimatedSizeText +
+                                        (EditorController.gifSizeRisk === 2
+                                         ? "\n용량 위험: 해상도·FPS·색상 수를 낮추세요."
+                                         : EditorController.gifSizeRisk === 1
+                                           ? "\n용량 주의: 공유 제한을 확인하세요."
+                                           : "\n화면 움직임에 따라 실제 용량은 달라집니다.")
+                                }
+                                color: "#f1f4f7"
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 11
+                            }
+                        }
+                        Label {
+                            visible: EditorController.exportContainer === 3
+                            Layout.fillWidth: true
+                            text: "GIF에는 오디오가 포함되지 않습니다. 두 단계 팔레트 최적화로 색 번짐과 불필요한 용량 증가를 줄입니다."
+                            color: "#8693a3"
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                        }
                     }
                         Item { Layout.preferredHeight: 20 }
                     }

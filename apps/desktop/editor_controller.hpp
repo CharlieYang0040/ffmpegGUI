@@ -79,6 +79,14 @@ class EditorController final : public QObject {
     Q_PROPERTY(int exportContainer READ exportContainer WRITE setExportContainer NOTIFY exportSettingsChanged)
     Q_PROPERTY(int exportResolution READ exportResolution WRITE setExportResolution NOTIFY exportSettingsChanged)
     Q_PROPERTY(int exportFrameRate READ exportFrameRate WRITE setExportFrameRate NOTIFY exportSettingsChanged)
+    Q_PROPERTY(int gifPreset READ gifPreset WRITE setGifPreset NOTIFY exportSettingsChanged)
+    Q_PROPERTY(int gifResolution READ gifResolution WRITE setGifResolution NOTIFY exportSettingsChanged)
+    Q_PROPERTY(int gifFrameRate READ gifFrameRate WRITE setGifFrameRate NOTIFY exportSettingsChanged)
+    Q_PROPERTY(int gifColors READ gifColors WRITE setGifColors NOTIFY exportSettingsChanged)
+    Q_PROPERTY(int gifDither READ gifDither WRITE setGifDither NOTIFY exportSettingsChanged)
+    Q_PROPERTY(bool gifLoop READ gifLoop WRITE setGifLoop NOTIFY exportSettingsChanged)
+    Q_PROPERTY(QString gifEstimatedSizeText READ gifEstimatedSizeText NOTIFY gifEstimateChanged)
+    Q_PROPERTY(int gifSizeRisk READ gifSizeRisk NOTIFY gifEstimateChanged)
 
 public:
     explicit EditorController(QObject* parent);
@@ -132,6 +140,14 @@ public:
     [[nodiscard]] int exportContainer() const noexcept { return export_container_; }
     [[nodiscard]] int exportResolution() const noexcept { return export_resolution_; }
     [[nodiscard]] int exportFrameRate() const noexcept { return export_frame_rate_; }
+    [[nodiscard]] int gifPreset() const noexcept { return gif_preset_; }
+    [[nodiscard]] int gifResolution() const noexcept { return gif_resolution_; }
+    [[nodiscard]] int gifFrameRate() const noexcept { return gif_frame_rate_; }
+    [[nodiscard]] int gifColors() const noexcept { return gif_colors_; }
+    [[nodiscard]] int gifDither() const noexcept { return gif_dither_; }
+    [[nodiscard]] bool gifLoop() const noexcept { return gif_loop_; }
+    [[nodiscard]] QString gifEstimatedSizeText() const;
+    [[nodiscard]] int gifSizeRisk() const noexcept;
     [[nodiscard]] bool lastExportUsedStreamCopy() const noexcept {
         return last_export_stream_copy_;
     }
@@ -213,6 +229,12 @@ public slots:
     void setExportContainer(int container);
     void setExportResolution(int resolution);
     void setExportFrameRate(int frameRate);
+    void setGifPreset(int preset);
+    void setGifResolution(int resolution);
+    void setGifFrameRate(int frameRate);
+    void setGifColors(int colors);
+    void setGifDither(int dither);
+    void setGifLoop(bool loop);
     void setStampEnabled(bool enabled);
     void setStampWorker(const QString& worker);
     void setStampInformation(const QString& information);
@@ -246,6 +268,7 @@ signals:
     void exportingChanged();
     void exportProgressChanged();
     void exportSettingsChanged();
+    void gifEstimateChanged();
     void exportFinished(bool success, QUrl outputUrl);
 
 private:
@@ -348,6 +371,12 @@ private:
     int export_container_{};
     int export_resolution_{};
     int export_frame_rate_{};
+    int gif_preset_{1};
+    int gif_resolution_{1};
+    int gif_frame_rate_{1};
+    int gif_colors_{1};
+    int gif_dither_{};
+    bool gif_loop_{true};
     QString export_concat_path_;
     QString export_subtitle_path_;
     static EditorController* singleton_instance_;

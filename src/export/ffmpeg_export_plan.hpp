@@ -18,6 +18,8 @@ enum class ExportVideoEncoder {
 
 enum class ExportQuality { high, balanced, compact };
 
+enum class GifDither { bayer, sierra2_4a, none };
+
 enum class ExportMode {
     stream_copy,
     transcode,
@@ -65,6 +67,16 @@ struct ExportStampInput final {
     bool expand_canvas{};
 };
 
+struct GifExportSettings final {
+    bool enabled{};
+    int width{640};
+    int height{360};
+    int fps{12};
+    int colors{128};
+    GifDither dither{GifDither::bayer};
+    bool loop{true};
+};
+
 struct ExportRequest final {
     std::vector<ExportClipInput> clips;
     std::filesystem::path output_path;
@@ -78,6 +90,7 @@ struct ExportRequest final {
     int output_width{};
     int output_height{};
     int output_fps{};
+    GifExportSettings gif;
 };
 
 struct FfmpegExportPlan final {

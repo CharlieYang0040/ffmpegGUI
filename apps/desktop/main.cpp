@@ -144,6 +144,7 @@ int main(int argc, char* argv[]) {
     bool loopSmoke = false;
     bool offscreenPresentationSmoke = false;
     bool hevcExportSmoke = false;
+    bool gifExportSmoke = false;
     const auto arguments = application.arguments();
     for (int index = 1; index < arguments.size(); ++index) {
         if (arguments[index] == "--project-roundtrip" && index + 1 < arguments.size()) {
@@ -169,6 +170,11 @@ int main(int argc, char* argv[]) {
         if (arguments[index] == "--export-hevc-smoke" && index + 1 < arguments.size()) {
             exportSmokeOutput = arguments[++index];
             hevcExportSmoke = true;
+            continue;
+        }
+        if (arguments[index] == "--export-gif-smoke" && index + 1 < arguments.size()) {
+            exportSmokeOutput = arguments[++index];
+            gifExportSmoke = true;
             continue;
         }
         if (arguments[index] == "--export-project-smoke" && index + 2 < arguments.size()) {
@@ -360,6 +366,12 @@ int main(int argc, char* argv[]) {
         controller.setStampOpacity(75);
         controller.setStampMode(1);
         controller.setStampEnabled(true);
+        controller.setExportContainer(3);
+        controller.setGifResolution(2);
+        controller.setGifFrameRate(3);
+        controller.setGifColors(2);
+        controller.setGifDither(1);
+        controller.setGifLoop(false);
         controller.selectClip(audioClipId);
         const auto beforeSpeedDuration = controller.durationNs();
         controller.setSelectedClipSpeedPercent(150);
@@ -417,12 +429,19 @@ int main(int argc, char* argv[]) {
                controller.stampOpacity() == 75 && controller.stampMode() == 1 &&
                controller.stampWorker() == QStringLiteral("테스트 작업자") &&
                controller.stampInformation() == QStringLiteral("검수본 v2") &&
+               controller.exportContainer() == 3 && controller.gifPreset() == 3 &&
+               controller.gifResolution() == 2 && controller.gifFrameRate() == 3 &&
+               controller.gifColors() == 2 && controller.gifDither() == 1 &&
+               !controller.gifLoop() &&
                expectedClipCount == importedClipCount + 4
             ? EXIT_SUCCESS
             : EXIT_FAILURE;
     }
     if (!exportSmokeOutput.isEmpty()) {
-        if (hevcExportSmoke) {
+        if (gifExportSmoke) {
+            controller.setExportContainer(3);
+            controller.setGifPreset(0);
+        } else if (hevcExportSmoke) {
             controller.setExportCodec(1);
             controller.setExportContainer(1);
             controller.setExportQuality(2);
@@ -440,8 +459,10 @@ int main(int argc, char* argv[]) {
         controller.selectClip(exportClips.at(1).toMap().value("id").toString());
         controller.setSelectedClipDissolveMs(300);
         controller.selectClip(exportClips.front().toMap().value("id").toString());
-        controller.setExportResolution(3);
-        controller.setExportFrameRate(3);
+        if (!gifExportSmoke) {
+            controller.setExportResolution(3);
+            controller.setExportFrameRate(3);
+        }
         controller.seek(500'000'000);
         controller.addCaptionAtPlayhead();
         controller.updateSelectedCaption(QStringLiteral("출력 자막"), 1200);
@@ -480,6 +501,7 @@ int main(int argc, char* argv[]) {
             : EXIT_FAILURE;
     }
     if (!exportProjectOutput.isEmpty()) {
+        controller.setExportContainer(0);
         controller.setExportCodec(2);
         bool exportSucceeded = false;
         QEventLoop exportLoop;

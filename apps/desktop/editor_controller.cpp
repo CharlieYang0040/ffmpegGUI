@@ -161,7 +161,8 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                     : ffgui::ExportVideoEncoder::h264_nvenc);
                 return;
             }
-            if (!export_cancelled_ && !export_cpu_fallback_) {
+            if (!export_cancelled_ && !export_cpu_fallback_ &&
+                export_request_.has_value() && !export_request_->gif.enabled) {
                 export_cpu_fallback_ = true;
                 QFile::remove(QString::fromStdWString(export_request_->output_path.wstring()));
                 setStatus("NVENC를 사용할 수 없어 CPU 인코딩으로 다시 시도합니다");
@@ -1552,13 +1553,26 @@ void EditorController::saveProject(const QString& path) {
             {"barPercent", stamp_bar_percent_},
             {"opacity", stamp_opacity_},
             {"mode", stamp_mode_}};
+        const QJsonObject outputSettings{
+            {"quality", export_quality_},
+            {"codec", export_codec_},
+            {"container", export_container_},
+            {"resolution", export_resolution_},
+            {"frameRate", export_frame_rate_},
+            {"gifPreset", gif_preset_},
+            {"gifResolution", gif_resolution_},
+            {"gifFrameRate", gif_frame_rate_},
+            {"gifColors", gif_colors_},
+            {"gifDither", gif_dither_},
+            {"gifLoop", gif_loop_}};
         const QJsonDocument document(QJsonObject{
             {"format", "ffmpegGUI-next"},
             {"version", 1},
             {"assets", assets},
             {"clips", clips},
             {"captions", captions},
-            {"stamp", stamp}});
+            {"stamp", stamp},
+            {"outputSettings", outputSettings}});
 
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly) || file.write(document.toJson()) < 0 || !file.commit()) {
@@ -1655,6 +1669,7 @@ void EditorController::loadProject(const QString& path) {
                     ? object.value("backgroundOpacity").toInt() : 0});
         }
         const auto stamp = root.value("stamp").toObject();
+        const auto outputSettings = root.value("outputSettings").toObject();
         loaded.clear_history();
         timeline_ = std::move(loaded);
         thumbnail_atlases_ = std::move(loadedAtlases);
@@ -1666,11 +1681,26 @@ void EditorController::loadProject(const QString& path) {
         stamp_bar_percent_ = std::clamp(stamp.value("barPercent").toInt(9), 4, 25);
         stamp_opacity_ = std::clamp(stamp.value("opacity").toInt(90), 0, 100);
         stamp_mode_ = std::clamp(stamp.value("mode").toInt(0), 0, 1);
+        if (!outputSettings.isEmpty()) {
+            export_quality_ = std::clamp(outputSettings.value("quality").toInt(1), 0, 2);
+            export_codec_ = std::clamp(outputSettings.value("codec").toInt(0), 0, 2);
+            export_container_ = std::clamp(outputSettings.value("container").toInt(0), 0, 3);
+            export_resolution_ = std::clamp(outputSettings.value("resolution").toInt(0), 0, 3);
+            export_frame_rate_ = std::clamp(outputSettings.value("frameRate").toInt(0), 0, 3);
+            gif_preset_ = std::clamp(outputSettings.value("gifPreset").toInt(1), 0, 3);
+            gif_resolution_ = std::clamp(outputSettings.value("gifResolution").toInt(1), 0, 2);
+            gif_frame_rate_ = std::clamp(outputSettings.value("gifFrameRate").toInt(1), 0, 3);
+            gif_colors_ = std::clamp(outputSettings.value("gifColors").toInt(1), 0, 2);
+            gif_dither_ = std::clamp(outputSettings.value("gifDither").toInt(0), 0, 2);
+            gif_loop_ = outputSettings.value("gifLoop").toBool(true);
+        }
         setSingleSelection(timeline_.clips().empty()
             ? QString{}
             : QString::fromStdString(timeline_.clips().front().id));
         publishTimeline(true);
         emit graphicsChanged();
+        emit exportSettingsChanged();
+        emit gifEstimateChanged();
         setStatus("프로젝트 불러오기 완료");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -1712,7 +1742,7 @@ void EditorController::setExportCodec(int codec) {
 }
 
 void EditorController::setExportContainer(int container) {
-    container = std::clamp(container, 0, 2);
+    container = std::clamp(container, 0, 3);
     if (export_container_ == container) return;
     export_container_ = container;
     emit exportSettingsChanged();
@@ -1730,6 +1760,93 @@ void EditorController::setExportFrameRate(int frameRate) {
     if (export_frame_rate_ == frameRate) return;
     export_frame_rate_ = frameRate;
     emit exportSettingsChanged();
+}
+
+void EditorController::setGifPreset(int preset) {
+    preset = std::clamp(preset, 0, 3);
+    if (preset == 3) {
+        if (gif_preset_ == preset) return;
+        gif_preset_ = preset;
+        emit exportSettingsChanged();
+        emit gifEstimateChanged();
+        return;
+    }
+    gif_preset_ = preset;
+    if (preset == 0) {
+        gif_resolution_ = 0; gif_frame_rate_ = 0; gif_colors_ = 0; gif_dither_ = 0;
+    } else if (preset == 1) {
+        gif_resolution_ = 1; gif_frame_rate_ = 1; gif_colors_ = 1; gif_dither_ = 0;
+    } else {
+        gif_resolution_ = 2; gif_frame_rate_ = 2; gif_colors_ = 2; gif_dither_ = 1;
+    }
+    emit exportSettingsChanged();
+    emit gifEstimateChanged();
+}
+
+void EditorController::setGifResolution(int resolution) {
+    resolution = std::clamp(resolution, 0, 2);
+    if (gif_resolution_ == resolution && gif_preset_ == 3) return;
+    gif_resolution_ = resolution; gif_preset_ = 3; emit exportSettingsChanged(); emit gifEstimateChanged();
+}
+
+void EditorController::setGifFrameRate(int frameRate) {
+    frameRate = std::clamp(frameRate, 0, 3);
+    if (gif_frame_rate_ == frameRate && gif_preset_ == 3) return;
+    gif_frame_rate_ = frameRate; gif_preset_ = 3; emit exportSettingsChanged(); emit gifEstimateChanged();
+}
+
+void EditorController::setGifColors(int colors) {
+    colors = std::clamp(colors, 0, 2);
+    if (gif_colors_ == colors && gif_preset_ == 3) return;
+    gif_colors_ = colors; gif_preset_ = 3; emit exportSettingsChanged(); emit gifEstimateChanged();
+}
+
+void EditorController::setGifDither(int dither) {
+    dither = std::clamp(dither, 0, 2);
+    if (gif_dither_ == dither && gif_preset_ == 3) return;
+    gif_dither_ = dither; gif_preset_ = 3; emit exportSettingsChanged(); emit gifEstimateChanged();
+}
+
+void EditorController::setGifLoop(bool loop) {
+    if (gif_loop_ == loop) return;
+    gif_loop_ = loop;
+    emit exportSettingsChanged();
+    emit gifEstimateChanged();
+}
+
+QString EditorController::gifEstimatedSizeText() const {
+    static constexpr int widths[]{480, 640, 960};
+    static constexpr int heights[]{270, 360, 540};
+    static constexpr int rates[]{8, 12, 15, 20};
+    static constexpr int colorCounts[]{64, 128, 256};
+    static constexpr double colorFactors[]{0.08, 0.13, 0.20};
+    static constexpr double ditherFactors[]{0.75, 1.25, 0.60};
+    const auto seconds = static_cast<double>(durationNs()) / 1'000'000'000.0;
+    const auto pixels = static_cast<double>(widths[gif_resolution_]) * heights[gif_resolution_] *
+        rates[gif_frame_rate_] * seconds;
+    const auto center = pixels / 1'000'000.0 * colorFactors[gif_colors_] *
+        ditherFactors[gif_dither_];
+    const auto low = std::max(0.1, center * 0.55);
+    const auto high = std::max(0.2, center * 1.8);
+    return QStringLiteral("예상 %1~%2 MB · %3초 · %4 fps · %5색")
+        .arg(low, 0, 'f', 1)
+        .arg(high, 0, 'f', 1)
+        .arg(seconds, 0, 'f', 1)
+        .arg(rates[gif_frame_rate_])
+        .arg(colorCounts[gif_colors_]);
+}
+
+int EditorController::gifSizeRisk() const noexcept {
+    static constexpr int widths[]{480, 640, 960};
+    static constexpr int heights[]{270, 360, 540};
+    static constexpr int rates[]{8, 12, 15, 20};
+    static constexpr double colorFactors[]{0.08, 0.13, 0.20};
+    static constexpr double ditherFactors[]{0.75, 1.25, 0.60};
+    const auto seconds = static_cast<double>(durationNs()) / 1'000'000'000.0;
+    const auto upperMb = static_cast<double>(widths[gif_resolution_]) * heights[gif_resolution_] *
+        rates[gif_frame_rate_] * seconds / 1'000'000.0 * colorFactors[gif_colors_] *
+        ditherFactors[gif_dither_] * 1.8;
+    return upperMb >= 50.0 ? 2 : (upperMb >= 20.0 ? 1 : 0);
 }
 
 void EditorController::setStampEnabled(bool enabled) {
@@ -1779,6 +1896,7 @@ void EditorController::setStampMode(int mode) {
 QString EditorController::exportExtension() const {
     if (export_container_ == 1) return QStringLiteral("mkv");
     if (export_container_ == 2) return QStringLiteral("mov");
+    if (export_container_ == 3) return QStringLiteral("gif");
     return QStringLiteral("mp4");
 }
 
@@ -1852,7 +1970,14 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
         return;
     }
     auto output = QFileInfo(url.toLocalFile()).absoluteFilePath();
-    if (QFileInfo(output).suffix().isEmpty()) output += "." + exportExtension();
+    const auto expectedExtension = exportExtension();
+    const QFileInfo requestedOutput(output);
+    if (requestedOutput.suffix().isEmpty()) {
+        output += "." + expectedExtension;
+    } else if (requestedOutput.suffix().compare(expectedExtension, Qt::CaseInsensitive) != 0) {
+        output = requestedOutput.absoluteDir().filePath(
+            requestedOutput.completeBaseName() + "." + expectedExtension);
+    }
     if (QFileInfo::exists(output)) {
         setStatus("기존 파일을 덮어쓰지 않습니다. 새 이름을 선택하세요");
         return;
@@ -1872,6 +1997,24 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     if (export_frame_rate_ == 1) request.output_fps = 60;
     else if (export_frame_rate_ == 2) request.output_fps = 30;
     else if (export_frame_rate_ == 3) request.output_fps = 24;
+    if (export_container_ == 3) {
+        static constexpr int widths[]{480, 640, 960};
+        static constexpr int heights[]{270, 360, 540};
+        static constexpr int rates[]{8, 12, 15, 20};
+        static constexpr int colors[]{64, 128, 256};
+        request.prefer_stream_copy = false;
+        request.output_width = 0;
+        request.output_height = 0;
+        request.output_fps = 0;
+        request.gif = ffgui::GifExportSettings{
+            true,
+            widths[gif_resolution_],
+            heights[gif_resolution_],
+            rates[gif_frame_rate_],
+            colors[gif_colors_],
+            static_cast<ffgui::GifDither>(gif_dither_),
+            gif_loop_};
+    }
     const auto exportSnapshot = timeline_.snapshot();
     if (exportSnapshot.empty()) return;
     last_export_matched_preview_ = false;
@@ -1993,7 +2136,9 @@ void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
         export_stderr_.clear();
         export_process_.setProgram(ffgui::locate_ffmpeg());
         export_process_.setArguments(arguments);
-        export_stage_ = export_stream_copy_active_
+        export_stage_ = export_request_->gif.enabled
+            ? QStringLiteral("GIF 팔레트 최적화")
+            : export_stream_copy_active_
             ? QStringLiteral("무손실 복사")
             : (encoder == ffgui::ExportVideoEncoder::h264_nvenc ||
                encoder == ffgui::ExportVideoEncoder::hevc_nvenc
@@ -2009,7 +2154,9 @@ void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
                           << "duration_ns=" << export_duration_ns_
                           << "output=" << export_output_name_
                           << "log=" << export_log_path_;
-        setStatus(export_stream_copy_active_
+        setStatus(export_request_->gif.enabled
+            ? "내보내는 중 · GIF 팔레트 최적화"
+            : export_stream_copy_active_
             ? "내보내는 중 · 무손실 복사"
             : (encoder == ffgui::ExportVideoEncoder::h264_nvenc ||
                encoder == ffgui::ExportVideoEncoder::hevc_nvenc
@@ -2218,6 +2365,7 @@ void EditorController::publishTimeline(bool resetPlayhead) {
         out_point_ns_ = -1;
     }
     emit timelineChanged();
+    emit gifEstimateChanged();
     emit playheadChanged();
     if (previousIn != in_point_ns_ || previousOut != out_point_ns_) emit rangeChanged();
     emit selectedClipChanged();
