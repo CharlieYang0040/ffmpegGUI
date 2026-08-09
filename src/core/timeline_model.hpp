@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/media_asset.hpp"
+#include "core/color_pipeline.hpp"
 
 #include <cstddef>
 #include <cmath>
@@ -37,6 +38,7 @@ struct Clip final {
     double playback_rate{1.0};
     ClipColor color{};
     TimeNs transition_in{};
+    GradeGraph grade{};
 
     bool operator==(const Clip&) const = default;
 
@@ -60,6 +62,7 @@ struct Clip final {
 struct TimelineSpan final {
     Clip clip;
     std::filesystem::path source_path;
+    std::filesystem::path export_path;
     TimeNs timeline_in{};
     TimeNs timeline_out{};
     bool has_audio{};
@@ -122,6 +125,7 @@ public:
         const std::vector<std::string>& clip_ids,
         double playback_rate);
     void set_clips_color(const std::vector<std::string>& clip_ids, ClipColor color);
+    void set_clip_grade_graph(const std::string& clip_id, GradeGraph graph);
     void set_clip_dissolve(const std::string& clip_id, TimeNs duration);
     void add_caption(CaptionCue caption);
     void add_captions(std::vector<CaptionCue> captions);

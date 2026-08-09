@@ -397,6 +397,12 @@ int main(int argc, char* argv[]) {
         controller.setSelectedClipBrightness(10);
         controller.setSelectedClipContrast(115);
         controller.setSelectedClipSaturation(85);
+        controller.addGradeNode(0);
+        const auto gradeNodes = controller.selectedGradeNodes();
+        if (gradeNodes.size() != 1) return EXIT_FAILURE;
+        const auto gradeId = gradeNodes.front().toMap().value("id").toString();
+        controller.setGradeParameter(gradeId, QStringLiteral("exposure"), 1.25);
+        controller.setGradeNodeMix(gradeId, 80);
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);
@@ -406,6 +412,11 @@ int main(int argc, char* argv[]) {
         controller.loadProject(roundtripProject);
         const auto loadedAudio = controller.clips().front().toMap();
         const auto loadedDissolve = controller.clips().at(dissolveClipIndex).toMap();
+        controller.selectClip(audioClipId);
+        const auto loadedGradeNodes = controller.selectedGradeNodes();
+        const auto loadedGrade = loadedGradeNodes.isEmpty()
+            ? QVariantMap{} : loadedGradeNodes.front().toMap();
+        const auto loadedGradeParameters = loadedGrade.value("parameters").toMap();
         return controller.durationNs() == expectedDuration && expectedDuration > 0 &&
                controller.clips().size() == expectedClipCount &&
                loadedAudio.value("audioGain").toDouble() == 1.25 &&
@@ -433,6 +444,8 @@ int main(int argc, char* argv[]) {
                controller.gifResolution() == 2 && controller.gifFrameRate() == 3 &&
                controller.gifColors() == 2 && controller.gifDither() == 1 &&
                !controller.gifLoop() &&
+               loadedGradeNodes.size() == 1 && loadedGrade.value("mixPercent").toInt() == 80 &&
+               std::abs(loadedGradeParameters.value("exposure").toDouble() - 1.25) < 0.0001 &&
                expectedClipCount == importedClipCount + 4
             ? EXIT_SUCCESS
             : EXIT_FAILURE;

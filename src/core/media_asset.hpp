@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/time.hpp"
+#include "core/media_source.hpp"
 
 #include <cstddef>
 #include <filesystem>
@@ -18,10 +19,24 @@ public:
         TimeNs duration,
         std::vector<TimeNs> frame_pts = {},
         std::vector<float> audio_peaks = {},
-        std::vector<TimeNs> keyframe_pts = {});
+        std::vector<TimeNs> keyframe_pts = {},
+        MediaKind kind = MediaKind::video,
+        std::optional<ImageSequenceDescriptor> image_sequence = std::nullopt,
+        SourceColorDescriptor source_color = {},
+        std::filesystem::path playback_path = {},
+        std::filesystem::path export_path = {});
 
     [[nodiscard]] const std::string& id() const noexcept { return id_; }
     [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
+    [[nodiscard]] const std::filesystem::path& playback_path() const noexcept {
+        return playback_path_;
+    }
+    [[nodiscard]] const std::filesystem::path& export_path() const noexcept { return export_path_; }
+    [[nodiscard]] MediaKind kind() const noexcept { return kind_; }
+    [[nodiscard]] const std::optional<ImageSequenceDescriptor>& image_sequence() const noexcept {
+        return image_sequence_;
+    }
+    [[nodiscard]] const SourceColorDescriptor& source_color() const noexcept { return source_color_; }
     [[nodiscard]] TimeNs duration() const noexcept { return duration_; }
     [[nodiscard]] std::size_t frame_count() const noexcept { return frame_pts_.size(); }
     [[nodiscard]] const std::vector<TimeNs>& frame_pts() const noexcept { return frame_pts_; }
@@ -42,6 +57,11 @@ private:
     std::vector<TimeNs> frame_pts_;
     std::vector<float> audio_peaks_;
     std::vector<TimeNs> keyframe_pts_;
+    MediaKind kind_{MediaKind::video};
+    std::optional<ImageSequenceDescriptor> image_sequence_;
+    SourceColorDescriptor source_color_;
+    std::filesystem::path playback_path_;
+    std::filesystem::path export_path_;
 };
 
 }  // namespace ffgui

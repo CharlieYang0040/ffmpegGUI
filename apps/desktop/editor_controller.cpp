@@ -2,6 +2,7 @@
 #include "ffprobe_analyzer.hpp"
 #include "d3d11_video_item.hpp"
 #include "core/subtitle_srt.hpp"
+#include "core/render_preflight.hpp"
 
 #include <QFile>
 #include <QCoreApplication>
@@ -19,7 +20,11 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QDesktopServices>
+#include <QGuiApplication>
+#include <QClipboard>
 #include <QQuickWindow>
+#include <QSettings>
+#include <QSet>
 #include <QtConcurrentRun>
 
 #include <algorithm>
@@ -52,6 +57,82 @@ ffgui::TimeNs parseTime(const QJsonValue& value, const char* field) {
     return static_cast<ffgui::TimeNs>(parsed);
 }
 
+QString mediaKindName(ffgui::MediaKind kind) {
+    switch (kind) {
+    case ffgui::MediaKind::animated_image: return QStringLiteral("animatedImage");
+    case ffgui::MediaKind::still_image: return QStringLiteral("stillImage");
+    case ffgui::MediaKind::image_sequence: return QStringLiteral("imageSequence");
+    case ffgui::MediaKind::video: return QStringLiteral("video");
+    }
+    return QStringLiteral("video");
+}
+
+ffgui::MediaKind parseMediaKind(const QString& value) {
+    if (value == QStringLiteral("animatedImage")) return ffgui::MediaKind::animated_image;
+    if (value == QStringLiteral("stillImage")) return ffgui::MediaKind::still_image;
+    if (value == QStringLiteral("imageSequence")) return ffgui::MediaKind::image_sequence;
+    return ffgui::MediaKind::video;
+}
+
+QJsonObject serializeGradeGraph(const ffgui::GradeGraph& graph) {
+    QJsonArray nodes;
+    for (const auto& node : graph.nodes()) {
+        QJsonObject parameters;
+        for (const auto& [name, value] : node.parameters) {
+            parameters.insert(QString::fromStdString(name), value);
+        }
+        QJsonObject curves;
+        for (const auto& [name, points] : node.curves) {
+            QJsonArray serializedPoints;
+            for (const auto& point : points) {
+                serializedPoints.push_back(QJsonArray{point.x, point.y});
+            }
+            curves.insert(QString::fromStdString(name), serializedPoints);
+        }
+        nodes.push_back(QJsonObject{
+            {"id", QString::fromStdString(node.id)},
+            {"name", QString::fromStdString(node.name)},
+            {"type", static_cast<int>(node.type)},
+            {"enabled", node.enabled},
+            {"mix", node.mix},
+            {"parameters", parameters},
+            {"curves", curves},
+            {"externalPath", QString::fromStdString(node.external_path)}});
+    }
+    return QJsonObject{{"nodes", nodes}};
+}
+
+ffgui::GradeGraph parseGradeGraph(const QJsonObject& object) {
+    ffgui::GradeGraph graph;
+    for (const auto value : object.value("nodes").toArray()) {
+        const auto serialized = value.toObject();
+        ffgui::GradeNode node;
+        node.id = serialized.value("id").toString().toStdString();
+        node.name = serialized.value("name").toString().toStdString();
+        node.type = static_cast<ffgui::GradeNodeType>(
+            std::clamp(serialized.value("type").toInt(), 0,
+                       static_cast<int>(ffgui::GradeNodeType::power_window)));
+        node.enabled = serialized.value("enabled").toBool(true);
+        node.mix = serialized.value("mix").toDouble(1.0);
+        node.external_path = serialized.value("externalPath").toString().toStdString();
+        const auto parameters = serialized.value("parameters").toObject();
+        for (auto it = parameters.begin(); it != parameters.end(); ++it) {
+            node.parameters.emplace(it.key().toStdString(), it.value().toDouble());
+        }
+        const auto curves = serialized.value("curves").toObject();
+        for (auto it = curves.begin(); it != curves.end(); ++it) {
+            std::vector<ffgui::CurvePoint> points;
+            for (const auto pointValue : it.value().toArray()) {
+                const auto point = pointValue.toArray();
+                if (point.size() == 2) points.push_back({point[0].toDouble(), point[1].toDouble()});
+            }
+            node.curves.emplace(it.key().toStdString(), std::move(points));
+        }
+        graph.add(std::move(node));
+    }
+    return graph;
+}
+
 }  // namespace
 
 EditorController* EditorController::singleton_instance_ = nullptr;
@@ -69,6 +150,13 @@ void EditorController::setSingletonInstance(EditorController* instance) {
 }
 
 EditorController::EditorController(QObject* parent) : QObject(parent) {
+    QSettings settings;
+    output_directory_ = settings.value(QStringLiteral("output/lastDirectory")).toString();
+    if (output_directory_.isEmpty()) {
+        output_directory_ = QDir(
+            QStandardPaths::writableLocation(QStandardPaths::MoviesLocation))
+            .filePath(QStringLiteral("ffmpegGUI Exports"));
+    }
     connect(
         &import_watcher_,
         &QFutureWatcher<std::vector<PendingImport>>::finished,
@@ -436,6 +524,17 @@ QVariantList EditorController::clips() const {
         value.insert("transitionInNs", static_cast<qint64>(span.clip.transition_in));
         const auto* asset = timeline_.asset(span.clip.asset_id);
         value.insert("assetDurationNs", static_cast<qint64>(asset ? asset->duration() : 0));
+        value.insert("mediaKind", asset ? mediaKindName(asset->kind()) : QStringLiteral("video"));
+        QVariantList missingFrameTimes;
+        if (asset != nullptr && asset->image_sequence().has_value()) {
+            const auto& sequence = asset->image_sequence().value();
+            const auto frameDuration = sequence.frame_rate.frame_duration();
+            for (const auto frame : sequence.missing_frames) {
+                missingFrameTimes.push_back(static_cast<qint64>(
+                    static_cast<long long>(frame - sequence.first_frame) * frameDuration));
+            }
+        }
+        value.insert("missingFrameTimesNs", missingFrameTimes);
         value.insert(
             "thumbnailAtlas",
             thumbnail_atlases_.value(QString::fromStdString(span.clip.asset_id)));
@@ -491,6 +590,16 @@ QVariantList EditorController::mediaAssets() const {
             {"name", file.completeBaseName()},
             {"path", file.absoluteFilePath()},
             {"durationNs", static_cast<qint64>(asset->duration())},
+            {"kind", mediaKindName(asset->kind())},
+            {"colorSpace", QString::fromStdString(asset->source_color().input_color_space)},
+            {"colorUnresolved", asset->source_color().unresolved},
+            {"missingFrameCount", asset->image_sequence().has_value()
+                ? static_cast<int>(asset->image_sequence()->missing_frames.size()) : 0},
+            {"sequenceRange", asset->image_sequence().has_value()
+                ? QStringLiteral("%1–%2").arg(asset->image_sequence()->first_frame)
+                    .arg(asset->image_sequence()->last_frame) : QString{}},
+            {"exrLayer", asset->image_sequence().has_value()
+                ? QString::fromStdString(asset->image_sequence()->exr_layer) : QString{}},
             {"thumbnailAtlas", thumbnail_atlases_.value(id)},
             {"useCount", useCount}});
     }
@@ -605,6 +714,141 @@ int EditorController::selectedClipDissolveMs() const noexcept {
     return 0;
 }
 
+int EditorController::missingFrameCount() const {
+    int result = 0;
+    for (const auto& clip : timeline_.clips()) {
+        const auto* asset = timeline_.asset(clip.asset_id);
+        if (asset == nullptr || !asset->image_sequence().has_value()) continue;
+        const auto& sequence = asset->image_sequence().value();
+        const auto frameDuration = sequence.frame_rate.frame_duration();
+        for (const auto frame : sequence.missing_frames) {
+            const auto sourceTime = static_cast<ffgui::TimeNs>(
+                static_cast<long long>(frame - sequence.first_frame) * frameDuration);
+            if (sourceTime >= clip.source_in && sourceTime < clip.source_out()) ++result;
+        }
+    }
+    return result;
+}
+
+QVariantList EditorController::selectedGradeNodes() const {
+    QVariantList result;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return result;
+    for (const auto& node : clip->grade.nodes()) {
+        QVariantMap parameters;
+        for (const auto& [name, value] : node.parameters) {
+            parameters.insert(QString::fromStdString(name), value);
+        }
+        result.push_back(QVariantMap{
+            {"id", QString::fromStdString(node.id)},
+            {"name", QString::fromStdString(node.name)},
+            {"type", static_cast<int>(node.type)},
+            {"enabled", node.enabled},
+            {"mixPercent", static_cast<int>(std::lround(node.mix * 100.0))},
+            {"parameters", parameters},
+            {"lutRepresentable", node.lut_representable()}});
+    }
+    return result;
+}
+
+void EditorController::addGradeNode(int type) {
+    if (selected_clip_id_.isEmpty()) return;
+    type = std::clamp(type, 0, static_cast<int>(ffgui::GradeNodeType::color_warper));
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    try {
+        auto graph = clip->grade;
+        graph.add(ffgui::make_default_grade_node(
+            static_cast<ffgui::GradeNodeType>(type),
+            "grade-" + std::to_string(++generated_grade_node_id_)));
+        timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+        publishTimeline();
+        setStatus("컬러 노드를 추가했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::removeGradeNode(const QString& nodeId) {
+    if (selected_clip_id_.isEmpty()) return;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    try {
+        auto graph = clip->grade;
+        graph.remove(nodeId.toStdString());
+        timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+        publishTimeline();
+        setStatus("컬러 노드를 삭제했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::moveGradeNode(const QString& nodeId, int direction) {
+    if (selected_clip_id_.isEmpty() || direction == 0) return;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    auto graph = clip->grade;
+    const auto& nodes = graph.nodes();
+    const auto found = std::ranges::find(nodes, nodeId.toStdString(), &ffgui::GradeNode::id);
+    if (found == nodes.end()) return;
+    const auto index = static_cast<int>(std::distance(nodes.begin(), found));
+    const auto target = std::clamp(index + direction, 0, static_cast<int>(nodes.size()) - 1);
+    if (target == index) return;
+    graph.move(nodeId.toStdString(), direction > 0
+        ? static_cast<std::size_t>(target + 1) : static_cast<std::size_t>(target));
+    timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+    publishTimeline();
+}
+
+void EditorController::setGradeNodeEnabled(const QString& nodeId, bool enabled) {
+    if (selected_clip_id_.isEmpty()) return;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    auto graph = clip->grade;
+    auto* node = graph.node(nodeId.toStdString());
+    if (node == nullptr || node->enabled == enabled) return;
+    node->enabled = enabled;
+    timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+    publishTimeline();
+}
+
+void EditorController::setGradeNodeMix(const QString& nodeId, int percent) {
+    if (selected_clip_id_.isEmpty()) return;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    auto graph = clip->grade;
+    auto* node = graph.node(nodeId.toStdString());
+    const auto mix = std::clamp(percent, 0, 100) / 100.0;
+    if (node == nullptr || node->mix == mix) return;
+    node->mix = mix;
+    timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+    publishTimeline();
+}
+
+void EditorController::setGradeParameter(
+    const QString& nodeId, const QString& parameter, double value) {
+    if (selected_clip_id_.isEmpty() || parameter.isEmpty() || !std::isfinite(value)) return;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    auto graph = clip->grade;
+    auto* node = graph.node(nodeId.toStdString());
+    if (node == nullptr) return;
+    const auto key = parameter.toStdString();
+    if (node->parameters[key] == value) return;
+    node->parameters[key] = value;
+    node->validate();
+    timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+    publishTimeline();
+}
+
 QString EditorController::selectedCaptionText() const {
     const auto id = selected_caption_id_.toStdString();
     const auto found = std::ranges::find(timeline_.captions(), id, &ffgui::CaptionCue::id);
@@ -665,6 +909,7 @@ void EditorController::loadFiles(const QStringList& paths) {
             QString path;
             std::string asset_id;
             std::string clip_id;
+            std::optional<ffgui::ImageSequenceDescriptor> sequence;
         };
         std::vector<Request> requests;
         for (const auto& path : paths) {
@@ -677,7 +922,8 @@ void EditorController::loadFiles(const QStringList& paths) {
                 assetId = "asset-" + std::to_string(++generated_asset_id_);
             } while (timeline_.asset(assetId) != nullptr);
             requests.push_back(Request{
-                info.absoluteFilePath(), std::move(assetId), makeUniqueClipId("clip")});
+                info.absoluteFilePath(), std::move(assetId), makeUniqueClipId("clip"),
+                std::nullopt});
         }
         if (requests.empty()) {
             return;
@@ -686,15 +932,29 @@ void EditorController::loadFiles(const QStringList& paths) {
         const auto ffmpeg = ffgui::locate_ffmpeg();
         importing_ = true;
         emit importingChanged();
-        setStatus(QString("프레임 분석 중 · %1개 파일").arg(requests.size()));
+        setStatus(QString("미디어 준비 중 · %1개 선택").arg(requests.size()));
         import_watcher_.setFuture(QtConcurrent::run(
             [ffprobe, ffmpeg, requests = std::move(requests)]() mutable {
                 std::vector<PendingImport> result;
                 result.reserve(requests.size());
+                QSet<QString> scheduledSequences;
                 for (auto& request : requests) {
+                    request.sequence = ffgui::detect_image_sequence(
+                        std::filesystem::path(request.path.toStdWString()), {24, 1});
+                    if (request.sequence.has_value()) {
+                        const auto& sequence = request.sequence.value();
+                        const auto sequenceKey = QStringLiteral("%1|%2|%3|%4")
+                            .arg(QString::fromStdWString(sequence.directory.wstring()),
+                                 QString::fromStdString(sequence.prefix),
+                                 QString::fromStdString(sequence.suffix))
+                            .arg(sequence.padding);
+                        if (scheduledSequences.contains(sequenceKey)) continue;
+                        scheduledSequences.insert(sequenceKey);
+                    }
                     const auto clipId = std::move(request.clip_id);
-                    auto analyzed = ffgui::analyze_media(
-                        ffprobe, ffmpeg, request.path, std::move(request.asset_id));
+                    auto analyzed = ffgui::analyze_media_source(
+                        ffprobe, ffmpeg, request.path, std::move(request.asset_id),
+                        std::move(request.sequence));
                     result.push_back(PendingImport{
                         std::move(analyzed.asset),
                         clipId,
@@ -1507,14 +1767,63 @@ void EditorController::saveProject(const QString& path) {
             for (const auto pts : asset.keyframe_pts()) {
                 keyframePts.push_back(timeString(pts));
             }
-            assets.push_back(QJsonObject{
+            QJsonObject assetObject{
                 {"id", QString::fromStdString(id)},
                 {"path", QString::fromStdWString(asset.path().wstring())},
+                {"playbackPath", QString::fromStdWString(asset.playback_path().wstring())},
+                {"exportPath", QString::fromStdWString(asset.export_path().wstring())},
+                {"kind", mediaKindName(asset.kind())},
                 {"durationNs", timeString(asset.duration())},
                 {"framePtsNs", framePts},
                 {"audioPeaks", audioPeaks},
                 {"keyframePtsNs", keyframePts},
-                {"thumbnailAtlas", thumbnail_atlases_.value(QString::fromStdString(id))}});
+                {"thumbnailAtlas", thumbnail_atlases_.value(QString::fromStdString(id))}};
+            const auto& color = asset.source_color();
+            assetObject.insert("sourceColor", QJsonObject{
+                {"inputColorSpace", QString::fromStdString(color.input_color_space)},
+                {"primaries", QString::fromStdString(color.primaries)},
+                {"transfer", QString::fromStdString(color.transfer)},
+                {"matrix", QString::fromStdString(color.matrix)},
+                {"range", QString::fromStdString(color.range)},
+                {"iccProfile", QString::fromStdString(color.icc_profile)},
+                {"unresolved", color.unresolved}});
+            if (asset.image_sequence().has_value()) {
+                const auto& sequence = asset.image_sequence().value();
+                QJsonArray present;
+                QJsonArray missing;
+                QJsonArray channels;
+                QJsonArray availableParts;
+                QJsonArray availableLayers;
+                QJsonArray availableChannels;
+                for (const auto frame : sequence.present_frames) present.push_back(frame);
+                for (const auto frame : sequence.missing_frames) missing.push_back(frame);
+                for (const auto& channel : sequence.channel_mapping) {
+                    channels.push_back(QString::fromStdString(channel));
+                }
+                for (const auto& part : sequence.available_parts) availableParts.push_back(QString::fromStdString(part));
+                for (const auto& layer : sequence.available_layers) availableLayers.push_back(QString::fromStdString(layer));
+                for (const auto& channel : sequence.available_channels) availableChannels.push_back(QString::fromStdString(channel));
+                assetObject.insert("imageSequence", QJsonObject{
+                    {"directory", QString::fromStdWString(sequence.directory.wstring())},
+                    {"prefix", QString::fromStdString(sequence.prefix)},
+                    {"suffix", QString::fromStdString(sequence.suffix)},
+                    {"padding", sequence.padding},
+                    {"firstFrame", sequence.first_frame},
+                    {"lastFrame", sequence.last_frame},
+                    {"fpsNumerator", sequence.frame_rate.numerator},
+                    {"fpsDenominator", sequence.frame_rate.denominator},
+                    {"presentFrames", present},
+                    {"missingFrames", missing},
+                    {"exrPart", QString::fromStdString(sequence.exr_part)},
+                    {"exrView", QString::fromStdString(sequence.exr_view)},
+                    {"exrLayer", QString::fromStdString(sequence.exr_layer)},
+                    {"deep", sequence.deep},
+                    {"availableParts", availableParts},
+                    {"availableLayers", availableLayers},
+                    {"availableChannels", availableChannels},
+                    {"channels", channels}});
+            }
+            assets.push_back(assetObject);
         }
 
         QJsonArray clips;
@@ -1532,7 +1841,8 @@ void EditorController::saveProject(const QString& path) {
                 {"brightness", clip.color.brightness},
                 {"contrast", clip.color.contrast},
                 {"saturation", clip.color.saturation},
-                {"transitionInNs", timeString(clip.transition_in)}});
+                {"transitionInNs", timeString(clip.transition_in)},
+                {"gradeGraph", serializeGradeGraph(clip.grade)}});
         }
         QJsonArray captions;
         for (const auto& caption : timeline_.captions()) {
@@ -1564,20 +1874,38 @@ void EditorController::saveProject(const QString& path) {
             {"gifFrameRate", gif_frame_rate_},
             {"gifColors", gif_colors_},
             {"gifDither", gif_dither_},
-            {"gifLoop", gif_loop_}};
+            {"gifLoop", gif_loop_},
+            {"directory", output_directory_},
+            {"nameTemplate", QStringLiteral("{sequence}_v{version:03}")}};
+        const QJsonObject colorPipeline{
+            {"mode", static_cast<int>(color_pipeline_.mode)},
+            {"ocioConfigPath", QString::fromStdString(color_pipeline_.ocio_config_path)},
+            {"workingSpace", QString::fromStdString(color_pipeline_.working_space)},
+            {"display", QString::fromStdString(color_pipeline_.display)},
+            {"view", QString::fromStdString(color_pipeline_.view)},
+            {"outputSpace", QString::fromStdString(color_pipeline_.output_space)},
+            {"displayTransformBypassed", color_pipeline_.display_transform_bypassed},
+            {"hdrMonitoring", color_pipeline_.hdr_monitoring},
+            {"hdrPeakNits", color_pipeline_.hdr_peak_nits},
+            {"sdrWhiteNits", color_pipeline_.sdr_white_nits},
+            {"maxCll", color_pipeline_.max_cll},
+            {"maxFall", color_pipeline_.max_fall}};
         const QJsonDocument document(QJsonObject{
             {"format", "ffmpegGUI-next"},
-            {"version", 1},
+            {"version", 3},
             {"assets", assets},
             {"clips", clips},
             {"captions", captions},
             {"stamp", stamp},
+            {"colorPipeline", colorPipeline},
             {"outputSettings", outputSettings}});
 
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly) || file.write(document.toJson()) < 0 || !file.commit()) {
             throw std::runtime_error("project file could not be saved atomically");
         }
+        current_project_path_ = QFileInfo(path).absoluteFilePath();
+        emit exportSettingsChanged();
         setStatus("프로젝트 저장 완료");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -1597,9 +1925,10 @@ void EditorController::loadProject(const QString& path) {
         QJsonParseError parseError;
         const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
         const auto root = document.object();
+        const auto version = root.value("version").toInt();
         if (parseError.error != QJsonParseError::NoError ||
             root.value("format").toString() != "ffmpegGUI-next" ||
-            root.value("version").toInt() != 1) {
+            (version < 1 || version > 3)) {
             throw std::runtime_error("unsupported or damaged project file");
         }
 
@@ -1620,13 +1949,70 @@ void EditorController::loadProject(const QString& path) {
             for (const auto pts : object.value("keyframePtsNs").toArray()) {
                 keyframePts.push_back(parseTime(pts, "keyframePtsNs"));
             }
+            std::optional<ffgui::ImageSequenceDescriptor> sequence;
+            const auto sequenceObject = object.value("imageSequence").toObject();
+            if (!sequenceObject.isEmpty()) {
+                ffgui::ImageSequenceDescriptor value;
+                value.directory = std::filesystem::path(
+                    sequenceObject.value("directory").toString().toStdWString());
+                value.prefix = sequenceObject.value("prefix").toString().toStdString();
+                value.suffix = sequenceObject.value("suffix").toString().toStdString();
+                value.padding = sequenceObject.value("padding").toInt();
+                value.first_frame = sequenceObject.value("firstFrame").toInt();
+                value.last_frame = sequenceObject.value("lastFrame").toInt();
+                value.frame_rate = {
+                    sequenceObject.value("fpsNumerator").toInt(24),
+                    sequenceObject.value("fpsDenominator").toInt(1)};
+                for (const auto frame : sequenceObject.value("presentFrames").toArray()) {
+                    value.present_frames.push_back(frame.toInt());
+                }
+                for (const auto frame : sequenceObject.value("missingFrames").toArray()) {
+                    value.missing_frames.push_back(frame.toInt());
+                }
+                value.exr_part = sequenceObject.value("exrPart").toString().toStdString();
+                value.exr_view = sequenceObject.value("exrView").toString().toStdString();
+                value.exr_layer = sequenceObject.value("exrLayer").toString().toStdString();
+                value.deep = sequenceObject.value("deep").toBool(false);
+                for (const auto item : sequenceObject.value("availableParts").toArray()) {
+                    value.available_parts.push_back(item.toString().toStdString());
+                }
+                for (const auto item : sequenceObject.value("availableLayers").toArray()) {
+                    value.available_layers.push_back(item.toString().toStdString());
+                }
+                for (const auto item : sequenceObject.value("availableChannels").toArray()) {
+                    value.available_channels.push_back(item.toString().toStdString());
+                }
+                value.channel_mapping.clear();
+                for (const auto channel : sequenceObject.value("channels").toArray()) {
+                    value.channel_mapping.push_back(channel.toString().toStdString());
+                }
+                if (value.channel_mapping.empty()) value.channel_mapping = {"R", "G", "B", "A"};
+                sequence = std::move(value);
+            }
+            const auto colorObject = object.value("sourceColor").toObject();
+            ffgui::SourceColorDescriptor sourceColor;
+            sourceColor.input_color_space = colorObject.value("inputColorSpace").toString().toStdString();
+            sourceColor.primaries = colorObject.value("primaries").toString().toStdString();
+            sourceColor.transfer = colorObject.value("transfer").toString().toStdString();
+            sourceColor.matrix = colorObject.value("matrix").toString().toStdString();
+            sourceColor.range = colorObject.value("range").toString().toStdString();
+            sourceColor.icc_profile = colorObject.value("iccProfile").toString().toStdString();
+            sourceColor.unresolved = colorObject.value("unresolved").toBool(false);
+            const auto sourcePath = object.value("path").toString();
+            const auto playbackPath = object.value("playbackPath").toString(sourcePath);
+            const auto exportPath = object.value("exportPath").toString(sourcePath);
             loaded.add_asset(ffgui::MediaAsset{
                 assetId.toStdString(),
-                std::filesystem::path(object.value("path").toString().toStdWString()),
+                std::filesystem::path(sourcePath.toStdWString()),
                 parseTime(object.value("durationNs"), "durationNs"),
                 std::move(framePts),
                 std::move(audioPeaks),
-                std::move(keyframePts)});
+                std::move(keyframePts),
+                parseMediaKind(object.value("kind").toString()),
+                std::move(sequence),
+                std::move(sourceColor),
+                std::filesystem::path(playbackPath.toStdWString()),
+                std::filesystem::path(exportPath.toStdWString())});
             const auto atlas = object.value("thumbnailAtlas").toString();
             if (QFileInfo(atlas).isFile()) {
                 loadedAtlases.insert(assetId, atlas);
@@ -1634,7 +2020,7 @@ void EditorController::loadProject(const QString& path) {
         }
         for (const auto value : root.value("clips").toArray()) {
             const auto object = value.toObject();
-            loaded.append_clip(ffgui::Clip{
+            auto clip = ffgui::Clip{
                 object.value("id").toString().toStdString(),
                 object.value("assetId").toString().toStdString(),
                 parseTime(object.value("sourceInNs"), "sourceInNs"),
@@ -1653,7 +2039,9 @@ void EditorController::loadProject(const QString& path) {
                     object.contains("contrast") ? object.value("contrast").toDouble() : 1.0,
                     object.contains("saturation") ? object.value("saturation").toDouble() : 1.0},
                 object.contains("transitionInNs")
-                    ? parseTime(object.value("transitionInNs"), "transitionInNs") : 0});
+                    ? parseTime(object.value("transitionInNs"), "transitionInNs") : 0};
+            clip.grade = parseGradeGraph(object.value("gradeGraph").toObject());
+            loaded.append_clip(std::move(clip));
         }
         for (const auto value : root.value("captions").toArray()) {
             const auto object = value.toObject();
@@ -1670,6 +2058,7 @@ void EditorController::loadProject(const QString& path) {
         }
         const auto stamp = root.value("stamp").toObject();
         const auto outputSettings = root.value("outputSettings").toObject();
+        const auto colorPipeline = root.value("colorPipeline").toObject();
         loaded.clear_history();
         timeline_ = std::move(loaded);
         thumbnail_atlases_ = std::move(loadedAtlases);
@@ -1693,13 +2082,37 @@ void EditorController::loadProject(const QString& path) {
             gif_colors_ = std::clamp(outputSettings.value("gifColors").toInt(1), 0, 2);
             gif_dither_ = std::clamp(outputSettings.value("gifDither").toInt(0), 0, 2);
             gif_loop_ = outputSettings.value("gifLoop").toBool(true);
+            if (version >= 2) {
+                const auto savedDirectory = outputSettings.value("directory").toString();
+                if (!savedDirectory.isEmpty()) output_directory_ = savedDirectory;
+            }
         }
+        color_pipeline_ = {};
+        if (!colorPipeline.isEmpty()) {
+            color_pipeline_.mode = static_cast<ffgui::ColorPipelineMode>(
+                std::clamp(colorPipeline.value("mode").toInt(0), 0, 2));
+            color_pipeline_.ocio_config_path = colorPipeline.value("ocioConfigPath").toString().toStdString();
+            color_pipeline_.working_space = colorPipeline.value("workingSpace").toString("ACEScg").toStdString();
+            color_pipeline_.display = colorPipeline.value("display").toString().toStdString();
+            color_pipeline_.view = colorPipeline.value("view").toString().toStdString();
+            color_pipeline_.output_space = colorPipeline.value("outputSpace").toString().toStdString();
+            color_pipeline_.display_transform_bypassed = colorPipeline.value("displayTransformBypassed").toBool(false);
+            color_pipeline_.hdr_monitoring = colorPipeline.value("hdrMonitoring").toBool(false);
+            color_pipeline_.hdr_peak_nits = colorPipeline.value("hdrPeakNits").toInt(1000);
+            color_pipeline_.sdr_white_nits = colorPipeline.value("sdrWhiteNits").toInt(203);
+            color_pipeline_.max_cll = colorPipeline.value("maxCll").toInt(1000);
+            color_pipeline_.max_fall = colorPipeline.value("maxFall").toInt(400);
+            color_pipeline_.validate();
+        }
+        current_project_path_ = QFileInfo(path).absoluteFilePath();
+        QSettings().setValue(QStringLiteral("output/lastDirectory"), output_directory_);
         setSingleSelection(timeline_.clips().empty()
             ? QString{}
             : QString::fromStdString(timeline_.clips().front().id));
         publishTimeline(true);
         emit graphicsChanged();
         emit exportSettingsChanged();
+        emit colorPipelineChanged();
         emit gifEstimateChanged();
         setStatus("프로젝트 불러오기 완료");
     } catch (const std::exception& error) {
@@ -1725,6 +2138,186 @@ void EditorController::loadProjectUrl(const QUrl& url) {
 
 bool EditorController::outputExists(const QUrl& url) const {
     return url.isLocalFile() && QFileInfo::exists(url.toLocalFile());
+}
+
+QString EditorController::sequenceName() const {
+    QString name;
+    if (!current_project_path_.isEmpty()) {
+        name = QFileInfo(current_project_path_).completeBaseName();
+    } else if (!timeline_.clips().empty()) {
+        const auto* asset = timeline_.asset(timeline_.clips().front().asset_id);
+        if (asset != nullptr) name = QFileInfo(QString::fromStdWString(asset->path().wstring())).completeBaseName();
+    }
+    if (name.isEmpty()) name = QStringLiteral("sequence");
+    static const QRegularExpression invalid(QStringLiteral(R"([<>:"/\\|?*\x00-\x1f])"));
+    name.replace(invalid, QStringLiteral("_"));
+    name = name.trimmed();
+    while (name.endsWith('.') || name.endsWith(' ')) name.chop(1);
+    return name.isEmpty() ? QStringLiteral("sequence") : name;
+}
+
+QString EditorController::nextOutputPath() const {
+    if (output_directory_.isEmpty()) return {};
+    const auto base = sequenceName();
+    const auto suffix = exportExtension();
+    const QDir directory(output_directory_);
+    for (int version = 1; version <= 9999; ++version) {
+        const auto candidate = directory.filePath(
+            QStringLiteral("%1_v%2.%3").arg(base).arg(version, 3, 10, QLatin1Char('0')).arg(suffix));
+        if (!QFileInfo::exists(candidate)) return QFileInfo(candidate).absoluteFilePath();
+    }
+    return {};
+}
+
+QString EditorController::nextOutputName() const {
+    return QFileInfo(nextOutputPath()).fileName();
+}
+
+QString EditorController::outputDirectoryError() const {
+    if (output_directory_.isEmpty()) return QStringLiteral("출력 폴더가 지정되지 않았습니다");
+    const QFileInfo info(output_directory_);
+    if (info.exists() && !info.isDir()) return QStringLiteral("출력 경로가 폴더가 아닙니다");
+    if (info.exists() && !info.isWritable()) return QStringLiteral("출력 폴더에 쓸 수 없습니다");
+    auto parent = info.absoluteDir();
+    while (!parent.exists() && parent.cdUp()) {}
+    if (!info.exists() && (!parent.exists() || !QFileInfo(parent.absolutePath()).isWritable())) {
+        return QStringLiteral("출력 폴더를 만들 수 없습니다");
+    }
+    if (nextOutputPath().isEmpty()) return QStringLiteral("사용 가능한 버전 이름이 없습니다");
+    return {};
+}
+
+bool EditorController::outputDirectoryValid() const {
+    return outputDirectoryError().isEmpty();
+}
+
+bool EditorController::ensureOutputDirectory() {
+    if (output_directory_.isEmpty() || !QDir().mkpath(output_directory_)) {
+        setStatus("출력 폴더를 만들 수 없습니다");
+        emit exportSettingsChanged();
+        return false;
+    }
+    const auto error = outputDirectoryError();
+    if (!error.isEmpty()) {
+        setStatus(error);
+        emit exportSettingsChanged();
+        return false;
+    }
+    return true;
+}
+
+void EditorController::setOutputDirectoryUrl(const QUrl& url) {
+    if (!url.isLocalFile()) {
+        setStatus("로컬 출력 폴더만 사용할 수 있습니다");
+        return;
+    }
+    const auto directory = QFileInfo(url.toLocalFile()).absoluteFilePath();
+    if (!QDir().mkpath(directory) || !QFileInfo(directory).isDir()) {
+        setStatus("출력 폴더를 만들 수 없습니다");
+        return;
+    }
+    output_directory_ = QDir::cleanPath(directory);
+    QSettings().setValue(QStringLiteral("output/lastDirectory"), output_directory_);
+    emit exportSettingsChanged();
+    setStatus("출력 폴더를 변경했습니다");
+}
+
+void EditorController::openOutputDirectory() {
+    if (!ensureOutputDirectory()) return;
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(output_directory_))) {
+        setStatus("출력 폴더를 열 수 없습니다");
+    }
+}
+
+void EditorController::copyOutputDirectory() {
+    if (output_directory_.isEmpty()) return;
+    QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(output_directory_));
+    setStatus("출력 경로를 복사했습니다");
+}
+
+QString EditorController::exportElapsedText() const {
+    if (!exporting_ || !export_elapsed_timer_.isValid()) return QStringLiteral("--:--");
+    const auto seconds = export_elapsed_timer_.elapsed() / 1000;
+    return QStringLiteral("%1:%2").arg(seconds / 60, 2, 10, QLatin1Char('0'))
+        .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+}
+
+QString EditorController::exportRemainingText() const {
+    if (!exporting_ || export_progress_ <= 0.001 || !export_elapsed_timer_.isValid()) {
+        return QStringLiteral("계산 중");
+    }
+    const auto elapsed = export_elapsed_timer_.elapsed() / 1000.0;
+    const auto remaining = static_cast<qint64>(std::max(0.0, elapsed * (1.0 - export_progress_) / export_progress_));
+    return QStringLiteral("%1:%2").arg(remaining / 60, 2, 10, QLatin1Char('0'))
+        .arg(remaining % 60, 2, 10, QLatin1Char('0'));
+}
+
+QString EditorController::colorPipelineSummary() const {
+    if (color_pipeline_.mode == ffgui::ColorPipelineMode::legacy) {
+        return QStringLiteral("현재 색 유지 · Legacy");
+    }
+    if (color_pipeline_.mode == ffgui::ColorPipelineMode::aces_managed) {
+        return color_pipeline_.hdr_monitoring
+            ? QStringLiteral("ACEScg · HDR 모니터") : QStringLiteral("ACEScg · SDR 모니터");
+    }
+    return QFileInfo(QString::fromStdString(color_pipeline_.ocio_config_path)).fileName();
+}
+
+void EditorController::setColorPipelineMode(int mode) {
+    mode = std::clamp(mode, 0, 2);
+    const auto value = static_cast<ffgui::ColorPipelineMode>(mode);
+    if (value == ffgui::ColorPipelineMode::custom_ocio &&
+        color_pipeline_.ocio_config_path.empty()) {
+        setStatus("사용자 OCIO 설정 파일을 먼저 선택하세요");
+        return;
+    }
+    if (color_pipeline_.mode == value) return;
+    color_pipeline_.mode = value;
+    emit colorPipelineChanged();
+    setStatus(value == ffgui::ColorPipelineMode::legacy
+        ? "기존 색상을 유지합니다"
+        : value == ffgui::ColorPipelineMode::aces_managed
+            ? "ACES 2.0 · ACEScg 컬러 관리를 사용합니다"
+            : "사용자 OCIO 컬러 관리를 사용합니다");
+}
+
+void EditorController::setCustomOcioUrl(const QUrl& url) {
+    if (!url.isLocalFile()) {
+        setStatus("로컬 OCIO 설정 파일만 사용할 수 있습니다");
+        return;
+    }
+    const QFileInfo file(url.toLocalFile());
+    const auto suffix = file.suffix().toLower();
+    if (!file.isFile() || (suffix != "ocio" && suffix != "ocioz")) {
+        setStatus(".ocio 또는 .ocioz 설정 파일을 선택하세요");
+        return;
+    }
+    color_pipeline_.ocio_config_path = file.absoluteFilePath().toStdString();
+    color_pipeline_.mode = ffgui::ColorPipelineMode::custom_ocio;
+    emit colorPipelineChanged();
+    setStatus("사용자 OCIO 설정을 적용했습니다");
+}
+
+void EditorController::setHdrMonitoring(bool enabled) {
+    if (color_pipeline_.hdr_monitoring == enabled) return;
+    color_pipeline_.hdr_monitoring = enabled;
+    emit colorPipelineChanged();
+    setStatus(enabled ? "HDR 모니터 출력을 요청했습니다" : "SDR 모니터 출력을 사용합니다");
+}
+
+void EditorController::setHdrPeakNits(int nits) {
+    nits = std::clamp(nits, 100, 10'000);
+    if (color_pipeline_.hdr_peak_nits == nits) return;
+    color_pipeline_.hdr_peak_nits = nits;
+    color_pipeline_.max_cll = nits;
+    emit colorPipelineChanged();
+}
+
+void EditorController::setSdrWhiteNits(int nits) {
+    nits = std::clamp(nits, 80, 500);
+    if (color_pipeline_.sdr_white_nits == nits) return;
+    color_pipeline_.sdr_white_nits = nits;
+    emit colorPipelineChanged();
 }
 
 void EditorController::setExportQuality(int quality) {
@@ -1960,6 +2553,24 @@ QUrl EditorController::uniqueOutputUrl(const QUrl& url) const {
     return {};
 }
 
+void EditorController::exportTimeline() {
+    if (exporting_) {
+        setStatus("이미 내보내는 중입니다");
+        return;
+    }
+    if (timeline_.clips().empty()) {
+        setStatus("내보낼 타임라인이 없습니다");
+        return;
+    }
+    if (!ensureOutputDirectory()) return;
+    const auto output = nextOutputPath();
+    if (output.isEmpty()) {
+        setStatus("출력 파일 이름을 만들 수 없습니다");
+        return;
+    }
+    exportTimelineUrl(QUrl::fromLocalFile(output));
+}
+
 void EditorController::exportTimelineUrl(const QUrl& url) {
     if (exporting_) {
         setStatus("이미 내보내는 중입니다");
@@ -1980,6 +2591,17 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     }
     if (QFileInfo::exists(output)) {
         setStatus("기존 파일을 덮어쓰지 않습니다. 새 이름을 선택하세요");
+        return;
+    }
+
+    const auto preflight = ffgui::build_render_preflight(timeline_, color_pipeline_);
+    if (!preflight.can_render()) {
+        const auto blocker = std::ranges::find(
+            preflight.issues, ffgui::PreflightSeverity::blocker,
+            &ffgui::PreflightIssue::severity);
+        setStatus(blocker == preflight.issues.end()
+            ? QStringLiteral("출력 사전 검사를 통과하지 못했습니다")
+            : QStringLiteral("출력 중단: %1").arg(QString::fromStdString(blocker->message)));
         return;
     }
 
@@ -2021,7 +2643,7 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     for (const auto& span : exportSnapshot) {
         const auto* asset = timeline_.asset(span.clip.asset_id);
         request.clips.push_back(ffgui::ExportClipInput{
-            span.source_path,
+            span.export_path,
             span.clip.source_in,
             span.clip.duration,
             asset != nullptr && !asset->audio_peaks().empty(),
@@ -2073,6 +2695,7 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     export_cancelled_ = false;
     last_export_stream_copy_ = false;
     export_progress_ = 0;
+    export_elapsed_timer_.start();
     export_stage_ = "출력 준비 중";
     export_output_name_ = QFileInfo(output).fileName();
     const auto logDirectory = QDir(

@@ -1,6 +1,6 @@
 # 개발 계획
 
-최종 갱신: 2026-08-03
+최종 갱신: 2026-08-09
 
 ## 0. 시작 기준선
 
@@ -219,3 +219,47 @@
 - [x] 타임라인 길이 기반 예상 용량 범위와 20MB 주의·50MB 확인 경고
 - [x] 오디오 제거 및 `palettegen`/`paletteuse` 2단계 팔레트 최적화
 - [x] 480×270·8fps·64색 실제 GIF 출력과 10MB 회귀 상한 검증
+
+## 2026-08-09 CG 미디어·컬러 파이프라인 대개편
+
+고정 원칙: 새 프로젝트와 마이그레이션 프로젝트 모두 `Legacy`가 기본이며, 사용자가
+명시적으로 활성화하기 전에는 ACES/OCIO 변환을 적용하지 않는다.
+
+### 완료된 기반
+
+- [x] 프로젝트별 출력 폴더, 최근 폴더 상속, `시퀀스이름_v001` 원자적 자동 증가
+- [x] 저장 대화상자 없는 즉시 출력과 출력 노드의 경로 변경·열기·복사·진행 정보
+- [x] 프로젝트 v1/v2 → v3 무손실 마이그레이션과 출력/컬러/그레이드 설정 저장
+- [x] Video/AnimatedImage/StillImage/ImageSequence 통합 자산 모델
+- [x] GIF 실제 FFprobe PTS를 보존하는 VFR 프레임 시간표
+- [x] 음수·1001 시작·혼합 범위·누락 프레임 이미지 시퀀스 탐지
+- [x] 누락 프레임 미리보기 슬레이트와 출력용 nearest-frame 대체 소스 분리
+- [x] 반 해상도 intra H.264 재생 프록시와 원본 해상도 10-bit 4:4:4 출력 소스 분리
+- [x] OpenImageIO 3.1/OpenEXR 멀티파트·레이어·AOV·알파 메타데이터 수집
+- [x] Deep EXR 명시적 차단과 ACEScg/sRGB 기본 입력 규칙
+- [x] OpenColorIO 2.5.2와 ACES 2.0 Studio Config 의존성 잠금
+- [x] Legacy/ACES Managed/Custom OCIO 프로젝트 모델과 HDR 메타데이터 설정 기반
+- [x] 클립별 순서형 GradeGraph, 노드 추가·삭제·순서·bypass·mix·기본 파라미터 UI
+- [x] 미디어 오프라인·누락·관리형 입력 색공간 미확정 출력 사전 검사
+- [x] 개발 Debug EXE의 Qt/GStreamer 런타임 자동 배치와 탐색기 직접 실행
+
+### 다음 구현 순서
+
+1. OpenImageIO 프레임 소스에서 선택 EXR part/view/AOV를 실제 픽셀로 읽고 캐시 증분 갱신
+2. OCIO CPU 기준·GPU shader를 공유하는 float 렌더 스테이지를 GES 전환 전단에 연결
+3. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
+4. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
+5. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
+6. qualifier/window/tracking과 shot still/reference 비교
+
+### 현재 완료 경계
+
+- 컬러 모델과 OCIO/OIIO 엔진은 빌드·저장·검증되지만, GradeGraph의 신규 고급 노드는
+  아직 GES 미리보기/FFmpeg 출력 픽셀 경로에 적용하지 않는다. 기존 밝기·대비·채도만
+  기존 공통 경로로 동작한다.
+- HDR 설정은 프로젝트 계약까지 구현되었고 scRGB/PQ 스왑체인 전환은 미구현이다.
+- EXR AOV 선택 정보는 저장되지만 선택 채널의 실제 렌더 소스 생성은 다음 단계다.
+
+검증 기준선: Debug 빌드, 코어 43/43와 타임라인 테스트 통과. 누락 1장을 포함한
+1001–1048 PNG 시퀀스를 별도 환경 변수 없이 Debug EXE에서 가져와 프로젝트 v3
+저장·재로드했으며 `proxy-v4.mkv`와 `export-nearest-v3.mov` 생성을 확인했다.

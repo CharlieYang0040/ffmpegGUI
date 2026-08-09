@@ -257,6 +257,28 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                 transitionColor));
         }
 
+        for (const auto& value : visibleClips) {
+            const auto clip = value.toMap();
+            const auto missing = clip.value("missingFrameTimesNs").toList();
+            if (missing.isEmpty()) continue;
+            const auto clipStart = clip.value("timelineInNs").toLongLong();
+            const auto sourceIn = clip.value("sourceInNs").toLongLong();
+            const auto sourceDuration = clip.value("sourceDurationNs").toLongLong();
+            const auto playbackRate = clip.value("playbackRate", 1.0).toDouble();
+            for (const auto& missingValue : missing) {
+                const auto sourceTime = missingValue.toLongLong();
+                if (sourceTime < sourceIn || sourceTime >= sourceIn + sourceDuration) continue;
+                const auto timelineTime = clipStart + static_cast<qint64>(std::llround(
+                    static_cast<double>(sourceTime - sourceIn) / playbackRate));
+                if (timelineTime < viewStart || timelineTime >= viewEnd) continue;
+                const auto x = kHorizontalPadding + contentWidth *
+                    static_cast<qreal>(timelineTime - viewStart) /
+                    static_cast<qreal>(viewDuration);
+                contentRoot->appendChildNode(new QSGSimpleRectNode(
+                    QRectF(x - 1.0, kTrackTop, 2.0, trackHeight), QColor("#ff4058")));
+            }
+        }
+
         std::vector<QPointF> waveformLines;
         const auto waveformCenter = kTrackTop + trackHeight * 0.62;
         const auto waveformAmplitude = trackHeight * 0.28;

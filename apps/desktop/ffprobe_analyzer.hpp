@@ -18,5 +18,11 @@ struct AnalyzedMedia final {
     const QString& ffmpeg_path,
     const QString& media_path,
     std::string asset_id);
+[[nodiscard]] AnalyzedMedia analyze_media_source(
+    const QString& ffprobe_path,
+    const QString& ffmpeg_path,
+    const QString& media_path,
+    std::string asset_id,
+    std::optional<ImageSequenceDescriptor> sequence = std::nullopt);
 
 }  // namespace ffgui

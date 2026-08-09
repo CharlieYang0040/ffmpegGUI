@@ -26,8 +26,10 @@ ApplicationWindow {
     property bool showEffectsNode: false
     property bool showGraphicsNode: false
     property bool showGlobalTrimNode: false
+    property bool showColorManagementNode: false
     property bool showOutputSettingsNode: false
     property string expandedNode: ""
+    property string expandedGradeNode: ""
 
     function durationText(nanoseconds) {
         const totalSeconds = Math.max(0, Math.floor(nanoseconds / 1000000000))
@@ -37,10 +39,17 @@ ApplicationWindow {
     }
 
     function requestExport() {
+        if (EditorController.missingFrameCount > 0)
+            missingFrameWarning.open()
+        else
+            continueExport()
+    }
+
+    function continueExport() {
         if (EditorController.exportContainer === 3 && EditorController.gifSizeRisk === 2)
             gifSizeWarning.open()
         else
-            exportDialog.open()
+            EditorController.exportTimeline()
     }
 
     palette.window: "#111419"
@@ -176,7 +185,12 @@ ApplicationWindow {
         id: mediaDialog
         title: "영상 추가"
         fileMode: FileDialog.OpenFiles
-        nameFilters: ["영상 파일 (*.mp4 *.mkv *.mov *.avi *.webm)", "모든 파일 (*)"]
+        nameFilters: [
+            "지원 미디어 (*.mp4 *.mkv *.mov *.avi *.webm *.gif *.png *.jpg *.jpeg *.tif *.tiff *.tga *.bmp *.webp *.dpx *.hdr *.exr)",
+            "영상 (*.mp4 *.mkv *.mov *.avi *.webm)",
+            "이미지·시퀀스 (*.gif *.png *.jpg *.jpeg *.tif *.tiff *.tga *.bmp *.webp *.dpx *.hdr *.exr)",
+            "모든 파일 (*)"
+        ]
         onAccepted: EditorController.loadUrls(selectedFiles)
     }
     FileDialog {
@@ -194,25 +208,18 @@ ApplicationWindow {
         nameFilters: ["ffmpegGUI Next 프로젝트 (*.ffnext)"]
         onAccepted: EditorController.saveProjectUrl(selectedFile)
     }
+    FolderDialog {
+        id: outputFolderDialog
+        title: "출력 폴더 선택"
+        currentFolder: "file:///" + EditorController.outputDirectory.replace(/\\/g, "/")
+        onAccepted: EditorController.setOutputDirectoryUrl(selectedFolder)
+    }
     FileDialog {
-        id: exportDialog
-        title: "영상 내보내기"
-        fileMode: FileDialog.SaveFile
-        defaultSuffix: EditorController.exportExtension()
-        nameFilters: EditorController.exportContainer === 1
-                     ? ["Matroska 영상 (*.mkv)"]
-                     : EditorController.exportContainer === 2
-                       ? ["QuickTime 영상 (*.mov)"]
-                       : EditorController.exportContainer === 3
-                         ? ["애니메이션 GIF (*.gif)"] : ["MP4 영상 (*.mp4)"]
-        onAccepted: {
-            if (EditorController.outputExists(selectedFile)) {
-                overwriteDialog.suggestedUrl = EditorController.uniqueOutputUrl(selectedFile)
-                overwriteDialog.open()
-            } else {
-                EditorController.exportTimelineUrl(selectedFile)
-            }
-        }
+        id: ocioConfigDialog
+        title: "OpenColorIO 설정 선택"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["OpenColorIO 설정 (*.ocio *.ocioz)"]
+        onAccepted: EditorController.setCustomOcioUrl(selectedFile)
     }
     FileDialog {
         id: importSrtDialog
@@ -230,34 +237,32 @@ ApplicationWindow {
         onAccepted: EditorController.exportSrtUrl(selectedFile)
     }
     Dialog {
-        id: overwriteDialog
-        property url suggestedUrl
-        anchors.centerIn: parent
-        modal: true
-        title: "같은 이름의 파일이 있습니다"
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        onAccepted: EditorController.exportTimelineUrl(suggestedUrl)
-
-        Label {
-            width: 420
-            wrapMode: Text.WordWrap
-            text: "기존 파일은 유지하고 새 번호를 붙여 저장합니다.\n\n"
-                  + overwriteDialog.suggestedUrl.toString().split('/').pop()
-        }
-    }
-    Dialog {
         id: gifSizeWarning
         anchors.centerIn: parent
         modal: true
         title: "GIF 예상 용량이 큽니다"
         standardButtons: Dialog.Ok | Dialog.Cancel
-        onAccepted: exportDialog.open()
+        onAccepted: EditorController.exportTimeline()
         Label {
             width: 430
             wrapMode: Text.WordWrap
             text: EditorController.gifEstimatedSizeText +
                   "\n\nGIF는 장면의 움직임에 따라 예상보다 더 커질 수 있습니다. " +
                   "계속 저장하려면 확인을 누르고, 취소한 뒤 크기·FPS·색상 수를 낮출 수 있습니다."
+        }
+    }
+    Dialog {
+        id: missingFrameWarning
+        anchors.centerIn: parent
+        modal: true
+        title: "이미지 시퀀스에 누락 프레임이 있습니다"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onAccepted: root.continueExport()
+        Label {
+            width: 440
+            wrapMode: Text.WordWrap
+            text: "현재 출력 구간에 누락 프레임이 " + EditorController.missingFrameCount
+                  + "개 있습니다. 미리보기의 MISSING FRAME 화면 대신 시간상 가장 가까운 정상 프레임으로 대체해 출력합니다."
         }
     }
 
@@ -424,7 +429,7 @@ ApplicationWindow {
                             required property var modelData
                             property string assetId: modelData.id
                             width: ListView.view.width
-                            height: 68
+                            height: 78
                             radius: 7
                             color: dragHandler.active ? "#2a3545" : "#1d232b"
                             border.color: dragHandler.active ? "#6d9cff" : "#2a323d"
@@ -463,8 +468,30 @@ ApplicationWindow {
                                     Label {
                                         text: root.durationText(mediaCard.modelData.durationNs)
                                               + "  ·  " + mediaCard.modelData.useCount + "회 사용"
+                                              + (mediaCard.modelData.sequenceRange.length > 0
+                                                 ? "  ·  " + mediaCard.modelData.sequenceRange : "")
                                         color: "#8994a3"
                                         font.pixelSize: 11
+                                    }
+                                    Label {
+                                        visible: mediaCard.modelData.kind !== "video"
+                                        text: (mediaCard.modelData.kind === "imageSequence" ? "이미지 시퀀스"
+                                              : mediaCard.modelData.kind === "animatedImage" ? "애니메이션 이미지"
+                                              : "스틸 이미지")
+                                              + (mediaCard.modelData.missingFrameCount > 0
+                                                 ? "  ·  누락 " + mediaCard.modelData.missingFrameCount + "프레임" : "")
+                                              + (mediaCard.modelData.exrLayer.length > 0
+                                                 ? "  ·  " + mediaCard.modelData.exrLayer : "")
+                                        color: mediaCard.modelData.missingFrameCount > 0 ? "#ff7c88" : "#8ca2bb"
+                                        font.pixelSize: 10
+                                    }
+                                    Label {
+                                        visible: mediaCard.modelData.colorUnresolved || mediaCard.modelData.colorSpace.length > 0
+                                        text: mediaCard.modelData.colorUnresolved
+                                              ? "⚠ 입력 색공간 확인 필요"
+                                              : mediaCard.modelData.colorSpace
+                                        color: mediaCard.modelData.colorUnresolved ? "#ffb45e" : "#8193a8"
+                                        font.pixelSize: 10
                                     }
                                 }
                                 AppButton {
@@ -757,7 +784,7 @@ ApplicationWindow {
                         ComboBox {
                             id: nodePicker
                             Layout.fillWidth: true
-                            model: ["출력", "오디오", "이펙트", "문구·스탬프", "전체 트림", "출력 설정"]
+                            model: ["출력", "오디오", "이펙트", "문구·스탬프", "전체 트림", "컬러 관리", "출력 설정"]
                         }
                         AppButton {
                             text: "+ 추가"
@@ -768,6 +795,7 @@ ApplicationWindow {
                                 else if (nodePicker.currentIndex === 2) root.showEffectsNode = true
                                 else if (nodePicker.currentIndex === 3) root.showGraphicsNode = true
                                 else if (nodePicker.currentIndex === 4) root.showGlobalTrimNode = true
+                                else if (nodePicker.currentIndex === 5) root.showColorManagementNode = true
                                 else root.showOutputSettingsNode = true
                             }
                         }
@@ -778,10 +806,38 @@ ApplicationWindow {
                         nodeKey: "output"
                         title: "출력"
                         summary: EditorController.exporting
-                                 ? EditorController.exportStage : "내보내기 실행과 진행 상황"
+                                 ? EditorController.exportStage : EditorController.nextOutputName
                         onRemoveRequested: {
                             root.showOutputNode = false
                             if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: EditorController.outputDirectory
+                            elide: Text.ElideMiddle
+                            color: EditorController.outputDirectoryValid ? "#aeb9c7" : "#ff8990"
+                            ToolTip.visible: outputPathHover.hovered
+                            ToolTip.text: EditorController.outputDirectory
+                            HoverHandler { id: outputPathHover }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: EditorController.outputDirectoryValid
+                                  ? EditorController.nextOutputName
+                                  : EditorController.outputDirectoryError
+                            color: EditorController.outputDirectoryValid ? "#7f91a6" : "#ff8990"
+                            font.pixelSize: 11
+                            elide: Text.ElideMiddle
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            AppButton { text: "폴더 변경"; compact: true; onClicked: outputFolderDialog.open() }
+                            AppButton {
+                                text: "열기"; compact: true
+                                enabled: EditorController.outputDirectoryValid
+                                onClicked: EditorController.openOutputDirectory()
+                            }
+                            AppButton { text: "복사"; compact: true; onClicked: EditorController.copyOutputDirectory() }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -794,6 +850,13 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             visible: EditorController.exporting
                             from: 0; to: 1; value: EditorController.exportProgress
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: EditorController.exporting
+                            Label { text: "경과 " + EditorController.exportElapsedText; color: "#8f9dad"; font.pixelSize: 11 }
+                            Item { Layout.fillWidth: true }
+                            Label { text: "남은 시간 " + EditorController.exportRemainingText; color: "#8f9dad"; font.pixelSize: 11 }
                         }
                         AppButton {
                             Layout.fillWidth: true
@@ -869,7 +932,15 @@ ApplicationWindow {
                             root.showEffectsNode = false
                             if (root.expandedNode === nodeKey) root.expandedNode = ""
                         }
-                        Label { text: "Color Grading"; font.bold: true }
+                        Label { text: "클립 컬러 그레이드"; font.bold: true }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: EditorController.selectedClipIds.length === 1
+                                  ? "노드는 위에서 아래 순서로 적용됩니다."
+                                  : "컬러 노드를 편집할 클립 하나를 선택하세요."
+                            color: "#7f8c9c"; font.pixelSize: 11
+                        }
                         GridLayout {
                             Layout.fillWidth: true; columns: 2
                             enabled: EditorController.selectedClipIds.length > 0
@@ -879,6 +950,97 @@ ApplicationWindow {
                             SpinBox { Layout.fillWidth: true; from: 0; to: 200; value: EditorController.selectedClipContrast; onValueModified: EditorController.setSelectedClipContrast(value) }
                             Label { text: "채도"; color: "#b4bdc8" }
                             SpinBox { Layout.fillWidth: true; from: 0; to: 200; value: EditorController.selectedClipSaturation; onValueModified: EditorController.setSelectedClipSaturation(value) }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            enabled: EditorController.selectedClipIds.length === 1
+                            ComboBox {
+                                id: gradeNodePicker
+                                Layout.fillWidth: true
+                                model: ["Primary Wheels", "Log Wheels", "RGB Mixer", "RGB Curves", "Hue Curves", "HDR Zones", "Color Warper"]
+                            }
+                            AppButton {
+                                text: "노드 추가"
+                                onClicked: EditorController.addGradeNode(gradeNodePicker.currentIndex)
+                            }
+                        }
+                        Repeater {
+                            model: EditorController.selectedGradeNodes
+                            delegate: Rectangle {
+                                id: gradeNode
+                                required property var modelData
+                                Layout.fillWidth: true
+                                implicitHeight: gradeHeader.implicitHeight + (gradeBody.visible ? gradeBody.implicitHeight + 12 : 0)
+                                radius: 7
+                                color: "#141a20"
+                                border.color: root.expandedGradeNode === modelData.id ? "#6682a6" : "#303b47"
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    spacing: 4
+                                    RowLayout {
+                                        id: gradeHeader
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 8; Layout.rightMargin: 6
+                                        CheckBox {
+                                            checked: gradeNode.modelData.enabled
+                                            onToggled: EditorController.setGradeNodeEnabled(gradeNode.modelData.id, checked)
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: gradeNode.modelData.name
+                                            color: gradeNode.modelData.enabled ? "#e4ebf3" : "#687483"
+                                            font.bold: true
+                                            TapHandler { onTapped: root.expandedGradeNode = root.expandedGradeNode === gradeNode.modelData.id ? "" : gradeNode.modelData.id }
+                                        }
+                                        AppButton { text: "↑"; compact: true; onClicked: EditorController.moveGradeNode(gradeNode.modelData.id, -1) }
+                                        AppButton { text: "↓"; compact: true; onClicked: EditorController.moveGradeNode(gradeNode.modelData.id, 1) }
+                                        AppButton { text: "×"; compact: true; danger: true; onClicked: EditorController.removeGradeNode(gradeNode.modelData.id) }
+                                    }
+                                    GridLayout {
+                                        id: gradeBody
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 10; Layout.rightMargin: 10; Layout.bottomMargin: 8
+                                        columns: 2
+                                        visible: root.expandedGradeNode === gradeNode.modelData.id
+                                        Label { text: "혼합"; color: "#9aa7b7" }
+                                        SpinBox {
+                                            Layout.fillWidth: true; from: 0; to: 100
+                                            value: gradeNode.modelData.mixPercent
+                                            textFromValue: function(value) { return value + "%" }
+                                            onValueModified: EditorController.setGradeNodeMix(gradeNode.modelData.id, value)
+                                        }
+                                        Label { visible: gradeNode.modelData.type === 0; text: "노출"; color: "#9aa7b7" }
+                                        SpinBox {
+                                            visible: gradeNode.modelData.type === 0
+                                            Layout.fillWidth: true; from: -100; to: 100
+                                            value: Math.round((gradeNode.modelData.parameters.exposure || 0) * 10)
+                                            textFromValue: function(value) { return (value / 10).toFixed(1) + " stop" }
+                                            onValueModified: EditorController.setGradeParameter(gradeNode.modelData.id, "exposure", value / 10)
+                                        }
+                                        Label { visible: gradeNode.modelData.type === 0; text: "온도"; color: "#9aa7b7" }
+                                        SpinBox {
+                                            visible: gradeNode.modelData.type === 0
+                                            Layout.fillWidth: true; from: -100; to: 100
+                                            value: Math.round(gradeNode.modelData.parameters.temperature || 0)
+                                            onValueModified: EditorController.setGradeParameter(gradeNode.modelData.id, "temperature", value)
+                                        }
+                                        Label { visible: gradeNode.modelData.type === 0; text: "틴트"; color: "#9aa7b7" }
+                                        SpinBox {
+                                            visible: gradeNode.modelData.type === 0
+                                            Layout.fillWidth: true; from: -100; to: 100
+                                            value: Math.round(gradeNode.modelData.parameters.tint || 0)
+                                            onValueModified: EditorController.setGradeParameter(gradeNode.modelData.id, "tint", value)
+                                        }
+                                        Label {
+                                            Layout.columnSpan: 2; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                            visible: gradeNode.modelData.type !== 0
+                                            text: "이 노드의 고급 컨트롤은 컬러 렌더 경로 연결 단계에서 활성화됩니다."
+                                            color: "#7f8c9c"; font.pixelSize: 11
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#303844" }
                         Label { text: "클립 사이 전환"; font.bold: true }
@@ -1078,6 +1240,76 @@ ApplicationWindow {
                             enabled: globalFrontFrames.value > 0 || globalBackFrames.value > 0
                             onClicked: EditorController.trimAllClipEdges(
                                 globalFrontFrames.value, globalBackFrames.value)
+                        }
+                    }
+
+                    InspectorNode {
+                        visible: root.showColorManagementNode
+                        nodeKey: "colorManagement"
+                        title: "컬러 관리"
+                        summary: EditorController.colorPipelineSummary
+                        onRemoveRequested: {
+                            root.showColorManagementNode = false
+                            if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
+                        Label { text: "프로젝트 컬러 파이프라인"; color: "#b4bdc8" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["현재 색 유지 · Legacy", "ACES 2.0 · ACEScg", "사용자 OpenColorIO"]
+                            currentIndex: EditorController.colorPipelineMode
+                            onActivated: {
+                                if (currentIndex === 2 && EditorController.customOcioPath.length === 0)
+                                    ocioConfigDialog.open()
+                                else
+                                    EditorController.setColorPipelineMode(currentIndex)
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: EditorController.colorPipelineMode === 2
+                            Label {
+                                Layout.fillWidth: true
+                                text: EditorController.customOcioPath
+                                elide: Text.ElideMiddle
+                                color: "#8796a8"
+                                font.pixelSize: 10
+                            }
+                            AppButton { text: "변경"; compact: true; onClicked: ocioConfigDialog.open() }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: EditorController.colorPipelineMode !== 0
+                            wrapMode: Text.WordWrap
+                            text: "입력 변환 → ACEScg 작업 → 표시 변환을 분리합니다. Legacy로 돌아가면 기존 색처리를 그대로 사용합니다."
+                            color: "#7f8c9c"
+                            font.pixelSize: 11
+                        }
+                        Switch {
+                            visible: EditorController.colorPipelineMode !== 0
+                            text: "HDR 모니터 출력"
+                            checked: EditorController.hdrMonitoring
+                            onToggled: EditorController.setHdrMonitoring(checked)
+                        }
+                        GridLayout {
+                            visible: EditorController.colorPipelineMode !== 0 && EditorController.hdrMonitoring
+                            Layout.fillWidth: true
+                            columns: 2
+                            Label { text: "HDR 피크"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 100; to: 10000; stepSize: 50
+                                value: EditorController.hdrPeakNits
+                                textFromValue: function(value) { return value + " nits" }
+                                valueFromText: function(text) { return parseInt(text) || 1000 }
+                                onValueModified: EditorController.setHdrPeakNits(value)
+                            }
+                            Label { text: "SDR 흰색"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 80; to: 500; stepSize: 1
+                                value: EditorController.sdrWhiteNits
+                                textFromValue: function(value) { return value + " nits" }
+                                valueFromText: function(text) { return parseInt(text) || 203 }
+                                onValueModified: EditorController.setSdrWhiteNits(value)
+                            }
                         }
                     }
 

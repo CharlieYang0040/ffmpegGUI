@@ -1,4 +1,8 @@
 #include "core/media_asset.hpp"
+#include "core/color_pipeline.hpp"
+#include "core/render_preflight.hpp"
+#include "color/ocio_engine.hpp"
+#include "media/oiio_probe.hpp"
 #include "core/ffprobe_parser.hpp"
 #include "core/timeline_model.hpp"
 #include "core/subtitle_srt.hpp"
@@ -7,10 +11,12 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <OpenImageIO/imageio.h>
 
 namespace {
 
@@ -64,6 +70,103 @@ void test_vfr_frame_lookup() {
     require(asset.frame_at_or_before(seconds(3)) == 2, "VFR lookup must choose previous PTS");
     require(asset.frame_at_or_before(seconds(8)) == 4, "VFR lookup must reach last frame");
     require(!asset.frame_at_or_before(seconds(9)).has_value(), "asset end is half-open");
+}
+
+void test_image_sequence_detection_preserves_gaps_and_negative_frames() {
+    const auto root = std::filesystem::temp_directory_path() / "ffgui-sequence-detection-test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    for (const auto* name : {"shot.-0002.exr", "shot.-0001.exr", "shot.0001.exr", "shot.0003.exr"}) {
+        std::ofstream(root / name).put('\0');
+    }
+    const auto sequence = ffgui::detect_image_sequence(root / "shot.0001.exr", {24, 1});
+    require(sequence.has_value(), "numbered EXR siblings must be detected as one sequence");
+    require(sequence->first_frame == -2 && sequence->last_frame == 3,
+            "sequence range must preserve signed source frame numbers");
+    require(sequence->missing_frames == std::vector<int>({0, 2}),
+            "sequence gaps must remain explicit timeline frames");
+    require(sequence->nearest_present_frame(0) == -1,
+            "equidistant missing frames must prefer the previous frame");
+    require(sequence->frame_path(-2).filename() == std::filesystem::path{"shot.-0002.exr"},
+            "signed padded frame paths must round trip");
+    std::filesystem::remove_all(root);
+}
+
+void test_media_asset_separates_original_and_playback_paths() {
+    ffgui::ImageSequenceDescriptor sequence;
+    sequence.directory = ".";
+    sequence.prefix = "render.";
+    sequence.suffix = ".exr";
+    sequence.padding = 4;
+    sequence.first_frame = 1001;
+    sequence.last_frame = 1002;
+    sequence.present_frames = {1001, 1002};
+    const MediaAsset asset{
+        "sequence", "render.1001.exr", seconds(2), {0, seconds(1)}, {}, {},
+        ffgui::MediaKind::image_sequence, sequence, {}, "cache/sequence-proxy.mkv"};
+    require(asset.path() == std::filesystem::path{"render.1001.exr"},
+            "sequence asset must preserve its original representative frame");
+    require(asset.playback_path() == std::filesystem::path{"cache/sequence-proxy.mkv"},
+            "sequence asset must expose a separate playback proxy");
+}
+
+void test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes() {
+    ffgui::ColorPipelineSettings settings;
+    require(settings.mode == ffgui::ColorPipelineMode::legacy,
+            "new projects must preserve the legacy color path by default");
+    settings.validate();
+    ffgui::GradeGraph graph;
+    graph.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary-1"));
+    require(graph.lut_representable(), "primary correction must be LUT representable");
+    graph.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::power_window, "window-1"));
+    require(!graph.lut_representable() && graph.lut_incompatible_nodes() ==
+                std::vector<std::string>{"Power Window"},
+            "spatial grade nodes must be named in LUT preflight failures");
+    require_throws<std::invalid_argument>([&] {
+        ffgui::LutExportRequest{"ACEScct", "ACEScg", ffgui::LutEncoding::acescct, 33}.validate(graph);
+    }, "LUT export must reject graphs that cannot be represented by a global RGB transform");
+}
+
+void test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube() {
+    ffgui::ColorPipelineSettings settings;
+    settings.mode = ffgui::ColorPipelineMode::aces_managed;
+    ffgui::OcioEngine engine(settings);
+    require(engine.managed() && !engine.color_spaces().empty(),
+            "ACES managed mode must load the bundled OCIO configuration");
+    const auto spaces = engine.color_spaces();
+    require(std::ranges::find(spaces, "ACEScg") != spaces.end(),
+            "ACES Studio config must expose ACEScg");
+    float pixel[]{0.18F, 0.18F, 0.18F, 0.5F};
+    engine.transform_rgba32f(pixel, 1, 1, "ACEScg", "ACES2065-1");
+    require(pixel[0] > 0.0F && pixel[1] > 0.0F && pixel[2] > 0.0F &&
+                std::abs(pixel[3] - 0.5F) < 0.00001F,
+            "OCIO float transform must preserve a separate alpha channel");
+    const auto cube = engine.bake_cube("ACEScct", "ACEScg", 33);
+    require(cube.contains("LUT_3D_SIZE 33"),
+            "Resolve Cube baker must honor the requested real-time LUT size");
+}
+
+void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
+    const auto root = std::filesystem::temp_directory_path() / "ffgui-oiio-probe-test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    const auto path = root / "layered.exr";
+    OIIO::ImageSpec spec(2, 2, 4, OIIO::TypeDesc::FLOAT);
+    spec.channelnames = {"beauty.R", "beauty.G", "beauty.B", "beauty.A"};
+    spec.alpha_channel = 3;
+    spec.attribute("oiio:ColorSpace", "ACEScg");
+    auto output = OIIO::ImageOutput::create(path.string());
+    require(static_cast<bool>(output) && output->open(path.string(), spec),
+            "OpenImageIO EXR test output must open");
+    const std::vector<float> pixels(2 * 2 * 4, 0.5F);
+    require(output->write_image(OIIO::TypeDesc::FLOAT, pixels.data()) && output->close(),
+            "OpenImageIO EXR test pixels must be written");
+    const auto metadata = ffgui::probe_image_metadata(path);
+    require(metadata.color_space == "ACEScg" && metadata.parts.size() == 1 &&
+                metadata.parts[0].has_alpha &&
+                metadata.parts[0].layers == std::vector<std::string>{"beauty"},
+            "OpenImageIO probe must expose EXR layer, alpha and source color space");
+    std::filesystem::remove_all(root);
 }
 
 void test_magnetic_trim_closes_space() {
@@ -869,11 +972,43 @@ void test_ffmpeg_export_plan_builds_palette_optimized_gif_without_audio() {
             "GIF output must omit audio and honor one-shot playback");
 }
 
+void test_render_preflight_blocks_offline_and_unresolved_managed_media() {
+    TimelineModel offline;
+    offline.add_asset(MediaAsset{"offline", std::filesystem::path{"does-not-exist.mov"}, seconds(1)});
+    offline.append_clip(Clip{"clip-offline", "offline", 0, seconds(1)});
+    auto report = ffgui::build_render_preflight(offline, {});
+    require(!report.can_render() && report.blocker_count() == 1,
+            "offline media must block render preflight");
+
+    const auto path = std::filesystem::temp_directory_path() / "ffgui-preflight-media.bin";
+    { std::ofstream stream(path, std::ios::binary); stream << 'x'; }
+    ffgui::SourceColorDescriptor unresolved;
+    unresolved.unresolved = true;
+    TimelineModel managed;
+    managed.add_asset(MediaAsset{"managed", path, seconds(1), {}, {}, {},
+        ffgui::MediaKind::video, std::nullopt, unresolved});
+    managed.append_clip(Clip{"clip-managed", "managed", 0, seconds(1)});
+    ffgui::ColorPipelineSettings settings;
+    settings.mode = ffgui::ColorPipelineMode::aces_managed;
+    report = ffgui::build_render_preflight(managed, settings);
+    require(!report.can_render() && report.blocker_count() == 1,
+            "managed output must block unresolved input color spaces");
+    settings.mode = ffgui::ColorPipelineMode::legacy;
+    require(ffgui::build_render_preflight(managed, settings).can_render(),
+            "legacy output must preserve unresolved media without an automatic transform");
+    std::filesystem::remove(path);
+}
+
 }  // namespace
 
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests{
         {"vfr_frame_lookup", test_vfr_frame_lookup},
+        {"image_sequence_detection_preserves_gaps_and_negative_frames", test_image_sequence_detection_preserves_gaps_and_negative_frames},
+        {"media_asset_separates_original_and_playback_paths", test_media_asset_separates_original_and_playback_paths},
+        {"color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes", test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes},
+        {"ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube", test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube},
+        {"oiio_probe_reports_exr_layers_alpha_and_color_space", test_oiio_probe_reports_exr_layers_alpha_and_color_space},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},
         {"global_frame_trim_is_atomic_magnetic_and_undoable", test_global_frame_trim_is_atomic_magnetic_and_undoable},
         {"clip_color_is_atomic_and_validated", test_clip_color_is_atomic_and_validated},
@@ -910,6 +1045,7 @@ int main() {
         {"ffmpeg_export_plan_applies_resolution_fps_and_color", test_ffmpeg_export_plan_applies_resolution_fps_and_color},
         {"ffmpeg_export_plan_compiles_video_and_audio_dissolve", test_ffmpeg_export_plan_compiles_video_and_audio_dissolve},
         {"ffmpeg_export_plan_builds_palette_optimized_gif_without_audio", test_ffmpeg_export_plan_builds_palette_optimized_gif_without_audio},
+        {"render_preflight_blocks_offline_and_unresolved_managed_media", test_render_preflight_blocks_offline_and_unresolved_managed_media},
     };
 
     int failed = 0;

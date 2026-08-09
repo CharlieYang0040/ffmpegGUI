@@ -7,6 +7,9 @@ project(
     LANGUAGES CXX
 )
 
+find_package(OpenColorIO 2.5.2 CONFIG REQUIRED)
+find_package(OpenImageIO 3.1 CONFIG REQUIRED)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -17,16 +20,22 @@ option(FFGUI_ENABLE_GES "Build the GStreamer Editing Services adapter when avail
 include(CTest)
 
 add_library(ffgui_core STATIC
+    src/color/ocio_engine.cpp
+    src/core/color_pipeline.cpp
     src/core/ffprobe_parser.cpp
     src/core/media_asset.cpp
+    src/core/media_source.cpp
+    src/core/render_preflight.cpp
     src/core/subtitle_srt.cpp
     src/core/timeline_model.cpp
+    src/media/oiio_probe.cpp
     src/export/ffmpeg_export_plan.cpp
 )
 add_library(ffgui::core ALIAS ffgui_core)
 
 target_include_directories(ffgui_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_features(ffgui_core PUBLIC cxx_std_23)
+target_link_libraries(ffgui_core PUBLIC OpenColorIO::OpenColorIO OpenImageIO::OpenImageIO)
 
 if(MSVC)
     target_compile_options(ffgui_core PRIVATE /W4 /permissive- /EHsc /utf-8)
@@ -153,6 +162,18 @@ if(FFGUI_BUILD_DESKTOP)
             WIN32_EXECUTABLE TRUE
             MACOSX_BUNDLE TRUE
         )
+        if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.tools/gstreamer/bin")
+            get_filename_component(FFGUI_QT_ROOT "${Qt6_DIR}/../../.." ABSOLUTE)
+            add_custom_command(TARGET ffmpegGUI-next POST_BUILD
+                COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/scripts/deploy_dev_runtime.ps1"
+                    -Application "$<TARGET_FILE:ffmpegGUI-next>"
+                    -Configuration "$<CONFIG>"
+                    -QtRoot "${FFGUI_QT_ROOT}"
+                    -GStreamerRoot "${CMAKE_CURRENT_SOURCE_DIR}/.tools/gstreamer"
+                COMMENT "Deploying Qt and GStreamer runtime for direct desktop launch"
+                VERBATIM)
+        endif()
     else()
         message(STATUS "Qt 6.8+ was not found; building the native core and tests only")
     endif()

@@ -16,6 +16,9 @@
         "BUILD_TESTING": "ON",
         "FFGUI_BUILD_DESKTOP": "ON",
         "FFGUI_ENABLE_GES": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/.tools/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/out/vcpkg_installed",
         "CMAKE_PREFIX_PATH": "${sourceDir}/.tools/Qt/6.10.2/msvc2022_64",
         "PKG_CONFIG_EXECUTABLE": "${sourceDir}/.tools/gstreamer/bin/pkg-config.exe"
       },

@@ -18,6 +18,8 @@ Windows용 네이티브 마그네틱 컷 편집기입니다. 기존 Python `ffmp
 - Qt Quick 6.10.2
 - GStreamer Editing Services 1.28.5
 - FFmpeg 8.1.2
+- OpenColorIO 2.5.2 / ACES 2.0 Studio Config
+- OpenImageIO 3.1 / OpenEXR 3.4
 
 Qt와 GStreamer가 없어도 편집 코어와 테스트는 빌드할 수 있습니다. Windows 로컬
 개발 의존성은 저장소 밖 시스템 경로를 바꾸지 않고 `.tools`에 설치합니다.
@@ -38,6 +40,10 @@ ctest --preset windows-debug
 .\out\build\windows-msvc\Debug\ffgui_core_benchmark.exe
 .\scripts\run_desktop_smoke.ps1
 ```
+
+Debug 빌드는 Qt와 필요한 GStreamer 런타임을 실행 폴더에 자동 배치합니다. 빌드 후
+`out\build\windows-msvc\Debug\ffmpegGUI-next.exe`를 탐색기에서 바로 실행할 수 있습니다.
+자동 배치만 다시 수행하려면 `scripts\deploy_dev_runtime.ps1`을 사용합니다.
 
 `out/build/.../Release/ffmpegGUI-next.exe`는 개발용 빌드 산출물이므로 단독 실행하지
 않습니다. 실행 가능한 배포본은 다음 명령으로 생성합니다.

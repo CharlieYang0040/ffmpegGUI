@@ -516,6 +516,13 @@ void TimelineModel::set_clips_color(
     }
 }
 
+void TimelineModel::set_clip_grade_graph(const std::string& clip_id, GradeGraph graph) {
+    const auto index = index_of(clip_id);
+    if (clips_[index].grade == graph) return;
+    record_edit();
+    clips_[index].grade = std::move(graph);
+}
+
 void TimelineModel::set_clip_dissolve(const std::string& clip_id, TimeNs transition_duration) {
     const auto index = index_of(clip_id);
     if (index == 0) {
@@ -625,7 +632,8 @@ std::vector<TimelineSpan> TimelineModel::snapshot() const {
         }
         spans.push_back(TimelineSpan{
             clip,
-            source_asset->path(),
+            source_asset->playback_path(),
+            source_asset->export_path(),
             cursor,
             end,
             !source_asset->audio_peaks().empty()});

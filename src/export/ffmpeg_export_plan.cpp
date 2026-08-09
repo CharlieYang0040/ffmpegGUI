@@ -170,7 +170,7 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
          request.gif.colors < 2 || request.gif.colors > 256)) {
         throw std::invalid_argument("GIF output settings are invalid");
     }
-    plan.arguments = {"-hide_banner", "-y", "-progress", "pipe:2", "-nostats"};
+    plan.arguments = {"-hide_banner", "-n", "-progress", "pipe:2", "-nostats"};
     for (std::size_t index = 0; index < request.clips.size(); ++index) {
         const auto& clip = request.clips[index];
         if (clip.source_path.empty() || clip.duration <= 0 || clip.source_in < 0) {

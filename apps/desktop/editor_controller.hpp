@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/timeline_model.hpp"
+#include "core/color_pipeline.hpp"
 #include "export/ffmpeg_export_plan.hpp"
 
 #ifdef FFGUI_HAS_GES
@@ -11,6 +12,7 @@
 #include <QFutureWatcher>
 #include <QHash>
 #include <QImage>
+#include <QElapsedTimer>
 #include <QProcess>
 #include <QStringList>
 #include <QTimer>
@@ -74,6 +76,20 @@ class EditorController final : public QObject {
     Q_PROPERTY(qreal exportProgress READ exportProgress NOTIFY exportProgressChanged)
     Q_PROPERTY(QString exportStage READ exportStage NOTIFY exportProgressChanged)
     Q_PROPERTY(QString exportOutputName READ exportOutputName NOTIFY exportProgressChanged)
+    Q_PROPERTY(QString outputDirectory READ outputDirectory NOTIFY exportSettingsChanged)
+    Q_PROPERTY(QString nextOutputName READ nextOutputName NOTIFY exportSettingsChanged)
+    Q_PROPERTY(bool outputDirectoryValid READ outputDirectoryValid NOTIFY exportSettingsChanged)
+    Q_PROPERTY(QString outputDirectoryError READ outputDirectoryError NOTIFY exportSettingsChanged)
+    Q_PROPERTY(QString exportElapsedText READ exportElapsedText NOTIFY exportProgressChanged)
+    Q_PROPERTY(QString exportRemainingText READ exportRemainingText NOTIFY exportProgressChanged)
+    Q_PROPERTY(int missingFrameCount READ missingFrameCount NOTIFY timelineChanged)
+    Q_PROPERTY(int colorPipelineMode READ colorPipelineMode WRITE setColorPipelineMode NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QString customOcioPath READ customOcioPath NOTIFY colorPipelineChanged)
+    Q_PROPERTY(bool hdrMonitoring READ hdrMonitoring WRITE setHdrMonitoring NOTIFY colorPipelineChanged)
+    Q_PROPERTY(int hdrPeakNits READ hdrPeakNits WRITE setHdrPeakNits NOTIFY colorPipelineChanged)
+    Q_PROPERTY(int sdrWhiteNits READ sdrWhiteNits WRITE setSdrWhiteNits NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QString colorPipelineSummary READ colorPipelineSummary NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QVariantList selectedGradeNodes READ selectedGradeNodes NOTIFY selectedClipChanged)
     Q_PROPERTY(int exportQuality READ exportQuality WRITE setExportQuality NOTIFY exportSettingsChanged)
     Q_PROPERTY(int exportCodec READ exportCodec WRITE setExportCodec NOTIFY exportSettingsChanged)
     Q_PROPERTY(int exportContainer READ exportContainer WRITE setExportContainer NOTIFY exportSettingsChanged)
@@ -135,6 +151,24 @@ public:
     [[nodiscard]] qreal exportProgress() const noexcept { return export_progress_; }
     [[nodiscard]] QString exportStage() const { return export_stage_; }
     [[nodiscard]] QString exportOutputName() const { return export_output_name_; }
+    [[nodiscard]] QString outputDirectory() const { return output_directory_; }
+    [[nodiscard]] QString nextOutputName() const;
+    [[nodiscard]] bool outputDirectoryValid() const;
+    [[nodiscard]] QString outputDirectoryError() const;
+    [[nodiscard]] QString exportElapsedText() const;
+    [[nodiscard]] QString exportRemainingText() const;
+    [[nodiscard]] int missingFrameCount() const;
+    [[nodiscard]] int colorPipelineMode() const noexcept {
+        return static_cast<int>(color_pipeline_.mode);
+    }
+    [[nodiscard]] QString customOcioPath() const {
+        return QString::fromStdString(color_pipeline_.ocio_config_path);
+    }
+    [[nodiscard]] bool hdrMonitoring() const noexcept { return color_pipeline_.hdr_monitoring; }
+    [[nodiscard]] int hdrPeakNits() const noexcept { return color_pipeline_.hdr_peak_nits; }
+    [[nodiscard]] int sdrWhiteNits() const noexcept { return color_pipeline_.sdr_white_nits; }
+    [[nodiscard]] QString colorPipelineSummary() const;
+    [[nodiscard]] QVariantList selectedGradeNodes() const;
     [[nodiscard]] int exportQuality() const noexcept { return export_quality_; }
     [[nodiscard]] int exportCodec() const noexcept { return export_codec_; }
     [[nodiscard]] int exportContainer() const noexcept { return export_container_; }
@@ -223,6 +257,21 @@ public slots:
     void saveProjectUrl(const QUrl& url);
     void loadProjectUrl(const QUrl& url);
     void exportTimelineUrl(const QUrl& url);
+    void exportTimeline();
+    void setOutputDirectoryUrl(const QUrl& url);
+    void openOutputDirectory();
+    void copyOutputDirectory();
+    void setColorPipelineMode(int mode);
+    void setCustomOcioUrl(const QUrl& url);
+    void setHdrMonitoring(bool enabled);
+    void setHdrPeakNits(int nits);
+    void setSdrWhiteNits(int nits);
+    void addGradeNode(int type);
+    void removeGradeNode(const QString& nodeId);
+    void moveGradeNode(const QString& nodeId, int direction);
+    void setGradeNodeEnabled(const QString& nodeId, bool enabled);
+    void setGradeNodeMix(const QString& nodeId, int percent);
+    void setGradeParameter(const QString& nodeId, const QString& parameter, double value);
     void cancelExport();
     void setExportQuality(int quality);
     void setExportCodec(int codec);
@@ -268,6 +317,7 @@ signals:
     void exportingChanged();
     void exportProgressChanged();
     void exportSettingsChanged();
+    void colorPipelineChanged();
     void gifEstimateChanged();
     void exportFinished(bool success, QUrl outputUrl);
 
@@ -286,6 +336,9 @@ private:
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
     void startExportValidation();
     void finishExport(bool success);
+    [[nodiscard]] QString sequenceName() const;
+    [[nodiscard]] QString nextOutputPath() const;
+    [[nodiscard]] bool ensureOutputDirectory();
     [[nodiscard]] std::string makeUniqueClipId(const std::string& prefix);
     void setSingleSelection(QString clipId);
 #ifdef FFGUI_HAS_GES
@@ -318,6 +371,7 @@ private:
     std::uint64_t generated_clip_id_{};
     std::uint64_t generated_asset_id_{};
     std::uint64_t generated_caption_id_{};
+    std::uint64_t generated_grade_node_id_{};
     QString selected_caption_id_;
     bool stamp_enabled_{};
     QString stamp_worker_;
@@ -363,9 +417,12 @@ private:
     qreal export_progress_{};
     QString export_stage_;
     QString export_output_name_;
+    QString output_directory_;
+    QString current_project_path_;
     QString export_log_path_;
     std::unique_ptr<QFile> export_log_file_;
     ffgui::TimeNs export_duration_ns_{};
+    QElapsedTimer export_elapsed_timer_;
     int export_quality_{1};
     int export_codec_{};
     int export_container_{};
@@ -379,6 +436,7 @@ private:
     bool gif_loop_{true};
     QString export_concat_path_;
     QString export_subtitle_path_;
+    ffgui::ColorPipelineSettings color_pipeline_;
     static EditorController* singleton_instance_;
 #ifdef FFGUI_HAS_GES
     std::unique_ptr<ffgui::GesSequencePlayer> player_;

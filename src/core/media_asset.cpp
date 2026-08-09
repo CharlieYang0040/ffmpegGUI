@@ -12,13 +12,23 @@ MediaAsset::MediaAsset(
     TimeNs duration,
     std::vector<TimeNs> frame_pts,
     std::vector<float> audio_peaks,
-    std::vector<TimeNs> keyframe_pts)
+    std::vector<TimeNs> keyframe_pts,
+    MediaKind kind,
+    std::optional<ImageSequenceDescriptor> image_sequence,
+    SourceColorDescriptor source_color,
+    std::filesystem::path playback_path,
+    std::filesystem::path export_path)
     : id_(std::move(id)),
       path_(std::move(path)),
       duration_(duration),
       frame_pts_(std::move(frame_pts)),
       audio_peaks_(std::move(audio_peaks)),
-      keyframe_pts_(std::move(keyframe_pts)) {
+      keyframe_pts_(std::move(keyframe_pts)),
+      kind_(kind),
+      image_sequence_(std::move(image_sequence)),
+      source_color_(std::move(source_color)),
+      playback_path_(playback_path.empty() ? path_ : std::move(playback_path)),
+      export_path_(export_path.empty() ? path_ : std::move(export_path)) {
     if (id_.empty()) {
         throw std::invalid_argument("asset id must not be empty");
     }
@@ -27,6 +37,9 @@ MediaAsset::MediaAsset(
     }
     if (duration_ <= 0) {
         throw std::invalid_argument("asset duration must be positive");
+    }
+    if (kind_ == MediaKind::image_sequence && !image_sequence_.has_value()) {
+        throw std::invalid_argument("image sequence asset requires a descriptor");
     }
     if (!frame_pts_.empty()) {
         if (frame_pts_.front() != 0) {
