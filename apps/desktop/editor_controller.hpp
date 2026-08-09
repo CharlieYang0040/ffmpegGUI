@@ -4,6 +4,7 @@
 #include "core/color_pipeline.hpp"
 #include "export/ffmpeg_export_plan.hpp"
 #include "media/oiio_frame_source.hpp"
+#include "render/timeline_frame_server.hpp"
 
 #ifdef FFGUI_HAS_GES
 #include "integration/ges/ges_sequence_player.hpp"
@@ -23,6 +24,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <optional>
 
@@ -336,6 +338,12 @@ private:
     void submitCachedScrubFrame(qint64 timelinePosition);
     bool submitFloatScrubFrame(qint64 timelinePosition);
     void startFloatScrubFrame(qint64 timelinePosition);
+    [[nodiscard]] bool canUseFloatPlayback() const;
+    void startFloatPlayback();
+    void stopFloatPlayback(bool rewindAtEnd = false);
+    void advanceFloatPlayback();
+    [[nodiscard]] bool canUseFloatExport() const;
+    void startFloatExport();
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
     void startExportValidation();
     void finishExport(bool success);
@@ -358,6 +366,10 @@ private:
         int requested_frame{};
         int resolved_frame{};
         qint64 elapsed_ms{};
+    };
+    struct FloatExportResult final {
+        bool success{};
+        QByteArray error;
     };
 #endif
 
@@ -397,6 +409,10 @@ private:
     bool importing_{};
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
     QTimer preview_update_timer_;
+    QTimer float_playback_timer_;
+    QElapsedTimer float_playback_clock_;
+    qint64 float_playback_origin_ns_{};
+    bool float_playback_running_{};
 #ifdef FFGUI_HAS_GES
     QFutureWatcher<PreviewOperationResult> preview_watcher_;
     std::optional<qint64> pending_preview_seek_;
@@ -406,11 +422,14 @@ private:
     mutable std::mutex pending_video_frame_mutex_;
     std::optional<ffgui::PreviewVideoFrame> pending_video_frame_;
     bool video_frame_delivery_queued_{};
-    ffgui::ImageFrameCache float_frame_cache_{512ULL * 1024ULL * 1024ULL};
+    ffgui::TimelineFrameServer timeline_frame_server_{512ULL * 1024ULL * 1024ULL};
     QFutureWatcher<FloatScrubResult> float_scrub_watcher_;
     bool float_scrub_active_{};
     std::optional<qint64> pending_float_scrub_ns_;
     std::uint64_t float_scrub_generation_{};
+    QFutureWatcher<FloatExportResult> float_export_watcher_;
+    std::shared_ptr<std::atomic_bool> float_export_cancel_;
+    bool float_export_active_{};
 #endif
     QHash<QString, QString> thumbnail_atlases_;
     QHash<QString, QImage> thumbnail_images_;

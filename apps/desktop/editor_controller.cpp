@@ -14,6 +14,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
+#include <QPointer>
 #include <QJSEngine>
 #include <QSaveFile>
 #include <QRegularExpression>
@@ -400,6 +401,9 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     connect(&preview_update_timer_, &QTimer::timeout, this, [this] {
         queuePreviewOperation(true);
     });
+    float_playback_timer_.setTimerType(Qt::PreciseTimer);
+    float_playback_timer_.setInterval(8);
+    connect(&float_playback_timer_, &QTimer::timeout, this, &EditorController::advanceFloatPlayback);
 #ifdef FFGUI_HAS_GES
     connect(
         &preview_watcher_,
@@ -458,28 +462,50 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                                   << "frame=" << result.requested_frame
                                   << "resolved=" << result.resolved_frame;
             }
+            if (!result.error.isEmpty()) {
+                qWarning().noquote() << "float scrub frame failed" << result.error;
+                setStatus(result.error);
+                stopFloatPlayback();
+            } else if (result.generation == float_scrub_generation_) {
+                auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
+                if (item != nullptr) {
+                    ++scrub_frames_submitted_;
+                    item->submitFrame(std::move(result.frame));
+                    if (result.requested_frame != result.resolved_frame) {
+                        setStatus(QStringLiteral("누락 프레임 %1 · %2 프레임으로 대체")
+                            .arg(result.requested_frame).arg(result.resolved_frame));
+                    } else if (!float_playback_running_) {
+                        setStatus(QStringLiteral("원본 float 프레임 표시 완료"));
+                    }
+                }
+            }
             if (pending_float_scrub_ns_.has_value()) {
                 const auto next = *pending_float_scrub_ns_;
                 pending_float_scrub_ns_.reset();
                 startFloatScrubFrame(next);
+            }
+        });
+    connect(
+        &float_export_watcher_,
+        &QFutureWatcher<FloatExportResult>::finished,
+        this,
+        [this] {
+            const auto result = float_export_watcher_.result();
+            float_export_active_ = false;
+            float_export_cancel_.reset();
+            if (!exporting_) return;
+            if (export_log_file_ && export_log_file_->isOpen()) {
+                export_log_file_->write("\n--- float frame server ---\n");
+                export_log_file_->write(result.success
+                    ? QByteArrayLiteral("completed\n") : result.error + '\n');
+                export_log_file_->flush();
+            }
+            if (result.success && !export_cancelled_) {
+                startExportValidation();
                 return;
             }
-            if (!result.error.isEmpty()) {
-                qWarning().noquote() << "float scrub frame failed" << result.error;
-                setStatus(result.error);
-                return;
-            }
-            if (result.generation != float_scrub_generation_) return;
-            if (auto* item = qobject_cast<VideoPreviewItem*>(video_item_)) {
-                ++scrub_frames_submitted_;
-                item->submitFrame(std::move(result.frame));
-                if (result.requested_frame != result.resolved_frame) {
-                    setStatus(QStringLiteral("누락 프레임 %1 · %2 프레임으로 대체")
-                        .arg(result.requested_frame).arg(result.resolved_frame));
-                } else {
-                    setStatus(QStringLiteral("원본 float 프레임 표시 완료"));
-                }
-            }
+            export_stderr_.append(result.error);
+            finishExport(false);
         });
 #endif
 }
@@ -508,6 +534,9 @@ void EditorController::openLogFolder() {
 
 EditorController::~EditorController() {
 #ifdef FFGUI_HAS_GES
+    stopFloatPlayback();
+    if (float_export_cancel_) float_export_cancel_->store(true);
+    if (float_export_watcher_.isRunning()) float_export_watcher_.waitForFinished();
     pending_float_scrub_ns_.reset();
     ++float_scrub_generation_;
     if (float_scrub_watcher_.isRunning()) float_scrub_watcher_.waitForFinished();
@@ -1020,6 +1049,7 @@ void EditorController::loadUrls(const QList<QUrl>& urls) {
 }
 
 void EditorController::seek(qint64 timelinePosition) {
+    stopFloatPlayback();
     playhead_ns_ = std::clamp<qint64>(timelinePosition, 0, durationNs());
     emit playheadChanged();
 #ifdef FFGUI_HAS_GES
@@ -1031,6 +1061,7 @@ void EditorController::seek(qint64 timelinePosition) {
 }
 
 void EditorController::scrub(qint64 timelinePosition, bool finalPosition) {
+    stopFloatPlayback();
     playhead_ns_ = std::clamp<qint64>(timelinePosition, 0, durationNs());
     emit playheadChanged();
     const auto floatSubmitted = submitFloatScrubFrame(playhead_ns_);
@@ -1070,40 +1101,25 @@ void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
     if (!mapped.has_value()) return;
     const auto* asset = timeline_.asset(mapped->asset_id);
     if (asset == nullptr || !asset->image_sequence().has_value()) return;
-    const auto clip = std::ranges::find(timeline_.clips(), mapped->clip_id, &ffgui::Clip::id);
-    if (clip == timeline_.clips().end()) return;
-    const auto sequence = *asset->image_sequence();
-    const auto offset = mapped->source_frame.has_value()
-        ? static_cast<int>(*mapped->source_frame)
-        : static_cast<int>(std::max<ffgui::TimeNs>(0, mapped->source_time) /
-                           std::max<ffgui::TimeNs>(1, sequence.frame_rate.frame_duration()));
-    const auto requested = std::clamp(
-        sequence.first_frame + offset, sequence.first_frame, sequence.last_frame);
-    const auto resolved = sequence.has_frame(requested)
-        ? requested : sequence.nearest_present_frame(requested);
-    const auto request = ffgui::ImageFrameRequest{
-        sequence.frame_path(resolved), sequence.exr_part, sequence.channel_mapping};
-    const auto sourceColor = asset->source_color();
+    const auto timeline = timeline_;
     const auto settings = color_pipeline_;
-    const auto grade = clip->grade;
     const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
         ? std::string{}
         : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
     const auto generation = ++float_scrub_generation_;
     float_scrub_active_ = true;
     float_scrub_watcher_.setFuture(QtConcurrent::run(
-        [this, request, sourceColor, settings, grade, outputSpace, timelinePosition,
-         generation, requested, resolved] {
+        [this, timeline, settings, outputSpace, timelinePosition, generation] {
             FloatScrubResult result;
             result.generation = generation;
-            result.requested_frame = requested;
-            result.resolved_frame = resolved;
             QElapsedTimer elapsed;
             elapsed.start();
             try {
-                const auto source = float_frame_cache_.get(request);
-                const auto processed = ffgui::process_color_frame(
-                    *source, sourceColor, settings, grade, outputSpace);
+                auto rendered = timeline_frame_server_.render(
+                    timeline, timelinePosition, settings, outputSpace);
+                result.requested_frame = rendered.requested_sequence_frame;
+                result.resolved_frame = rendered.resolved_sequence_frame;
+                const auto& processed = rendered.processed;
                 result.frame.width = static_cast<std::uint32_t>(processed.width);
                 result.frame.height = static_cast<std::uint32_t>(processed.height);
                 result.frame.cpu_stride = result.frame.width * 4;
@@ -1184,6 +1200,15 @@ void EditorController::submitCachedScrubFrame(qint64 timelinePosition) {
 
 void EditorController::togglePlayback() {
 #ifdef FFGUI_HAS_GES
+    if (float_playback_running_) {
+        stopFloatPlayback();
+        setStatus(QStringLiteral("일시 정지"));
+        return;
+    }
+    if (canUseFloatPlayback()) {
+        startFloatPlayback();
+        return;
+    }
     preview_should_play_ = !(preview_should_play_ || playing_);
     if (preview_should_play_ && playhead_ns_ >= durationNs()) {
         playhead_ns_ = 0;
@@ -1191,6 +1216,285 @@ void EditorController::togglePlayback() {
     }
     if (preview_should_play_) pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
+#endif
+}
+
+bool EditorController::canUseFloatPlayback() const {
+#ifdef FFGUI_HAS_GES
+    if (video_item_ == nullptr || timeline_.clips().empty()) return false;
+    return std::ranges::all_of(timeline_.clips(), [this](const auto& clip) {
+        const auto* asset = timeline_.asset(clip.asset_id);
+        return asset != nullptr && asset->image_sequence().has_value();
+    });
+#else
+    return false;
+#endif
+}
+
+void EditorController::startFloatPlayback() {
+#ifdef FFGUI_HAS_GES
+    if (!canUseFloatPlayback() || durationNs() <= 0) return;
+    preview_should_play_ = false;
+    if (playhead_ns_ >= durationNs()) {
+        playhead_ns_ = 0;
+        emit playheadChanged();
+    }
+    float_playback_origin_ns_ = playhead_ns_;
+    float_playback_clock_.restart();
+    float_playback_running_ = true;
+    if (!playing_) {
+        playing_ = true;
+        emit playingChanged();
+    }
+    setStatus(QStringLiteral("재생 중 · float 프레임"));
+    submitFloatScrubFrame(playhead_ns_);
+    float_playback_timer_.start();
+#endif
+}
+
+void EditorController::stopFloatPlayback(bool rewindAtEnd) {
+    if (!float_playback_running_) return;
+    float_playback_timer_.stop();
+    float_playback_running_ = false;
+    pending_float_scrub_ns_.reset();
+    if (playing_) {
+        playing_ = false;
+        emit playingChanged();
+    }
+    if (rewindAtEnd) {
+        playhead_ns_ = 0;
+        emit playheadChanged();
+        submitFloatScrubFrame(playhead_ns_);
+    }
+}
+
+void EditorController::advanceFloatPlayback() {
+#ifdef FFGUI_HAS_GES
+    if (!float_playback_running_) return;
+    const auto elapsedNs = float_playback_clock_.nsecsElapsed();
+    const auto target = std::min<qint64>(
+        durationNs(), float_playback_origin_ns_ + elapsedNs);
+    if (target != playhead_ns_) {
+        playhead_ns_ = target;
+        emit playheadChanged();
+    }
+    if (target >= durationNs()) {
+        stopFloatPlayback(true);
+        setStatus(QStringLiteral("재생 완료 · 처음으로 이동"));
+        return;
+    }
+    submitFloatScrubFrame(target);
+#endif
+}
+
+bool EditorController::canUseFloatExport() const {
+#ifdef FFGUI_HAS_GES
+    if (timeline_.clips().empty() || !timeline_.captions().empty() || stamp_enabled_) return false;
+    return std::ranges::all_of(timeline_.clips(), [this](const auto& clip) {
+        const auto* asset = timeline_.asset(clip.asset_id);
+        return asset != nullptr && asset->image_sequence().has_value();
+    });
+#else
+    return false;
+#endif
+}
+
+void EditorController::startFloatExport() {
+#ifdef FFGUI_HAS_GES
+    if (!export_request_.has_value() || !canUseFloatExport()) {
+        export_stderr_.append("float export prerequisites are not satisfied");
+        finishExport(false);
+        return;
+    }
+    const auto timeline = timeline_;
+    const auto settings = color_pipeline_;
+    const auto request = *export_request_;
+    const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
+        ? std::string{}
+        : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
+    const auto* firstAsset = timeline.asset(timeline.clips().front().asset_id);
+    const auto sourceRate = firstAsset->image_sequence()->frame_rate.value();
+    const auto fps = request.gif.enabled
+        ? request.gif.fps
+        : request.output_fps > 0 ? request.output_fps
+        : std::max(1, static_cast<int>(std::lround(sourceRate)));
+    const auto duration = timeline.duration();
+    const auto frameCount = std::max<qint64>(1, static_cast<qint64>(std::ceil(
+        static_cast<long double>(duration) * fps / ffgui::kNanosecondsPerSecond)));
+    export_duration_ns_ = duration;
+    export_stage_ = request.gif.enabled
+        ? QStringLiteral("float GIF 렌더링") : QStringLiteral("float 컬러 렌더링");
+    export_stream_copy_active_ = false;
+    if (export_log_file_ && export_log_file_->isOpen()) {
+        export_log_file_->write(QStringLiteral(
+            "\n--- float frame server start ---\nfps=%1\nframes=%2\nduration_ns=%3\n")
+            .arg(fps).arg(frameCount).arg(duration).toUtf8());
+        export_log_file_->flush();
+    }
+    emit exportProgressChanged();
+    setStatus(QStringLiteral("내보내는 중 · 공통 float 프레임 서버"));
+    float_export_cancel_ = std::make_shared<std::atomic_bool>(false);
+    const auto cancelled = float_export_cancel_;
+    const auto ffmpeg = ffgui::locate_ffmpeg();
+    const auto quality = export_quality_;
+    const auto codec = export_codec_;
+    QPointer<EditorController> guard(this);
+    float_export_active_ = true;
+    float_export_watcher_.setFuture(QtConcurrent::run(
+        [timeline, settings, outputSpace, request, fps, duration, frameCount, cancelled,
+         ffmpeg, quality, codec, guard]() mutable {
+            FloatExportResult result;
+            ffgui::TimelineFrameServer server;
+            const auto renderFrame = [&](qint64 frameIndex) {
+                const auto time = std::min<ffgui::TimeNs>(
+                    duration - 1,
+                    static_cast<ffgui::TimeNs>(std::llround(
+                        static_cast<long double>(frameIndex) *
+                        ffgui::kNanosecondsPerSecond / fps)));
+                return server.render(timeline, time, settings, outputSpace).processed;
+            };
+            try {
+                auto first = renderFrame(0);
+                if (first.width <= 0 || first.height <= 0) {
+                    throw std::runtime_error("float export produced an empty frame");
+                }
+                const auto sourceWidth = first.width;
+                const auto sourceHeight = first.height;
+                const auto encode = [&](const QString& encoder) {
+                    QProcess process;
+                    process.setProcessChannelMode(QProcess::SeparateChannels);
+#ifdef Q_OS_WIN
+                    process.setCreateProcessArgumentsModifier(
+                        [](QProcess::CreateProcessArguments* args) { args->flags |= CREATE_NO_WINDOW; });
+#endif
+                    QStringList arguments{
+                        "-hide_banner", "-loglevel", "warning", "-y",
+                        "-f", "rawvideo", "-pixel_format", "rgba64le",
+                        "-video_size", QStringLiteral("%1x%2").arg(sourceWidth).arg(sourceHeight),
+                        "-framerate", QString::number(fps), "-i", "pipe:0", "-an"};
+                    if (request.gif.enabled) {
+                        const auto dither = request.gif.dither == ffgui::GifDither::bayer
+                            ? QStringLiteral("bayer:bayer_scale=3")
+                            : request.gif.dither == ffgui::GifDither::sierra2_4a
+                            ? QStringLiteral("sierra2_4a") : QStringLiteral("none");
+                        arguments << "-filter_complex"
+                            << QStringLiteral(
+                                "[0:v]scale=%1:%2:force_original_aspect_ratio=decrease:flags=lanczos,"
+                                "pad=%1:%2:(ow-iw)/2:(oh-ih)/2:color=black,split[a][b];"
+                                "[a]palettegen=max_colors=%3:reserve_transparent=1[p];"
+                                "[b][p]paletteuse=dither=%4[v]")
+                                .arg(request.gif.width).arg(request.gif.height)
+                                .arg(request.gif.colors).arg(dither)
+                            << "-map" << "[v]" << "-loop" << (request.gif.loop ? "0" : "-1");
+                    } else {
+                        if (request.output_width > 0 && request.output_height > 0) {
+                            arguments << "-vf" << QStringLiteral(
+                                "scale=%1:%2:force_original_aspect_ratio=decrease:flags=lanczos,"
+                                "pad=%1:%2:(ow-iw)/2:(oh-ih)/2:color=black")
+                                .arg(request.output_width).arg(request.output_height);
+                        } else {
+                            arguments << "-vf" << "scale=trunc(iw/2)*2:trunc(ih/2)*2";
+                        }
+                        const auto quantizer = quality == 0 ? 18 : quality == 2 ? 28 : 23;
+                        arguments << "-c:v" << encoder;
+                        if (encoder.contains("nvenc")) {
+                            arguments << "-preset" << "p5" << "-rc" << "vbr"
+                                      << "-cq" << QString::number(quantizer) << "-b:v" << "0";
+                        } else {
+                            arguments << "-preset" << "medium"
+                                      << "-crf" << QString::number(quantizer);
+                        }
+                        arguments << "-pix_fmt" << (encoder.contains("265") || encoder.contains("hevc")
+                            ? "yuv420p10le" : "yuv420p");
+                    }
+                    arguments << QString::fromStdWString(request.output_path.wstring());
+                    process.start(ffmpeg, arguments);
+                    if (!process.waitForStarted(10'000)) {
+                        return QByteArray("FFmpeg float encoder could not be started");
+                    }
+                    QByteArray stderrOutput;
+                    const auto submit = [&](const ffgui::FloatImageFrame& frame) {
+                        if (frame.width != sourceWidth || frame.height != sourceHeight) {
+                            throw std::runtime_error(
+                                "float export requires matching source dimensions");
+                        }
+                        QByteArray bytes;
+                        bytes.resize(frame.width * frame.height * 8);
+                        auto* destination = reinterpret_cast<std::uint16_t*>(bytes.data());
+                        const auto pixels = static_cast<std::size_t>(frame.width) * frame.height;
+                        for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
+                            const auto* rgba = frame.rgba.data() + pixel * 4;
+                            auto alpha = std::clamp(
+                                std::isfinite(rgba[3]) ? rgba[3] : 0.0F, 0.0F, 1.0F);
+                            for (std::size_t channel = 0; channel < 3; ++channel) {
+                                auto value = std::isfinite(rgba[channel]) ? rgba[channel] : 0.0F;
+                                if (frame.premultiplied && alpha > 0.0F) value /= alpha;
+                                destination[pixel * 4 + channel] = static_cast<std::uint16_t>(
+                                    std::lround(std::clamp(value, 0.0F, 1.0F) * 65535.0F));
+                            }
+                            destination[pixel * 4 + 3] = static_cast<std::uint16_t>(
+                                std::lround(alpha * 65535.0F));
+                        }
+                        if (process.write(bytes) != bytes.size() ||
+                            !process.waitForBytesWritten(30'000)) {
+                            throw std::runtime_error("FFmpeg stopped accepting float frames");
+                        }
+                    };
+                    for (qint64 frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+                        if (cancelled->load()) {
+                            process.kill();
+                            process.waitForFinished(5'000);
+                            return QByteArray("float export cancelled");
+                        }
+                        if (frameIndex == 0) submit(first);
+                        else submit(renderFrame(frameIndex));
+                        stderrOutput.append(process.readAllStandardError());
+                        if (guard) {
+                            const auto progress = std::min<qreal>(
+                                0.98, static_cast<qreal>(frameIndex + 1) / frameCount * 0.98);
+                            QMetaObject::invokeMethod(guard, [guard, progress] {
+                                if (!guard || !guard->exporting_) return;
+                                guard->export_progress_ = progress;
+                                emit guard->exportProgressChanged();
+                            }, Qt::QueuedConnection);
+                        }
+                    }
+                    process.closeWriteChannel();
+                    QElapsedTimer finishWait;
+                    finishWait.start();
+                    while (!process.waitForFinished(250)) {
+                        stderrOutput.append(process.readAllStandardError());
+                        if (cancelled->load()) process.kill();
+                        if (finishWait.elapsed() > 120'000) {
+                            process.kill();
+                            process.waitForFinished(5'000);
+                            stderrOutput.append("FFmpeg float encoder timed out while finalizing");
+                            break;
+                        }
+                    }
+                    stderrOutput.append(process.readAllStandardError());
+                    return process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0
+                        ? QByteArray{} : stderrOutput;
+                };
+                if (request.gif.enabled) {
+                    result.error = encode({});
+                } else {
+                    const auto hardware = codec == 1
+                        ? QStringLiteral("hevc_nvenc") : QStringLiteral("h264_nvenc");
+                    result.error = encode(hardware);
+                    if (!result.error.isEmpty() && !cancelled->load()) {
+                        QFile::remove(QString::fromStdWString(request.output_path.wstring()));
+                        const auto software = codec == 1
+                            ? QStringLiteral("libx265") : QStringLiteral("libx264");
+                        result.error = encode(software);
+                    }
+                }
+                result.success = result.error.isEmpty() && !cancelled->load();
+            } catch (const std::exception& error) {
+                result.error = error.what();
+            }
+            return result;
+        }));
 #endif
 }
 
@@ -2741,6 +3045,14 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             : QStringLiteral("출력 중단: %1").arg(QString::fromStdString(blocker->message)));
         return;
     }
+    const auto hasGradeNodes = std::ranges::any_of(timeline_.clips(), [](const auto& clip) {
+        return !clip.grade.nodes().empty();
+    });
+    if (hasGradeNodes && (!timeline_.captions().empty() || stamp_enabled_)) {
+        setStatus(QStringLiteral(
+            "출력 중단: float 컬러 출력의 문구·스탬프 합성 연결이 아직 필요합니다"));
+        return;
+    }
 
     ffgui::ExportRequest request;
     request.output_path = std::filesystem::path(output.toStdWString());
@@ -2861,9 +3173,13 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
         queuePreviewOperation(false);
     }
 #endif
-    startExportProcess(export_codec_ == 1
-        ? ffgui::ExportVideoEncoder::hevc_nvenc
-        : ffgui::ExportVideoEncoder::h264_nvenc);
+    if (canUseFloatExport()) {
+        startFloatExport();
+    } else {
+        startExportProcess(export_codec_ == 1
+            ? ffgui::ExportVideoEncoder::hevc_nvenc
+            : ffgui::ExportVideoEncoder::h264_nvenc);
+    }
 }
 
 void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
@@ -2958,6 +3274,7 @@ void EditorController::cancelExport() {
     export_stage_ = "취소 중";
     emit exportProgressChanged();
     setStatus("내보내기를 취소하는 중입니다");
+    if (float_export_cancel_) float_export_cancel_->store(true);
     if (export_process_.state() != QProcess::NotRunning) export_process_.kill();
     if (export_validation_process_.state() != QProcess::NotRunning) {
         export_validation_process_.kill();
@@ -3103,6 +3420,7 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     QElapsedTimer publishElapsed;
     publishElapsed.start();
 #ifdef FFGUI_HAS_GES
+    stopFloatPlayback();
     preview_should_play_ = false;
 #endif
     if (resetPlayhead) {

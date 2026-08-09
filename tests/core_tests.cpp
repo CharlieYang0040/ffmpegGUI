@@ -261,6 +261,7 @@ void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
         "sequence", frame1001, seconds(3), {0, seconds(1), seconds(2)}, {}, {},
         ffgui::MediaKind::image_sequence, sequence, sourceColor, frame1001, frame1001});
     Clip sequenceClip{"sequence-clip", "sequence", 0, seconds(3)};
+    sequenceClip.color.brightness = 0.05;
     auto exposure = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "exposure");
     exposure.parameters["exposure"] = 1.0;
     sequenceClip.grade.add(std::move(exposure));
@@ -270,8 +271,25 @@ void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
     require(timelineFrame.requested_sequence_frame == 1002 &&
                 timelineFrame.resolved_sequence_frame == 1001 &&
                 timelineFrame.substituted_missing_frame &&
-                std::abs(timelineFrame.processed.rgba[0] - 0.2F) < 0.00001F,
-            "timeline frame server must map trimmed time, substitute nearest missing frame and grade it");
+                std::abs(timelineFrame.processed.rgba[0] - 0.225F) < 0.00001F,
+            "timeline frame server must map time, substitute missing frames and apply clip controls before grading");
+    TimelineModel dissolveTimeline;
+    dissolveTimeline.add_asset(MediaAsset{
+        "sequence", frame1001, seconds(3), {0, seconds(1), seconds(2)}, {}, {},
+        ffgui::MediaKind::image_sequence, sequence, sourceColor, frame1001, frame1001});
+    Clip outgoing{"outgoing", "sequence", 0, seconds(2)};
+    auto outgoingExposure =
+        ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "outgoing exposure");
+    outgoingExposure.parameters["exposure"] = 1.0;
+    outgoing.grade.add(std::move(outgoingExposure));
+    dissolveTimeline.append_clip(std::move(outgoing));
+    dissolveTimeline.append_clip(Clip{
+        "incoming", "sequence", 0, seconds(2), {}, 1.0, {}, seconds(1)});
+    const auto dissolveFrame = frameServer.render(
+        dissolveTimeline, seconds(1) + seconds(1) / 2, {}, {});
+    require(dissolveFrame.clip_id == "incoming" &&
+                std::abs(dissolveFrame.processed.rgba[0] - 0.15F) < 0.00001F,
+            "timeline frame server must grade both clips before blending a dissolve");
     std::filesystem::remove_all(root);
 }
 
@@ -1112,7 +1130,23 @@ void test_render_preflight_blocks_offline_and_unresolved_managed_media() {
     require(!report.can_render() && std::ranges::any_of(report.issues, [](const auto& issue) {
                 return issue.code == "grade-render-not-connected";
             }),
-            "exports must block rather than silently ignore a clip grade before frame-server wiring");
+            "video exports must block rather than silently ignore a grade before float decoding");
+    ffgui::ImageSequenceDescriptor renderableSequence;
+    renderableSequence.directory = path.parent_path();
+    renderableSequence.prefix = path.filename().string();
+    renderableSequence.first_frame = 1;
+    renderableSequence.last_frame = 1;
+    renderableSequence.present_frames = {1};
+    TimelineModel gradedSequence;
+    gradedSequence.add_asset(MediaAsset{
+        "sequence", path, seconds(1), {0}, {}, {}, ffgui::MediaKind::image_sequence,
+        renderableSequence, {}, path, path});
+    auto sequenceClip = Clip{"graded-sequence", "sequence", 0, seconds(1)};
+    sequenceClip.grade.add(
+        ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary"));
+    gradedSequence.append_clip(std::move(sequenceClip));
+    require(ffgui::build_render_preflight(gradedSequence, {}).can_render(),
+            "image sequence grades must pass after float export wiring");
     std::filesystem::remove(path);
 }
 

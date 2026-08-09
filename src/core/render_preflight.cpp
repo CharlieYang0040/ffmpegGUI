@@ -26,18 +26,18 @@ RenderPreflightReport build_render_preflight(
     RenderPreflightReport report;
     std::unordered_set<std::string> inspected;
     for (const auto& clip : timeline.clips()) {
-        if (!clip.grade.nodes().empty()) {
-            report.issues.push_back({PreflightSeverity::blocker, "grade-render-not-connected",
-                "Clip grade nodes require the unified float frame server before export",
-                clip.asset_id, {}});
-        }
-        if (!inspected.insert(clip.asset_id).second) continue;
         const auto* asset = timeline.asset(clip.asset_id);
         if (asset == nullptr) {
             report.issues.push_back({PreflightSeverity::blocker, "missing-asset",
                 "Timeline clip refers to an asset that is not registered", clip.asset_id, {}});
             continue;
         }
+        if (!clip.grade.nodes().empty() && !asset->image_sequence().has_value()) {
+            report.issues.push_back({PreflightSeverity::blocker, "grade-render-not-connected",
+                "Video clip grade nodes require the unified float decoder before export",
+                clip.asset_id, {}});
+        }
+        if (!inspected.insert(clip.asset_id).second) continue;
         if (!std::filesystem::is_regular_file(asset->export_path())) {
             report.issues.push_back({PreflightSeverity::blocker, "offline-media",
                 "Media or its prepared render source is offline", asset->id(), {}});

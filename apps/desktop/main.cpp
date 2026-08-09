@@ -145,6 +145,7 @@ int main(int argc, char* argv[]) {
     bool offscreenPresentationSmoke = false;
     bool hevcExportSmoke = false;
     bool gifExportSmoke = false;
+    bool floatExportSmoke = false;
     const auto arguments = application.arguments();
     for (int index = 1; index < arguments.size(); ++index) {
         if (arguments[index] == "--project-roundtrip" && index + 1 < arguments.size()) {
@@ -175,6 +176,11 @@ int main(int argc, char* argv[]) {
         if (arguments[index] == "--export-gif-smoke" && index + 1 < arguments.size()) {
             exportSmokeOutput = arguments[++index];
             gifExportSmoke = true;
+            continue;
+        }
+        if (arguments[index] == "--float-export-smoke" && index + 1 < arguments.size()) {
+            exportSmokeOutput = arguments[++index];
+            floatExportSmoke = true;
             continue;
         }
         if (arguments[index] == "--export-project-smoke" && index + 2 < arguments.size()) {
@@ -423,6 +429,32 @@ int main(int argc, char* argv[]) {
                 !controller.status().contains(QStringLiteral("float 프레임"))) {
                 return EXIT_FAILURE;
             }
+            const auto playbackFramesBefore = controller.scrubFramesSubmitted();
+            const auto playbackPositionBefore = controller.playheadNs();
+            controller.togglePlayback();
+            QEventLoop floatPlaybackLoop;
+            QTimer floatPlaybackPoll;
+            QTimer floatPlaybackTimeout;
+            floatPlaybackPoll.setInterval(10);
+            floatPlaybackTimeout.setSingleShot(true);
+            QObject::connect(&floatPlaybackPoll, &QTimer::timeout, &floatPlaybackLoop, [&] {
+                if (controller.playheadNs() > playbackPositionBefore + 100'000'000 &&
+                    controller.scrubFramesSubmitted() > playbackFramesBefore) {
+                    floatPlaybackLoop.quit();
+                }
+            });
+            QObject::connect(&floatPlaybackTimeout, &QTimer::timeout,
+                             &floatPlaybackLoop, &QEventLoop::quit);
+            floatPlaybackPoll.start();
+            floatPlaybackTimeout.start(5'000);
+            floatPlaybackLoop.exec();
+            if (!controller.playing() ||
+                controller.playheadNs() <= playbackPositionBefore + 100'000'000 ||
+                controller.scrubFramesSubmitted() <= playbackFramesBefore) {
+                return EXIT_FAILURE;
+            }
+            controller.togglePlayback();
+            if (controller.playing()) return EXIT_FAILURE;
         }
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
@@ -470,6 +502,41 @@ int main(int argc, char* argv[]) {
                expectedClipCount == importedClipCount + 4
             ? EXIT_SUCCESS
             : EXIT_FAILURE;
+    }
+    if (floatExportSmoke) {
+        const auto exportClips = controller.clips();
+        if (exportClips.isEmpty() ||
+            controller.mediaAssets().front().toMap().value("kind").toString() !=
+                QStringLiteral("imageSequence")) {
+            return EXIT_FAILURE;
+        }
+        controller.selectClip(exportClips.front().toMap().value("id").toString());
+        controller.addGradeNode(0);
+        const auto nodes = controller.selectedGradeNodes();
+        if (nodes.isEmpty()) return EXIT_FAILURE;
+        controller.setGradeParameter(
+            nodes.front().toMap().value("id").toString(), QStringLiteral("exposure"), 0.25);
+        const auto smokeSuffix = QFileInfo(exportSmokeOutput).suffix().toLower();
+        if (smokeSuffix == QStringLiteral("gif")) controller.setExportContainer(3);
+        else if (smokeSuffix == QStringLiteral("mov")) controller.setExportContainer(2);
+        else if (smokeSuffix == QStringLiteral("mkv")) controller.setExportContainer(1);
+        bool exportSucceeded = false;
+        QEventLoop exportLoop;
+        QTimer exportTimeout;
+        exportTimeout.setSingleShot(true);
+        QObject::connect(
+            &controller, &EditorController::exportFinished, &exportLoop,
+            [&exportSucceeded, &exportLoop](bool success, const QUrl&) {
+                exportSucceeded = success;
+                exportLoop.quit();
+            });
+        QObject::connect(&exportTimeout, &QTimer::timeout, &exportLoop, &QEventLoop::quit);
+        controller.exportTimelineUrl(QUrl::fromLocalFile(exportSmokeOutput));
+        exportTimeout.start(120'000);
+        exportLoop.exec();
+        return exportSucceeded && QFileInfo(exportSmokeOutput).isFile() &&
+                QFileInfo(exportSmokeOutput).size() > 0
+            ? EXIT_SUCCESS : EXIT_FAILURE;
     }
     if (!exportSmokeOutput.isEmpty()) {
         if (gifExportSmoke) {
