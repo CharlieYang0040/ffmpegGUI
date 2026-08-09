@@ -22,6 +22,11 @@ bool GradeNode::lut_representable() const noexcept {
     return type != GradeNodeType::qualifier && type != GradeNodeType::power_window;
 }
 
+bool GradeNode::render_supported() const noexcept {
+    return type == GradeNodeType::primary || type == GradeNodeType::rgb_mixer ||
+           type == GradeNodeType::rgb_curves;
+}
+
 void GradeNode::validate() const {
     if (id.empty() || name.empty() || !std::isfinite(mix) || mix < 0.0 || mix > 1.0) {
         throw std::invalid_argument("grade node identity or mix is invalid");
@@ -89,6 +94,14 @@ std::vector<std::string> GradeGraph::lut_incompatible_nodes() const {
     return result;
 }
 
+std::vector<std::string> GradeGraph::render_unsupported_nodes() const {
+    std::vector<std::string> result;
+    for (const auto& value : nodes_) {
+        if (value.enabled && !value.render_supported()) result.push_back(value.name);
+    }
+    return result;
+}
+
 void LutExportRequest::validate(const GradeGraph& graph) const {
     if (input_space.empty() || output_space.empty() || (cube_size != 33 && cube_size != 65)) {
         throw std::invalid_argument("LUT export spaces or cube size are invalid");
@@ -125,7 +138,13 @@ GradeNode make_default_grade_node(GradeNodeType type, std::string id) {
             {"contrast", 1.0}, {"pivot", 0.435}, {"saturation", 1.0},
             {"hue", 0.0}, {"colorBoost", 0.0}, {"liftR", 0.0}, {"liftG", 0.0},
             {"liftB", 0.0}, {"gammaR", 1.0}, {"gammaG", 1.0}, {"gammaB", 1.0},
-            {"gainR", 1.0}, {"gainG", 1.0}, {"gainB", 1.0}};
+            {"gainR", 1.0}, {"gainG", 1.0}, {"gainB", 1.0},
+            {"offsetR", 0.0}, {"offsetG", 0.0}, {"offsetB", 0.0}};
+    } else if (type == GradeNodeType::rgb_mixer) {
+        node.parameters = {
+            {"rr", 1.0}, {"rg", 0.0}, {"rb", 0.0},
+            {"gr", 0.0}, {"gg", 1.0}, {"gb", 0.0},
+            {"br", 0.0}, {"bg", 0.0}, {"bb", 1.0}};
     } else if (type == GradeNodeType::rgb_curves || type == GradeNodeType::hue_curves) {
         node.curves.emplace("master", std::vector<CurvePoint>{{0.0, 0.0}, {1.0, 1.0}});
     }

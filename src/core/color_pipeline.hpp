@@ -58,6 +58,7 @@ struct GradeNode final {
 
     bool operator==(const GradeNode&) const = default;
     [[nodiscard]] bool lut_representable() const noexcept;
+    [[nodiscard]] bool render_supported() const noexcept;
     void validate() const;
 };
 
@@ -71,6 +72,7 @@ public:
     void move(const std::string& id, std::size_t insertion_index);
     [[nodiscard]] bool lut_representable() const noexcept;
     [[nodiscard]] std::vector<std::string> lut_incompatible_nodes() const;
+    [[nodiscard]] std::vector<std::string> render_unsupported_nodes() const;
 
     bool operator==(const GradeGraph&) const = default;
 

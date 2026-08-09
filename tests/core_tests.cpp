@@ -2,7 +2,10 @@
 #include "core/color_pipeline.hpp"
 #include "core/render_preflight.hpp"
 #include "color/ocio_engine.hpp"
+#include "color/grade_processor.hpp"
+#include "color/color_frame_processor.hpp"
 #include "media/oiio_probe.hpp"
+#include "media/oiio_frame_source.hpp"
 #include "core/ffprobe_parser.hpp"
 #include "core/timeline_model.hpp"
 #include "core/subtitle_srt.hpp"
@@ -144,6 +147,45 @@ void test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube() {
     const auto cube = engine.bake_cube("ACEScct", "ACEScg", 33);
     require(cube.contains("LUT_3D_SIZE 33"),
             "Resolve Cube baker must honor the requested real-time LUT size");
+    const auto shader = engine.gpu_shader_hlsl("ACEScg", "ACES2065-1");
+    require(!shader.cache_id.empty() && !shader.source.empty() &&
+                shader.function_name == "ffgui_ocio_transform",
+            "ACES processor must produce a cacheable Direct3D 11 HLSL shader description");
+}
+
+void test_float_grade_pipeline_preserves_alpha_and_node_mix() {
+    ffgui::GradeGraph grade;
+    auto primary = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary-1");
+    primary.parameters["exposure"] = 1.0;
+    primary.mix = 0.5;
+    grade.add(primary);
+    float pixel[]{0.25F, 0.25F, 0.25F, 0.4F};
+    ffgui::apply_grade_graph_rgba32f(pixel, 1, grade);
+    require(std::abs(pixel[0] - 0.375F) < 0.00001F &&
+                std::abs(pixel[1] - 0.375F) < 0.00001F &&
+                std::abs(pixel[2] - 0.375F) < 0.00001F &&
+                std::abs(pixel[3] - 0.4F) < 0.00001F,
+            "primary exposure and node mix must operate in float RGB without changing alpha");
+
+    ffgui::FloatImageFrame premultiplied;
+    premultiplied.width = 1;
+    premultiplied.height = 1;
+    premultiplied.premultiplied = true;
+    premultiplied.rgba = {0.125F, 0.125F, 0.125F, 0.5F};
+    primary.mix = 1.0;
+    ffgui::GradeGraph fullGrade;
+    fullGrade.add(primary);
+    const auto processed = ffgui::process_color_frame(
+        premultiplied, {}, {}, fullGrade, {});
+    require(std::abs(processed.rgba[0] - 0.25F) < 0.00001F &&
+                std::abs(processed.rgba[3] - 0.5F) < 0.00001F,
+            "premultiplied alpha must be separated for grading and restored afterward");
+
+    ffgui::GradeGraph unsupported;
+    unsupported.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::color_warper, "warper"));
+    require_throws<std::invalid_argument>([&] {
+        ffgui::apply_grade_graph_rgba32f(pixel, 1, unsupported);
+    }, "unimplemented grade nodes must never be silently ignored by the reference renderer");
 }
 
 void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
@@ -158,7 +200,9 @@ void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
     auto output = OIIO::ImageOutput::create(path.string());
     require(static_cast<bool>(output) && output->open(path.string(), spec),
             "OpenImageIO EXR test output must open");
-    const std::vector<float> pixels(2 * 2 * 4, 0.5F);
+    const std::vector<float> pixels{
+        0.1F, 0.2F, 0.3F, 0.25F, 0.4F, 0.5F, 0.6F, 0.5F,
+        0.7F, 0.8F, 0.9F, 0.75F, 1.0F, 0.9F, 0.8F, 1.0F};
     require(output->write_image(OIIO::TypeDesc::FLOAT, pixels.data()) && output->close(),
             "OpenImageIO EXR test pixels must be written");
     const auto metadata = ffgui::probe_image_metadata(path);
@@ -166,6 +210,29 @@ void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
                 metadata.parts[0].has_alpha &&
                 metadata.parts[0].layers == std::vector<std::string>{"beauty"},
             "OpenImageIO probe must expose EXR layer, alpha and source color space");
+    const auto frame = ffgui::read_float_image_frame(
+        {path, metadata.parts[0].name,
+         {"beauty.R", "beauty.G", "beauty.B", "beauty.A"}});
+    require(frame.width == 2 && frame.height == 2 && frame.rgba == pixels &&
+                frame.color_space == "ACEScg" && frame.premultiplied,
+            "float frame source must preserve selected AOV values, alpha and color metadata");
+    const auto remapped = ffgui::read_float_image_frame(
+        {path, metadata.parts[0].name,
+         {"beauty.B", "beauty.R", "missing", "missingAlpha"}});
+    require(std::abs(remapped.rgba[0] - 0.3F) < 0.00001F &&
+                std::abs(remapped.rgba[1] - 0.1F) < 0.00001F &&
+                remapped.rgba[2] == 0.0F && remapped.rgba[3] == 1.0F,
+            "AOV channel mapping must reorder channels and use safe RGB/alpha defaults");
+    ffgui::ImageFrameCache cache(64);
+    const auto first = cache.get({path, metadata.parts[0].name,
+                                  {"beauty.R", "beauty.G", "beauty.B", "beauty.A"}});
+    const auto second = cache.get({path, metadata.parts[0].name,
+                                   {"beauty.R", "beauty.G", "beauty.B", "beauty.A"}});
+    require(first == second && cache.entry_count() == 1 && cache.byte_size() == 64,
+            "frame cache must reuse an immutable float frame inside its byte budget");
+    cache.invalidate(path);
+    require(cache.entry_count() == 0 && cache.byte_size() == 0,
+            "frame cache invalidation must remove changed source frames");
     std::filesystem::remove_all(root);
 }
 
@@ -996,6 +1063,17 @@ void test_render_preflight_blocks_offline_and_unresolved_managed_media() {
     settings.mode = ffgui::ColorPipelineMode::legacy;
     require(ffgui::build_render_preflight(managed, settings).can_render(),
             "legacy output must preserve unresolved media without an automatic transform");
+    auto graded = managed.clips().front();
+    graded.id = "graded";
+    graded.grade.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary"));
+    TimelineModel gradedTimeline;
+    gradedTimeline.add_asset(MediaAsset{"managed", path, seconds(1)});
+    gradedTimeline.append_clip(std::move(graded));
+    report = ffgui::build_render_preflight(gradedTimeline, {});
+    require(!report.can_render() && std::ranges::any_of(report.issues, [](const auto& issue) {
+                return issue.code == "grade-render-not-connected";
+            }),
+            "exports must block rather than silently ignore a clip grade before frame-server wiring");
     std::filesystem::remove(path);
 }
 
@@ -1008,6 +1086,7 @@ int main() {
         {"media_asset_separates_original_and_playback_paths", test_media_asset_separates_original_and_playback_paths},
         {"color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes", test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes},
         {"ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube", test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube},
+        {"float_grade_pipeline_preserves_alpha_and_node_mix", test_float_grade_pipeline_preserves_alpha_and_node_mix},
         {"oiio_probe_reports_exr_layers_alpha_and_color_space", test_oiio_probe_reports_exr_layers_alpha_and_color_space},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},
         {"global_frame_trim_is_atomic_magnetic_and_undoable", test_global_frame_trim_is_atomic_magnetic_and_undoable},

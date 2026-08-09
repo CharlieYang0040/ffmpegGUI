@@ -26,6 +26,11 @@ RenderPreflightReport build_render_preflight(
     RenderPreflightReport report;
     std::unordered_set<std::string> inspected;
     for (const auto& clip : timeline.clips()) {
+        if (!clip.grade.nodes().empty()) {
+            report.issues.push_back({PreflightSeverity::blocker, "grade-render-not-connected",
+                "Clip grade nodes require the unified float frame server before export",
+                clip.asset_id, {}});
+        }
         if (!inspected.insert(clip.asset_id).second) continue;
         const auto* asset = timeline.asset(clip.asset_id);
         if (asset == nullptr) {

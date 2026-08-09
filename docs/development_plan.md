@@ -236,8 +236,12 @@
 - [x] 누락 프레임 미리보기 슬레이트와 출력용 nearest-frame 대체 소스 분리
 - [x] 반 해상도 intra H.264 재생 프록시와 원본 해상도 10-bit 4:4:4 출력 소스 분리
 - [x] OpenImageIO 3.1/OpenEXR 멀티파트·레이어·AOV·알파 메타데이터 수집
+- [x] 선택 part/AOV RGBA를 32-bit float로 읽는 OIIO 프레임 소스와 512MB LRU 캐시
+- [x] 파일 크기·수정 시각 기반 캐시 키와 자산별 증분 무효화 계약
 - [x] Deep EXR 명시적 차단과 ACEScg/sRGB 기본 입력 규칙
 - [x] OpenColorIO 2.5.2와 ACES 2.0 Studio Config 의존성 잠금
+- [x] premultiplied 알파 분리/복원, 입력→ACEScg→그레이드→출력 CPU 기준 렌더
+- [x] OCIO D3D11 HLSL·1D/3D LUT texture·binding 추출 및 shader cache ID
 - [x] Legacy/ACES Managed/Custom OCIO 프로젝트 모델과 HDR 메타데이터 설정 기반
 - [x] 클립별 순서형 GradeGraph, 노드 추가·삭제·순서·bypass·mix·기본 파라미터 UI
 - [x] 미디어 오프라인·누락·관리형 입력 색공간 미확정 출력 사전 검사
@@ -254,9 +258,10 @@
 
 ### 현재 완료 경계
 
-- 컬러 모델과 OCIO/OIIO 엔진은 빌드·저장·검증되지만, GradeGraph의 신규 고급 노드는
-  아직 GES 미리보기/FFmpeg 출력 픽셀 경로에 적용하지 않는다. 기존 밝기·대비·채도만
-  기존 공통 경로로 동작한다.
+- Primary exposure/LGG/contrast/pivot/saturation, RGB Mixer, RGB Curve의 CPU float
+  기준 처리는 구현되었지만 아직 GES 미리보기/FFmpeg 출력 프레임 서버에 연결하지 않았다.
+  이 상태에서 노드를 무시한 영상을 만들지 않도록 GradeGraph가 있는 출력은 사전 검사에서
+  명시적으로 차단한다. 기존 밝기·대비·채도만 기존 공통 경로로 동작한다.
 - HDR 설정은 프로젝트 계약까지 구현되었고 scRGB/PQ 스왑체인 전환은 미구현이다.
 - EXR AOV 선택 정보는 저장되지만 선택 채널의 실제 렌더 소스 생성은 다음 단계다.
 

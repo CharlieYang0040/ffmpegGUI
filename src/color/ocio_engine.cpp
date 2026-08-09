@@ -106,4 +106,76 @@ std::string OcioEngine::bake_cube(const std::string& input_space,
     }
 }
 
+OcioGpuShader OcioEngine::gpu_shader_hlsl(
+    const std::string& input_space, const std::string& output_space) const {
+    if (!managed()) throw std::logic_error("Legacy color mode has no OCIO GPU shader");
+    if (input_space.empty() || output_space.empty()) {
+        throw std::invalid_argument("OCIO GPU shader spaces are invalid");
+    }
+    try {
+        const auto processor = impl_->config->getProcessor(input_space.c_str(), output_space.c_str());
+        const auto gpu = processor->getDefaultGPUProcessor();
+        auto description = OCIO::GpuShaderDesc::CreateShaderDesc();
+        description->setLanguage(OCIO::GPU_LANGUAGE_HLSL_DX11);
+        description->setFunctionName("ffgui_ocio_transform");
+        description->setPixelName("pixel");
+        description->setResourcePrefix("ffgui_ocio_");
+        gpu->extractGpuShaderInfo(description);
+
+        OcioGpuShader result;
+        result.cache_id = description->getCacheID();
+        result.source = description->getShaderText();
+        result.function_name = "ffgui_ocio_transform";
+        for (unsigned index = 0; index < description->getNumTextures(); ++index) {
+            const char* name = nullptr;
+            const char* sampler = nullptr;
+            unsigned width = 0;
+            unsigned height = 0;
+            OCIO::GpuShaderCreator::TextureType channel{};
+            OCIO::GpuShaderCreator::TextureDimensions dimensions{};
+            OCIO::Interpolation interpolation{};
+            description->getTexture(
+                index, name, sampler, width, height, channel, dimensions, interpolation);
+            const float* values = nullptr;
+            description->getTextureValues(index, values);
+            const auto channels = channel == OCIO::GpuShaderCreator::TEXTURE_RED_CHANNEL ? 1U : 3U;
+            const auto count = static_cast<std::size_t>(width) * std::max(1U, height) * channels;
+            OcioGpuTexture texture;
+            texture.name = name == nullptr ? "" : name;
+            texture.sampler = sampler == nullptr ? "" : sampler;
+            texture.width = width;
+            texture.height = std::max(1U, height);
+            texture.depth = 1;
+            texture.channels = channels;
+            texture.binding = description->getTextureShaderBindingIndex(index);
+            texture.values.assign(values, values + count);
+            result.textures.push_back(std::move(texture));
+        }
+        for (unsigned index = 0; index < description->getNum3DTextures(); ++index) {
+            const char* name = nullptr;
+            const char* sampler = nullptr;
+            unsigned edge = 0;
+            OCIO::Interpolation interpolation{};
+            description->get3DTexture(index, name, sampler, edge, interpolation);
+            const float* values = nullptr;
+            description->get3DTextureValues(index, values);
+            const auto count = static_cast<std::size_t>(edge) * edge * edge * 3;
+            OcioGpuTexture texture;
+            texture.name = name == nullptr ? "" : name;
+            texture.sampler = sampler == nullptr ? "" : sampler;
+            texture.width = edge;
+            texture.height = edge;
+            texture.depth = edge;
+            texture.channels = 3;
+            texture.binding = description->get3DTextureShaderBindingIndex(index);
+            texture.values.assign(values, values + count);
+            result.textures.push_back(std::move(texture));
+        }
+        if (result.source.empty()) throw std::runtime_error("OpenColorIO produced an empty GPU shader");
+        return result;
+    } catch (const OCIO::Exception& error) {
+        throw std::runtime_error(std::string("OpenColorIO GPU shader generation failed: ") + error.what());
+    }
+}
+
 }  // namespace ffgui

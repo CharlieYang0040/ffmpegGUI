@@ -18,7 +18,8 @@ ImageMetadata probe_image_metadata(const std::filesystem::path& path) {
         if (!input->seek_subimage(subimage, 0, spec)) break;
         ImagePartMetadata part;
         part.subimage = subimage;
-        part.name = spec.get_string_attribute("oiio:subimagename", "part" + std::to_string(subimage));
+        part.name = spec.get_string_attribute("oiio:subimagename");
+        if (part.name.empty()) part.name = "part" + std::to_string(subimage);
         part.width = spec.width;
         part.height = spec.height;
         part.deep = spec.deep;

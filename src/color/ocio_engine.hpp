@@ -9,6 +9,24 @@
 
 namespace ffgui {
 
+struct OcioGpuTexture final {
+    std::string name;
+    std::string sampler;
+    unsigned width{};
+    unsigned height{};
+    unsigned depth{};
+    unsigned channels{};
+    unsigned binding{};
+    std::vector<float> values;
+};
+
+struct OcioGpuShader final {
+    std::string cache_id;
+    std::string source;
+    std::string function_name;
+    std::vector<OcioGpuTexture> textures;
+};
+
 class OcioEngine final {
 public:
     explicit OcioEngine(const ColorPipelineSettings& settings);
@@ -27,6 +45,8 @@ public:
     [[nodiscard]] std::string bake_cube(const std::string& input_space,
                                         const std::string& output_space,
                                         int cube_size) const;
+    [[nodiscard]] OcioGpuShader gpu_shader_hlsl(const std::string& input_space,
+                                                const std::string& output_space) const;
 
 private:
     struct Impl;

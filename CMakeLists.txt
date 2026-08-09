@@ -21,6 +21,8 @@ include(CTest)
 
 add_library(ffgui_core STATIC
     src/color/ocio_engine.cpp
+    src/color/grade_processor.cpp
+    src/color/color_frame_processor.cpp
     src/core/color_pipeline.cpp
     src/core/ffprobe_parser.cpp
     src/core/media_asset.cpp
@@ -29,6 +31,7 @@ add_library(ffgui_core STATIC
     src/core/subtitle_srt.cpp
     src/core/timeline_model.cpp
     src/media/oiio_probe.cpp
+    src/media/oiio_frame_source.cpp
     src/export/ffmpeg_export_plan.cpp
 )
 add_library(ffgui::core ALIAS ffgui_core)
