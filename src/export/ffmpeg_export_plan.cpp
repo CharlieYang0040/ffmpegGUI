@@ -63,7 +63,7 @@ bool can_stream_copy(const ExportRequest& request) {
                clip.audio_fade_in == 0 && clip.audio_fade_out == 0 &&
                clip.playback_rate == 1.0 && clip.brightness == 0.0 &&
                clip.contrast == 1.0 && clip.saturation == 1.0 &&
-               clip.transition_in == 0 &&
+               clip.transition_in == 0 && clip.color_lut_path.empty() &&
                is_boundary(clip, clip.source_in) &&
                is_boundary(clip, checked_add(clip.source_in, clip.duration));
     });
@@ -250,17 +250,20 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
 
         const auto suffix = std::to_string(index);
         filter += "[" + suffix + ":v:0]";
+        if (!clip.color_lut_path.empty()) {
+            filter += "lut3d=file='" + filter_path(clip.color_lut_path) +
+                "':interp=tetrahedral,";
+        } else if (clip.brightness != 0.0 || clip.contrast != 1.0 || clip.saturation != 1.0) {
+            filter += "eq=brightness=" + decimal(clip.brightness) +
+                ":contrast=" + decimal(clip.contrast) +
+                ":saturation=" + decimal(clip.saturation) + ",";
+        }
         if (request.output_width > 0) {
             filter += "scale=" + std::to_string(request.output_width) + ":" +
                 std::to_string(request.output_height) +
                 ":force_original_aspect_ratio=decrease,pad=" +
                 std::to_string(request.output_width) + ":" +
                 std::to_string(request.output_height) + ":(ow-iw)/2:(oh-ih)/2,setsar=1,";
-        }
-        if (clip.brightness != 0.0 || clip.contrast != 1.0 || clip.saturation != 1.0) {
-            filter += "eq=brightness=" + decimal(clip.brightness) +
-                ":contrast=" + decimal(clip.contrast) +
-                ":saturation=" + decimal(clip.saturation) + ",";
         }
         filter += "settb=AVTB,setpts=(PTS-STARTPTS)/" + decimal(clip.playback_rate) +
                   ",trim=duration=" + seconds(clip.timeline_duration());

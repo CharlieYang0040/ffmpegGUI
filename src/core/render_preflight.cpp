@@ -32,9 +32,10 @@ RenderPreflightReport build_render_preflight(
                 "Timeline clip refers to an asset that is not registered", clip.asset_id, {}});
             continue;
         }
-        if (!clip.grade.nodes().empty() && !asset->image_sequence().has_value()) {
-            report.issues.push_back({PreflightSeverity::blocker, "grade-render-not-connected",
-                "Video clip grade nodes require the unified float decoder before export",
+        const auto unsupportedGradeNodes = clip.grade.render_unsupported_nodes();
+        if (!unsupportedGradeNodes.empty()) {
+            report.issues.push_back({PreflightSeverity::blocker, "grade-node-not-renderable",
+                "Clip grade contains nodes that the render pipeline cannot evaluate",
                 clip.asset_id, {}});
         }
         if (!inspected.insert(clip.asset_id).second) continue;

@@ -102,8 +102,9 @@ TimelineModel
 
 디졸브는 뒤 클립의 `transition_in`에 저장한다. `TimelineModel::snapshot()`은 그 길이만큼
 뒤 클립의 시작을 앞으로 당겨 두 `TimelineSpan`을 겹치고, 전체 시퀀스 길이와 원본 프레임
-매핑도 같은 겹침을 반영한다. GES 레이어의 자동 전환은 겹친 소스 구간에 영상·오디오
-전환을 만들며, 겹침 구간의 편집 좌표는 화면 위에 놓이는 뒤 클립을 우선한다.
+매핑도 같은 겹침을 반영한다. 겹침 구간의 편집 좌표는 화면 위에 놓이는 뒤 클립을
+우선한다. 다만 GES 자동 전환은 현재 런타임의 네이티브 충돌 때문에 사용하지 않으며,
+일반 영상 미리보기는 안전한 하드컷, 이미지 시퀀스와 최종 출력은 실제 디졸브를 사용한다.
 
 현재 기본 영상 출력은 `d3d11upload ! d3d11convert ! RGBA D3D11 appsink`이며 별도
 네이티브 `QWindow`, HWND와 `d3d11videosink`를 사용하지 않는다. Qt와 GStreamer가 같은
@@ -144,10 +145,10 @@ soak는 112회 PTS 일치 seek, 최대 851.373ms, 측정 구간 private memory �
 확인했다. CPU BGRA 30초 soak도 112회 PTS 일치 seek, 최대 851.373ms, 메모리 증가
 0MiB로 폴백 기준선을 유지한다.
 
-`TimelineSpan::has_audio`는 분석된 자산의 실제 오디오 존재 여부를 전달한다. 영상만 있는
-클립에는 GES `volume`과 `pitch`를 붙이지 않으며, 속도 변경은 영상 `videorate`, 오디오
-`pitch`로 분리한다. 이 계약이 없으면 무음 4K 클립의 상태 전환 중 GObject 접근 위반이
-발생할 수 있다.
+`TimelineSpan::has_audio`는 분석된 자산의 실제 오디오 존재 여부를 전달한다. 속도 변경은
+영상 `videorate`, 오디오 `pitch`로 분리하며 영상만 있는 클립에는 오디오 효과를 만들지
+않는다. gain·fade는 GES의 미해결 동적 자식 문제 때문에 미리보기에서 격리하고 최종 출력
+그래프에서 적용한다.
 
 ## 타임라인 시각 캐시
 
@@ -182,20 +183,27 @@ HEVC, 안전할 때 stream-copy), 컨테이너(MP4, MKV, MOV), 해상도와 FPS�
 NVENC 실패 시 선택한 코덱의 CPU 인코더로만 전환하며 MP4/MOV 전용 `faststart`·`hvc1`
 옵션은 Matroska에 전달하지 않는다. 취소·실패 시 불완전 출력은 삭제하고 기존 파일은
 자동으로 덮어쓰지 않는다.
-클립 gain·음소거·페이드는 GES `volume` 제어 곡선과 FFmpeg `volume`/`afade` 필터로
-각각 컴파일한다. 오디오 효과가 하나라도 있으면 stream-copy 조건에서 제외한다.
+클립 gain·음소거·페이드는 FFmpeg `volume`/`afade` 필터로 최종 출력에 컴파일한다.
+GES 1.28 URI 클립의 동적 `volume` 자식은 빠른 그래프 재구축 중 미해결 객체가 될 수 있어
+미리보기에서는 적용하지 않는다. 오디오 효과가 하나라도 있으면 stream-copy 조건에서 제외한다.
 클립 속도는 GES `pitch tempo` 효과로 미리보고, FFmpeg에서는 영상 `setpts`와 오디오
 `atempo` 체인으로 컴파일한다. 0.25배처럼 단일 `atempo` 범위를 벗어나는 값은 여러
 필터로 나누며 속도 변경이 있는 출력은 stream-copy 조건에서 제외한다.
-클립 밝기·대비·채도는 GES `videobalance`와 FFmpeg `eq`로 같은 모델 값을 사용한다.
+클립 밝기·대비·채도와 GradeGraph는 공통 float 처리기로 미리보고, 최종 출력에서는 같은
+처리 결과를 33³ Cube LUT로 베이크해 클립 입력에 적용한다. 색변환이 없는 단순 Legacy
+출력만 FFmpeg `eq` 빠른 경로를 사용할 수 있다.
 해상도 변경은 비율 유지 scale/pad, FPS 변경은 `fps` 필터로 컴파일하며 이 변환이나
 색보정이 하나라도 있으면 stream-copy 조건에서 제외한다.
-디졸브는 FFmpeg 영상 `xfade`와 오디오 `acrossfade`로 컴파일한다. 각 전환의 offset은
+디졸브는 FFmpeg 영상 `xfade`와 오디오 `acrossfade`로 컴파일한다. 클립 LUT는 scale과
+`xfade`보다 먼저 실행되어 양쪽 샷이 각각 색처리된 후 합성된다. 각 전환의 offset은
 앞에서 이미 합성한 길이에서 현재 겹침을 뺀 시퀀스 좌표이며, 전환이 하나라도 있으면
 stream-copy 대신 재인코딩한다. `xfade` 전에는 MKV/VFR을 포함한 각 영상 입력을 공통
 CFR(사용자 지정 FPS, 미지정 시 전환 합성용 30fps), AVTB, 0 기반 PTS와 `yuv420p`로
 정규화하고 정확한 타임라인 길이로 다시 자른다. 마지막 프레임 한 장을 보강한 뒤 재트림해
 짧은 입력 EOF 때문에 전환 구간 전체가 정지 프레임으로 채워지지 않게 한다.
+GES 1.28의 자동 전환과 명시적 `GESTransitionClip`은 빠른 오버랩 재구축에서 네이티브
+접근 위반이 재현되어 비활성화했다. 일반 영상 미리보기는 안전한 하드컷을 사용하고,
+이미지 시퀀스 float 미리보기와 최종 출력은 모델의 디졸브를 그대로 계산한다.
 자유 문구는 출력 시 정규화 좌표를 1280x720 ASS 기준 좌표로 바꿔 UTF-8 스크립트에
 컴파일하고 FFmpeg `ass` 필터로 번인한다. 문구의 검은 배경 불투명도는 문구별 ASS opaque-box
 스타일로 컴파일한다. 스탬프 오버레이 방식은 ASS 도형을 영상 위에 합성해 해상도를 유지한다.

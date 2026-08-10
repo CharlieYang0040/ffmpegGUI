@@ -154,6 +154,13 @@ void test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube() {
     const auto cube = engine.bake_cube("ACEScct", "ACEScg", 33);
     require(cube.contains("LUT_3D_SIZE 33"),
             "Resolve Cube baker must honor the requested real-time LUT size");
+    ffgui::SourceColorDescriptor rec709;
+    rec709.input_color_space = "Camera Rec.709";
+    const auto clipCube = ffgui::bake_color_cube(
+        rec709, settings, {}, "sRGB - Display", 2);
+    require(clipCube.contains("LUT_3D_SIZE 2") &&
+                std::ranges::count(clipCube, '\n') == 12,
+            "managed video export LUT must evaluate input, ACEScg and display transforms");
     const auto shader = engine.gpu_shader_hlsl("ACEScg", "ACES2065-1");
     require(!shader.cache_id.empty() && !shader.source.empty() &&
                 shader.function_name == "ffgui_ocio_transform",
@@ -193,6 +200,10 @@ void test_float_grade_pipeline_preserves_alpha_and_node_mix() {
     require_throws<std::invalid_argument>([&] {
         ffgui::apply_grade_graph_rgba32f(pixel, 1, unsupported);
     }, "unimplemented grade nodes must never be silently ignored by the reference renderer");
+
+    const auto cube = ffgui::bake_color_cube({}, {}, fullGrade, {}, 2);
+    require(cube.contains("LUT_3D_SIZE 2") && std::ranges::count(cube, '\n') == 12,
+            "clip color cube must contain every RGB lattice point from the reference path");
 }
 
 void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
@@ -1063,6 +1074,7 @@ void test_ffmpeg_export_plan_compiles_video_and_audio_dissolve() {
         std::filesystem::path{"result.mp4"},
         ffgui::ExportVideoEncoder::libx264};
     request.clips[1].transition_in = seconds(1);
+    request.clips[0].color_lut_path = std::filesystem::path{"clip A.cube"};
     const auto plan = ffgui::compile_ffmpeg_export(request);
     require(plan.duration == seconds(7),
             "dissolve export duration must subtract the overlap");
@@ -1070,6 +1082,9 @@ void test_ffmpeg_export_plan_compiles_video_and_audio_dissolve() {
     for (const auto& argument : plan.arguments) arguments += argument + '\n';
     require(arguments.contains("xfade=transition=fade:duration=1.000000000:offset=3.000000000"),
             "video dissolve must use the cumulative overlap offset");
+    require(arguments.contains("lut3d=file='clip A.cube':interp=tetrahedral") &&
+                arguments.find("lut3d=") < arguments.find("xfade="),
+            "clip color LUT must run before the timeline dissolve");
     require(arguments.contains("acrossfade=d=1.000000000:c1=tri:c2=tri"),
             "audio dissolve must match the video overlap duration");
     require(arguments.contains("fps=30:round=near:eof_action=pass") &&
@@ -1131,10 +1146,8 @@ void test_render_preflight_blocks_offline_and_unresolved_managed_media() {
     gradedTimeline.add_asset(MediaAsset{"managed", path, seconds(1)});
     gradedTimeline.append_clip(std::move(graded));
     report = ffgui::build_render_preflight(gradedTimeline, {});
-    require(!report.can_render() && std::ranges::any_of(report.issues, [](const auto& issue) {
-                return issue.code == "grade-render-not-connected";
-            }),
-            "video exports must block rather than silently ignore a grade before float decoding");
+    require(report.can_render(),
+            "video grades must pass after per-clip LUT export wiring");
     ffgui::ImageSequenceDescriptor renderableSequence;
     renderableSequence.directory = path.parent_path();
     renderableSequence.prefix = path.filename().string();

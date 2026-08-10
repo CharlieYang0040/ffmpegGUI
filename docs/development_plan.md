@@ -251,6 +251,11 @@
 - [x] float 출력 진행률·취소·NVENC 실패 시 CPU 재시도·ffprobe 결과 검증
 - [x] GES 지속 디코더의 RGBA64_LE 일반 영상 프레임 계약과 640×360 컬러 프록시
 - [x] 일반 영상·이미지 시퀀스 혼합 타임라인의 비동기 OCIO/GradeGraph 미리보기
+- [x] 공통 CPU 컬러 경로를 33³ Cube LUT로 베이크해 일반 영상 GradeGraph 최종 출력
+- [x] 클립별 LUT를 scale·디졸브 전에 적용하는 FFmpeg 합성 계약
+- [x] 영상·이미지 시퀀스 혼합 출력에서 디졸브·오디오·문구·스탬프 동시 합성
+- [x] 출력 중 GES 재구축을 중지해 미리보기 네이티브 그래프와 출력 준비의 경합 제거
+- [x] GES 1.28 자동 전환 생성 접근 위반 격리와 충돌 없는 하드컷 fallback
 - [x] 디코더 프레임 최신 요청 병합과 편집 세대가 지난 결과 폐기
 - [x] 1280×720→640×360 float 프록시로 Debug 첫 프레임 처리 약 217ms→56ms
 - [x] OCIO 구성 캐시·비동기 사전 준비로 ACES 첫 표시 프레임 약 397ms→95ms, 후속 약 83ms
@@ -262,31 +267,35 @@
 
 ### 다음 구현 순서
 
-1. 일반 영상 GradeGraph의 float 최종 출력과 영상·시퀀스 혼합 출력
-2. 디졸브 전 클립별 컬러 처리와 float 렌더 뒤 문구·스탬프·레터박스 합성
-3. float 영상 출력에 기존 오디오 편집 결과 결합
-4. OpenImageIO 선택 EXR part/view/AOV 실제 픽셀 경로와 캐시 증분 갱신 완성
-5. OCIO CPU 기준·GPU shader를 공유하는 D3D11 표시 경로 연결
-6. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
-7. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
-8. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
-9. qualifier/window/tracking과 shot still/reference 비교
+1. GES를 우회하는 명시적 영상 프레임 합성기로 미리보기 디졸브·클립 오디오 제어 복구
+2. OpenImageIO 선택 EXR part/view/AOV 실제 픽셀 경로와 캐시 증분 갱신 완성
+3. OCIO CPU 기준·GPU shader를 공유하는 D3D11 표시 경로 연결
+4. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
+5. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
+6. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
+7. qualifier/window/tracking과 shot still/reference 비교
 
 ### 현재 완료 경계
 
 - Primary exposure/LGG/contrast/pivot/saturation, RGB Mixer, RGB Curve의 CPU float 처리는
   이미지 시퀀스의 정지·탐색·연속 재생·디졸브·최종 출력에서 같은 프레임 서버를 사용한다.
-  일반 영상은 아직 float 디코더가 없어 GradeGraph 출력을 계속 차단한다.
-- 이미지 시퀀스 float 출력은 현재 무음 영상과 GIF를 지원한다. 문구·스탬프가 있는
-  GradeGraph 출력은 합성 누락을 방지하기 위해 명시적으로 차단하며, 다음 단계에서
-  float 합성 후 오디오와 함께 결합한다.
-- 일반 영상과 영상·이미지 시퀀스 혼합 타임라인은 16-bit GES 디코더를 통해 컬러
-  미리보기가 가능하지만 최종 출력은 아직 일반 영상 GradeGraph를 차단한다. 디졸브가
-  포함된 혼합 타임라인은 현재 GES 합성 뒤 활성 클립의 컬러를 적용하므로, 다음 단계에서
-  클립별 컬러를 전환 전에 적용하는 렌더 그래프로 교체해야 한다.
+  일반 영상과 혼합 타임라인 출력은 이 기준 경로를 33³ LUT로 베이크하고 각 클립의
+  scale·xfade 전에 적용한다. 따라서 문구·스탬프·레터박스와 편집 오디오도 같은 FFmpeg
+  합성 작업에서 함께 출력된다.
+- 순수 이미지 시퀀스에 그래픽이 없으면 16-bit 원본 float 프레임 서버를 유지한다.
+  혼합 또는 그래픽 출력은 이미지 시퀀스의 10-bit 4:4:4 준비 소스를 사용하므로 EXR 원본
+  32-bit 정밀도와 그래픽을 동시에 보존하는 단일 프레임 서버 결합은 아직 남아 있다.
+- GES 1.28의 자동/명시적 전환 클립은 빠르게 편집된 오버랩에서 null 네이티브 요소 접근
+  위반을 일으킨다. 앱 전체 충돌을 막기 위해 일반 영상 미리보기는 현재 전환 구간을
+  하드컷으로 표시한다. 이미지 시퀀스 float 미리보기와 최종 출력의 디졸브는 정상이다.
+  같은 이유로 클립 오디오 gain/fade는 최종 출력에는 적용되지만 GES 미리보기에서는
+  원본 음량으로 재생한다. 다음 단계는 GES 효과에 의존하지 않는 영상·오디오 프레임 합성기다.
 - HDR 설정은 프로젝트 계약까지 구현되었고 scRGB/PQ 스왑체인 전환은 미구현이다.
 - EXR AOV 선택 정보는 저장되지만 선택 채널의 실제 렌더 소스 생성은 다음 단계다.
 
 검증 기준선: Debug 빌드, 코어 44/44와 타임라인 테스트 통과. 누락 1장을 포함한
 1001–1048 PNG 시퀀스를 별도 환경 변수 없이 Debug EXE에서 가져와 프로젝트 v3
 저장·재로드했으며 `proxy-v4.mkv`와 `export-nearest-v3.mov` 생성을 확인했다.
+일반 영상 3개 출력은 5.968초 MP4, 1280×848 확장 스탬프, 영상·오디오 스트림과
+변화하는 300ms 디졸브 프레임을 확인했다. 일반 영상+누락 PNG 시퀀스+VFR MKV 혼합
+출력도 5.926초 MP4, 영상·오디오, 확장 스탬프와 컬러 LUT를 포함해 통과했다.

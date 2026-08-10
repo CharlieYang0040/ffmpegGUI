@@ -21,6 +21,8 @@ $roundtripProject = Join-Path $mediaDir "roundtrip.ffnext"
 $exportOutput = Join-Path $mediaDir "export-smoke.mp4"
 $hevcExportOutput = Join-Path $mediaDir "export-hevc-compact.mkv"
 $gifExportOutput = Join-Path $mediaDir "export-lightweight.gif"
+$sequenceFrame = Join-Path $root "out\test-media\sequence-smoke\shot.1001.png"
+$mixedExportOutput = Join-Path $mediaDir "export-mixed-sequence.mp4"
 $copySource = Join-Path $mediaDir "stream-copy-source.mp4"
 $copyProject = Join-Path $mediaDir "stream-copy.ffnext"
 $copyOutput = Join-Path $mediaDir "stream-copy-output.mp4"
@@ -88,6 +90,32 @@ if (($frameHashes | Sort-Object -Unique).Count -lt 4) {
     throw "video dissolve froze instead of producing changing transition frames"
 }
 Write-Output "Timeline export passed: rapid split/undo/redo, 300ms dissolve, clip audio, positioned text and letterbox stamp produced a validated $exportDuration second MP4"
+
+if (Test-Path -LiteralPath $sequenceFrame -PathType Leaf) {
+    if (Test-Path -LiteralPath $mixedExportOutput -PathType Leaf) {
+        Remove-Item -LiteralPath $mixedExportOutput -Force
+    }
+    $mixedExport = Start-Process -FilePath $application `
+        -ArgumentList @("--export-smoke", $mixedExportOutput, $clipA, $sequenceFrame, $clipVfr) `
+        -WindowStyle Hidden -Wait -PassThru
+    if ($mixedExport.ExitCode -ne 0 -or
+        -not (Test-Path -LiteralPath $mixedExportOutput -PathType Leaf)) {
+        throw "video/image-sequence mixed color export failed"
+    }
+    $mixedProbe = & (Join-Path $root ".tools\ffmpeg\bin\ffprobe.exe") `
+        -v error -show_entries stream=codec_type,width,height -show_entries format=duration `
+        -of json $mixedExportOutput | ConvertFrom-Json
+    $mixedDuration = [double]::Parse(
+        $mixedProbe.format.duration, [Globalization.CultureInfo]::InvariantCulture)
+    $mixedTypes = @($mixedProbe.streams | ForEach-Object { $_.codec_type })
+    $mixedVideo = @($mixedProbe.streams | Where-Object { $_.codec_type -eq "video" })
+    if ($mixedDuration -lt 5.7 -or $mixedDuration -gt 6.1 -or
+        $mixedTypes -notcontains "audio" -or $mixedVideo.Count -ne 1 -or
+        $mixedVideo[0].width -ne 1280 -or $mixedVideo[0].height -ne 848) {
+        throw "mixed export validation failed"
+    }
+    Write-Output "Mixed media export passed: video, missing-frame PNG sequence, VFR MKV, clip LUT, audio and expanded stamp"
+}
 
 if (Test-Path -LiteralPath $gifExportOutput -PathType Leaf) {
     Remove-Item -LiteralPath $gifExportOutput -Force

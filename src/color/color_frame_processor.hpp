@@ -15,4 +15,14 @@ namespace ffgui {
     const GradeGraph& grade,
     const std::string& output_space);
 
+// Bake the exact CPU color path used by preview and float export into a .cube payload.
+// The resulting LUT can be attached to ordinary video/image inputs before timeline
+// transitions, keeping FFmpeg composition and the managed color path in agreement.
+[[nodiscard]] std::string bake_color_cube(
+    const SourceColorDescriptor& source_color,
+    const ColorPipelineSettings& settings,
+    const GradeGraph& grade,
+    const std::string& output_space,
+    int cube_size = 33);
+
 }  // namespace ffgui

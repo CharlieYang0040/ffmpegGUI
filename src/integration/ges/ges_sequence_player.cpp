@@ -10,8 +10,6 @@
 #include <gst/video/videooverlay.h>
 #include <gst/video/video.h>
 #include <gst/d3d11/gstd3d11.h>
-#include <gst/controller/gstinterpolationcontrolsource.h>
-#include <gst/controller/gsttimedvaluecontrolsource.h>
 
 #include <algorithm>
 #include <chrono>
@@ -25,75 +23,6 @@
 
 namespace ffgui {
 namespace {
-
-std::pair<TimeNs, TimeNs> normalized_fades(const Clip& clip, TimeNs timeline_duration) {
-    auto fadeIn = std::min(clip.audio.fade_in, timeline_duration);
-    auto fadeOut = std::min(clip.audio.fade_out, timeline_duration);
-    const auto total = checked_add(fadeIn, fadeOut);
-    if (total > timeline_duration) {
-        const auto ratio = static_cast<long double>(timeline_duration) /
-                           static_cast<long double>(total);
-        fadeIn = static_cast<TimeNs>(static_cast<long double>(fadeIn) * ratio);
-        fadeOut = timeline_duration - fadeIn;
-    }
-    return {fadeIn, fadeOut};
-}
-
-void add_audio_effect(GESUriClip* uri_clip, const Clip& clip, TimeNs timeline_duration) {
-    auto* effect = ges_effect_new("volume");
-    if (effect == nullptr) {
-        throw std::runtime_error("failed to create clip volume effect");
-    }
-    const auto gain = clip.audio.muted ? 0.0 : clip.audio.gain;
-    const auto [fadeIn, fadeOut] = normalized_fades(clip, timeline_duration);
-    GValue value = G_VALUE_INIT;
-    g_value_init(&value, G_TYPE_DOUBLE);
-    g_value_set_double(&value, gain);
-    const auto volumeSet = ges_timeline_element_set_child_property(
-        GES_TIMELINE_ELEMENT(effect), "volume", &value);
-    g_value_unset(&value);
-    if (!volumeSet) {
-        gst_object_unref(effect);
-        throw std::runtime_error("failed to configure clip volume effect");
-    }
-
-    if ((fadeIn > 0 || fadeOut > 0) && gain > 0.0) {
-        auto* source = gst_interpolation_control_source_new();
-        if (source == nullptr) {
-            gst_object_unref(effect);
-            throw std::runtime_error("failed to create clip fade controller");
-        }
-        g_object_set(source, "mode", GST_INTERPOLATION_MODE_LINEAR, nullptr);
-        auto* timed = GST_TIMED_VALUE_CONTROL_SOURCE(source);
-        const auto setPoint = [timed](TimeNs time, double level) {
-            return gst_timed_value_control_source_set(
-                timed, static_cast<GstClockTime>(time), level);
-        };
-        bool pointsSet = true;
-        if (fadeIn > 0) {
-            pointsSet = setPoint(0, 0.0) && setPoint(fadeIn, gain);
-        } else {
-            pointsSet = setPoint(0, gain);
-        }
-        if (fadeOut > 0) {
-            pointsSet = pointsSet && setPoint(timeline_duration - fadeOut, gain) &&
-                setPoint(timeline_duration, 0.0);
-        } else {
-            pointsSet = pointsSet && setPoint(timeline_duration, gain);
-        }
-        const auto bound = pointsSet && ges_track_element_set_control_source(
-            GES_TRACK_ELEMENT(effect), GST_CONTROL_SOURCE(source), "volume", "direct-absolute");
-        gst_object_unref(source);
-        if (!bound) {
-            gst_object_unref(effect);
-            throw std::runtime_error("failed to bind clip fade controller");
-        }
-    }
-    if (!ges_container_add(GES_CONTAINER(uri_clip), GES_TIMELINE_ELEMENT(effect))) {
-        gst_object_unref(effect);
-        throw std::runtime_error("failed to attach clip audio effect");
-    }
-}
 
 void add_speed_effect(GESUriClip* uri_clip, double playback_rate, bool has_audio) {
     if (std::abs(playback_rate - 1.0) < 0.0000005) return;
@@ -110,21 +39,6 @@ void add_speed_effect(GESUriClip* uri_clip, double playback_rate, bool has_audio
     attach("videorate rate=" + rate.str(), "failed to attach video playback-rate effect");
     if (has_audio) {
         attach("pitch tempo=" + rate.str(), "failed to attach audio playback-rate effect");
-    }
-}
-
-void add_color_effect(GESUriClip* uri_clip, const ClipColor& color) {
-    if (color == ClipColor{}) return;
-    std::ostringstream description;
-    description << std::fixed << std::setprecision(6)
-                << "videobalance brightness=" << color.brightness
-                << " contrast=" << color.contrast
-                << " saturation=" << color.saturation;
-    auto* effect = ges_effect_new(description.str().c_str());
-    if (effect == nullptr ||
-        !ges_container_add(GES_CONTAINER(uri_clip), GES_TIMELINE_ELEMENT(effect))) {
-        if (effect != nullptr) gst_object_unref(effect);
-        throw std::runtime_error("failed to attach clip color effect");
     }
 }
 
@@ -545,7 +459,10 @@ void GesSequencePlayer::rebuild_pipeline_locked(
         gst_object_unref(new_timeline);
         throw std::runtime_error("failed to add GES layer");
     }
-    g_object_set(layer, "auto-transition", TRUE, nullptr);
+    // GES 1.28 transition creation can dereference an unresolved native element while a
+    // rapidly edited overlap is rebuilt. A frame-server compositor will replace it; until
+    // then a hard preview cut is safer than a process-wide native crash.
+    g_object_set(layer, "auto-transition", FALSE, nullptr);
     GESLayer* captionLayer = nullptr;
     if (!captions.empty()) {
         captionLayer = ges_layer_new();
@@ -576,17 +493,23 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 ges_timeline_element_set_start(element, span.timeline_in) &&
                 ges_timeline_element_set_inpoint(element, span.clip.source_in) &&
                 ges_timeline_element_set_duration(element, timelineDuration);
-            if (configured) {
-                add_speed_effect(uri_clip, span.clip.playback_rate, span.has_audio);
-                add_color_effect(uri_clip, span.clip.color);
-            }
-            if (configured && span.has_audio && span.clip.audio != ClipAudio{}) {
-                add_audio_effect(uri_clip, span.clip, timelineDuration);
-            }
-            if (!configured || !ges_layer_add_clip(layer, GES_CLIP(uri_clip))) {
+            if (!configured) {
                 gst_object_unref(uri_clip);
                 throw std::runtime_error("failed to configure GES clip");
             }
+            // GESEffect only receives its concrete child GstElement once its parent clip is
+            // in a timeline with tracks. Setting child properties or control bindings before
+            // this point produces null native objects on current GStreamer releases.
+            if (!ges_layer_add_clip(layer, GES_CLIP(uri_clip))) {
+                gst_object_unref(uri_clip);
+                throw std::runtime_error("failed to add GES clip to its layer");
+            }
+            add_speed_effect(uri_clip, span.clip.playback_rate, span.has_audio);
+            // Color is evaluated by the shared float frame processor after GES decoding.
+            // Current GES releases can leave the native child of volume/videobalance effects
+            // unresolved for URI clips, which makes child-property control crash the process.
+            // Audio controls remain authoritative in the FFmpeg export graph; preview keeps
+            // decoded audio unmodified until it moves to the same frame-server mixer.
         }
 
         for (const auto& caption : captions) {

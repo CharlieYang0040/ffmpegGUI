@@ -594,6 +594,7 @@ EditorController::~EditorController() {
     }
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
     if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
+    for (const auto& path : export_color_lut_paths_) QFile::remove(path);
 }
 
 std::uint64_t EditorController::videoFramesReceived() const noexcept {
@@ -3198,15 +3199,17 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             : QStringLiteral("출력 중단: %1").arg(QString::fromStdString(blocker->message)));
         return;
     }
-    const auto hasGradeNodes = std::ranges::any_of(timeline_.clips(), [](const auto& clip) {
-        return !clip.grade.nodes().empty();
-    });
-    if (hasGradeNodes && (!timeline_.captions().empty() || stamp_enabled_)) {
-        setStatus(QStringLiteral(
-            "출력 중단: float 컬러 출력의 문구·스탬프 합성 연결이 아직 필요합니다"));
-        return;
-    }
-
+#ifdef FFGUI_HAS_GES
+    // GES timeline rebuilds mutate a shared native graph. Never let a delayed preview
+    // rebuild race export preparation or process teardown.
+    preview_suspended_for_export_ = true;
+    preview_update_timer_.stop();
+    preview_operation_pending_ = false;
+    pending_preview_seek_.reset();
+    preview_should_play_ = false;
+    if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
+    player_->stop();
+#endif
     ffgui::ExportRequest request;
     request.output_path = std::filesystem::path(output.toStdWString());
     request.prefer_stream_copy = export_codec_ == 2;
@@ -3281,14 +3284,67 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     const auto exportCache = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
         .filePath("export-jobs");
     QDir().mkpath(exportCache);
-    export_concat_path_ = QDir(exportCache).filePath(QStringLiteral("%1-%2.ffconcat")
+    const auto exportJobId = QStringLiteral("%1-%2")
         .arg(QCoreApplication::applicationPid())
-        .arg(QDateTime::currentMSecsSinceEpoch()));
+        .arg(QDateTime::currentMSecsSinceEpoch());
+    export_concat_path_ = QDir(exportCache).filePath(exportJobId + ".ffconcat");
     request.concat_script_path = std::filesystem::path(export_concat_path_.toStdWString());
-    export_subtitle_path_ = QDir(exportCache).filePath(QStringLiteral("%1-%2.ass")
-        .arg(QCoreApplication::applicationPid())
-        .arg(QDateTime::currentMSecsSinceEpoch()));
+    export_subtitle_path_ = QDir(exportCache).filePath(exportJobId + ".ass");
     request.subtitle_script_path = std::filesystem::path(export_subtitle_path_.toStdWString());
+
+    // Sequence-only jobs use the original float frame server. Other jobs retain the
+    // established FFmpeg transition/audio/overlay graph and apply the exact clip color
+    // transform as a 3D LUT before composition.
+    const bool floatOnly = std::ranges::all_of(exportSnapshot, [this](const auto& span) {
+        const auto* asset = timeline_.asset(span.clip.asset_id);
+        return asset != nullptr && asset->image_sequence().has_value();
+    }) && timeline_.captions().empty() && !stamp_enabled_;
+    export_color_lut_paths_.clear();
+    if (!floatOnly) {
+        const auto outputSpace = color_pipeline_.mode == ffgui::ColorPipelineMode::legacy
+            ? std::string{}
+            : color_pipeline_.output_space.empty()
+                ? std::string{"sRGB - Display"} : color_pipeline_.output_space;
+        try {
+            for (std::size_t index = 0; index < exportSnapshot.size(); ++index) {
+                const auto& span = exportSnapshot[index];
+                const auto* asset = timeline_.asset(span.clip.asset_id);
+                const bool hasClipControls = span.clip.color.brightness != 0.0 ||
+                    span.clip.color.contrast != 1.0 || span.clip.color.saturation != 1.0;
+                if (asset == nullptr || (color_pipeline_.mode == ffgui::ColorPipelineMode::legacy &&
+                    span.clip.grade.nodes().empty() && !hasClipControls)) {
+                    continue;
+                }
+                const auto lutPath = QDir(exportCache).filePath(
+                    QStringLiteral("%1-clip-%2.cube").arg(exportJobId).arg(index));
+                const auto payload = ffgui::bake_color_cube(
+                    asset->source_color(), color_pipeline_,
+                    ffgui::compose_clip_grade(span.clip), outputSpace, 33);
+                QSaveFile file(lutPath);
+                const auto bytes = QByteArray::fromStdString(payload);
+                if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() ||
+                    !file.commit()) {
+                    throw std::runtime_error("clip color LUT could not be written");
+                }
+                export_color_lut_paths_.push_back(lutPath);
+                request.clips[index].color_lut_path =
+                    std::filesystem::path(lutPath.toStdWString());
+                request.clips[index].brightness = 0.0;
+                request.clips[index].contrast = 1.0;
+                request.clips[index].saturation = 1.0;
+            }
+        } catch (const std::exception& error) {
+            for (const auto& path : export_color_lut_paths_) QFile::remove(path);
+            export_color_lut_paths_.clear();
+            setStatus(QStringLiteral("출력 중단: 컬러 준비 실패 · %1")
+                .arg(QString::fromUtf8(error.what())));
+#ifdef FFGUI_HAS_GES
+            preview_suspended_for_export_ = false;
+            queuePreviewOperation(true);
+#endif
+            return;
+        }
+    }
     export_request_ = std::move(request);
     // The export contract is the immutable model snapshot captured above. Preview preparation
     // is asynchronous and must never make a newer edit unexportable or export stale clips.
@@ -3462,10 +3518,15 @@ void EditorController::finishExport(bool success) {
                       << "log=" << export_log_path_;
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
     if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
+    for (const auto& path : export_color_lut_paths_) QFile::remove(path);
     export_concat_path_.clear();
     export_subtitle_path_.clear();
+    export_color_lut_paths_.clear();
     export_stream_copy_active_ = false;
     exporting_ = false;
+#ifdef FFGUI_HAS_GES
+    preview_suspended_for_export_ = false;
+#endif
     export_stage_.clear();
     emit exportProgressChanged();
     emit exportingChanged();
@@ -3476,10 +3537,14 @@ void EditorController::finishExport(bool success) {
         export_log_file_->close();
         export_log_file_.reset();
     }
+#ifdef FFGUI_HAS_GES
+    if (!timeline_.clips().empty()) queuePreviewOperation(true);
+#endif
 }
 
 void EditorController::queuePreviewOperation(bool restorePosition) {
 #ifdef FFGUI_HAS_GES
+    if (preview_suspended_for_export_) return;
     preview_update_timer_.stop();
     if (restorePosition) pending_preview_seek_ = playhead_ns_;
     preview_operation_pending_ = true;
@@ -3491,7 +3556,8 @@ void EditorController::queuePreviewOperation(bool restorePosition) {
 
 void EditorController::startPreviewOperation() {
 #ifdef FFGUI_HAS_GES
-    if (preview_watcher_.isRunning() || !preview_operation_pending_) return;
+    if (preview_suspended_for_export_ || preview_watcher_.isRunning() ||
+        !preview_operation_pending_) return;
 
     const auto generation = preview_generation_;
     const bool rebuild = !preview_applied_generation_.has_value() ||

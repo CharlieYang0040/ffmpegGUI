@@ -41,6 +41,7 @@ struct ExportClipInput final {
     double contrast{1.0};
     double saturation{1.0};
     TimeNs transition_in{};
+    std::filesystem::path color_lut_path;
 
     [[nodiscard]] TimeNs timeline_duration() const {
         return static_cast<TimeNs>(std::llround(

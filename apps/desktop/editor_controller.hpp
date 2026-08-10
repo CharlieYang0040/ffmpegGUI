@@ -399,6 +399,7 @@ private:
     bool playing_{};
     bool preview_busy_{};
     bool preview_failed_{};
+    bool preview_suspended_for_export_{};
     QString status_{"미디어를 추가하세요"};
     QString selected_clip_id_;
     QStringList selected_clip_ids_;
@@ -487,6 +488,7 @@ private:
     bool gif_loop_{true};
     QString export_concat_path_;
     QString export_subtitle_path_;
+    QStringList export_color_lut_paths_;
     ffgui::ColorPipelineSettings color_pipeline_;
     static EditorController* singleton_instance_;
 #ifdef FFGUI_HAS_GES
