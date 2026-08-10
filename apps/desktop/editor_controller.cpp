@@ -4,6 +4,7 @@
 #include "core/subtitle_srt.hpp"
 #include "core/render_preflight.hpp"
 #include "color/color_frame_processor.hpp"
+#include "color/ocio_engine.hpp"
 
 #include <QFile>
 #include <QCoreApplication>
@@ -325,6 +326,12 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         use_d3d_scene_graph_ ? "d3d11-appsink" : "cpu-appsink",
         "wasapi2sink");
     player_->set_video_frame_callback([this](ffgui::PreviewVideoFrame frame) {
+        if (frame.cpu_format == ffgui::PreviewCpuFormat::rgba16le) {
+            QMetaObject::invokeMethod(this, [this, frame = std::move(frame)]() mutable {
+                submitFloatVideoFrame(std::move(frame));
+            }, Qt::QueuedConnection);
+            return;
+        }
         bool scheduleDelivery = false;
         {
             std::scoped_lock lock(pending_video_frame_mutex_);
@@ -507,6 +514,38 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             export_stderr_.append(result.error);
             finishExport(false);
         });
+    connect(
+        &float_video_watcher_,
+        &QFutureWatcher<FloatVideoResult>::finished,
+        this,
+        [this] {
+            auto result = float_video_watcher_.result();
+            float_video_active_ = false;
+            if (!result.error.isEmpty()) {
+                qWarning().noquote() << "float video frame failed" << result.error;
+                pending_float_video_frame_.reset();
+                preview_should_play_ = false;
+                setStatus(result.error);
+                queuePreviewOperation(false);
+                return;
+            } else if (result.generation == preview_generation_) {
+                ++float_video_frames_processed_;
+                if (auto* item = qobject_cast<VideoPreviewItem*>(video_item_)) {
+                    ++video_frames_delivered_;
+                    item->submitFrame(std::move(result.frame));
+                }
+                if (float_video_frames_processed_ <= 2 || result.elapsed_ms >= 100) {
+                    qInfo().noquote() << "float video frame completed"
+                                      << "count=" << float_video_frames_processed_
+                                      << "elapsed_ms=" << result.elapsed_ms;
+                }
+            }
+            if (pending_float_video_frame_.has_value()) {
+                auto next = std::move(*pending_float_video_frame_);
+                pending_float_video_frame_.reset();
+                startFloatVideoFrame(std::move(next));
+            }
+        });
 #endif
 }
 
@@ -537,6 +576,8 @@ EditorController::~EditorController() {
     stopFloatPlayback();
     if (float_export_cancel_) float_export_cancel_->store(true);
     if (float_export_watcher_.isRunning()) float_export_watcher_.waitForFinished();
+    pending_float_video_frame_.reset();
+    if (float_video_watcher_.isRunning()) float_video_watcher_.waitForFinished();
     pending_float_scrub_ns_.reset();
     ++float_scrub_generation_;
     if (float_scrub_watcher_.isRunning()) float_scrub_watcher_.waitForFinished();
@@ -1284,6 +1325,116 @@ void EditorController::advanceFloatPlayback() {
         return;
     }
     submitFloatScrubFrame(target);
+#endif
+}
+
+bool EditorController::requiresFloatVideoPreview() const {
+#ifdef FFGUI_HAS_GES
+    const auto hasNonSequence = std::ranges::any_of(timeline_.clips(), [this](const auto& clip) {
+        const auto* asset = timeline_.asset(clip.asset_id);
+        return asset != nullptr && !asset->image_sequence().has_value();
+    });
+    if (!hasNonSequence) return false;
+    if (color_pipeline_.mode != ffgui::ColorPipelineMode::legacy) return true;
+    return std::ranges::any_of(timeline_.clips(), [](const auto& clip) {
+        return !clip.grade.nodes().empty() || clip.color.brightness != 0.0 ||
+            clip.color.contrast != 1.0 || clip.color.saturation != 1.0;
+    });
+#else
+    return false;
+#endif
+}
+
+void EditorController::submitFloatVideoFrame(ffgui::PreviewVideoFrame frame) {
+#ifdef FFGUI_HAS_GES
+    if (frame.cpu_format != ffgui::PreviewCpuFormat::rgba16le ||
+        frame.cpu_pixels == nullptr) return;
+    if (float_video_active_) {
+        pending_float_video_frame_ = std::move(frame);
+    } else {
+        startFloatVideoFrame(std::move(frame));
+    }
+#else
+    static_cast<void>(frame);
+#endif
+}
+
+void EditorController::startFloatVideoFrame(ffgui::PreviewVideoFrame frame) {
+#ifdef FFGUI_HAS_GES
+    const auto mapped = timeline_.locate(frame.pts);
+    if (!mapped.has_value()) return;
+    const auto clip = std::ranges::find(timeline_.clips(), mapped->clip_id, &ffgui::Clip::id);
+    const auto* asset = timeline_.asset(mapped->asset_id);
+    if (clip == timeline_.clips().end() || asset == nullptr) return;
+    const auto sourceColor = asset->source_color();
+    const auto settings = color_pipeline_;
+    const auto grade = ffgui::compose_clip_grade(*clip);
+    const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
+        ? std::string{}
+        : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
+    const auto generation = preview_generation_;
+    float_video_active_ = true;
+    float_video_watcher_.setFuture(QtConcurrent::run(
+        [frame = std::move(frame), sourceColor, settings, grade, outputSpace, generation]() mutable {
+            FloatVideoResult result;
+            result.generation = generation;
+            QElapsedTimer elapsed;
+            elapsed.start();
+            try {
+                const auto expected = static_cast<std::size_t>(frame.cpu_stride) * frame.height;
+                if (frame.width == 0 || frame.height == 0 || frame.cpu_stride < frame.width * 8 ||
+                    frame.cpu_pixels->size() < expected) {
+                    throw std::invalid_argument("16-bit preview frame storage is invalid");
+                }
+                ffgui::FloatImageFrame source;
+                source.width = static_cast<int>(frame.width);
+                source.height = static_cast<int>(frame.height);
+                source.color_space = sourceColor.input_color_space;
+                source.rgba.resize(static_cast<std::size_t>(frame.width) * frame.height * 4);
+                for (std::uint32_t row = 0; row < frame.height; ++row) {
+                    const auto* input = reinterpret_cast<const std::uint16_t*>(
+                        frame.cpu_pixels->data() + static_cast<std::size_t>(row) * frame.cpu_stride);
+                    for (std::uint32_t column = 0; column < frame.width; ++column) {
+                        const auto sourceIndex = static_cast<std::size_t>(column) * 4;
+                        const auto targetIndex =
+                            (static_cast<std::size_t>(row) * frame.width + column) * 4;
+                        for (std::size_t channel = 0; channel < 4; ++channel) {
+                            source.rgba[targetIndex + channel] =
+                                static_cast<float>(input[sourceIndex + channel]) / 65535.0F;
+                        }
+                    }
+                }
+                const auto processed = ffgui::process_color_frame(
+                    source, sourceColor, settings, grade, outputSpace);
+                auto pixels = std::make_shared<std::vector<std::uint8_t>>(
+                    static_cast<std::size_t>(frame.width) * frame.height * 4);
+                const auto pixelCount = static_cast<std::size_t>(frame.width) * frame.height;
+                for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
+                    const auto* rgba = processed.rgba.data() + pixel * 4;
+                    auto* bgra = pixels->data() + pixel * 4;
+                    bgra[0] = static_cast<std::uint8_t>(std::lround(
+                        std::clamp(std::isfinite(rgba[2]) ? rgba[2] : 0.0F, 0.0F, 1.0F) * 255.0F));
+                    bgra[1] = static_cast<std::uint8_t>(std::lround(
+                        std::clamp(std::isfinite(rgba[1]) ? rgba[1] : 0.0F, 0.0F, 1.0F) * 255.0F));
+                    bgra[2] = static_cast<std::uint8_t>(std::lround(
+                        std::clamp(std::isfinite(rgba[0]) ? rgba[0] : 0.0F, 0.0F, 1.0F) * 255.0F));
+                    bgra[3] = static_cast<std::uint8_t>(std::lround(
+                        std::clamp(std::isfinite(rgba[3]) ? rgba[3] : 1.0F, 0.0F, 1.0F) * 255.0F));
+                }
+                frame.cpu_pixels = std::move(pixels);
+                frame.cpu_stride = frame.width * 4;
+                frame.cpu_format = ffgui::PreviewCpuFormat::bgra8;
+                frame.sample.reset();
+                result.frame = std::move(frame);
+            } catch (const std::exception& error) {
+                result.error = QStringLiteral("float 영상 미리보기 실패: %1")
+                    .arg(QString::fromUtf8(error.what()));
+            }
+            result.elapsed_ms = elapsed.elapsed();
+            return result;
+        }));
+#else
+    static_cast<void>(frame);
 #endif
 }
 
@@ -2715,6 +2866,7 @@ void EditorController::setColorPipelineMode(int mode) {
     if (color_pipeline_.mode == value) return;
     color_pipeline_.mode = value;
     emit colorPipelineChanged();
+    publishTimeline(false);
     setStatus(value == ffgui::ColorPipelineMode::legacy
         ? "기존 색상을 유지합니다"
         : value == ffgui::ColorPipelineMode::aces_managed
@@ -2736,6 +2888,7 @@ void EditorController::setCustomOcioUrl(const QUrl& url) {
     color_pipeline_.ocio_config_path = file.absoluteFilePath().toStdString();
     color_pipeline_.mode = ffgui::ColorPipelineMode::custom_ocio;
     emit colorPipelineChanged();
+    publishTimeline(false);
     setStatus("사용자 OCIO 설정을 적용했습니다");
 }
 
@@ -3351,6 +3504,7 @@ void EditorController::startPreviewOperation() {
     const auto seekTarget = pending_preview_seek_;
     const bool shouldPlay = preview_should_play_;
     const bool shouldStop = preview_stop_requested_;
+    const auto colorSettings = color_pipeline_;
     pending_preview_seek_.reset();
     preview_stop_requested_ = false;
     preview_operation_pending_ = false;
@@ -3375,7 +3529,8 @@ void EditorController::startPreviewOperation() {
          captions = std::move(captions),
          seekTarget,
          shouldPlay,
-         shouldStop]() mutable {
+         shouldStop,
+         colorSettings]() mutable {
             PreviewOperationResult result;
             result.generation = generation;
             result.rebuilt = rebuild;
@@ -3387,6 +3542,10 @@ void EditorController::startPreviewOperation() {
                               << "seek=" << seekTarget.value_or(-1)
                               << "play=" << shouldPlay;
             try {
+                if (rebuild && colorSettings.mode != ffgui::ColorPipelineMode::legacy) {
+                    ffgui::OcioEngine warmColorCache(colorSettings);
+                    static_cast<void>(warmColorCache.managed());
+                }
                 if (rebuild) player->set_timeline(std::move(spans), std::move(captions));
                 if (shouldStop) {
                     player->stop();
@@ -3422,6 +3581,8 @@ void EditorController::publishTimeline(bool resetPlayhead) {
 #ifdef FFGUI_HAS_GES
     stopFloatPlayback();
     preview_should_play_ = false;
+    pending_float_video_frame_.reset();
+    player_->set_float_output_enabled(requiresFloatVideoPreview());
 #endif
     if (resetPlayhead) {
         playhead_ns_ = 0;

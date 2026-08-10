@@ -26,6 +26,8 @@ struct AudioContinuityMetrics final {
     TimeNs maximum_positive_gap{};
 };
 
+enum class PreviewCpuFormat { bgra8, rgba16le };
+
 struct PreviewVideoFrame final {
     std::shared_ptr<void> sample;
     std::shared_ptr<void> texture_owner;
@@ -38,6 +40,7 @@ struct PreviewVideoFrame final {
     void* device{};
     std::shared_ptr<std::vector<std::uint8_t>> cpu_pixels;
     std::uint32_t cpu_stride{};
+    PreviewCpuFormat cpu_format{PreviewCpuFormat::bgra8};
 };
 
 class GesSequencePlayer final : public SequencePlayer {
@@ -64,6 +67,7 @@ public:
     void set_video_window_handle(std::uintptr_t window_handle);
     void set_d3d11_device(void* device);
     void set_video_frame_callback(std::function<void(PreviewVideoFrame)> callback);
+    void set_float_output_enabled(bool enabled);
 
     [[nodiscard]] TimeNs duration() const noexcept;
     [[nodiscard]] TimeNs position() const noexcept;
@@ -100,6 +104,7 @@ private:
     std::vector<TimeNs> hard_cut_points_;
     std::atomic<void*> d3d11_device_handle_{nullptr};
     std::atomic<std::uint64_t> video_frame_serial_{0};
+    std::atomic<bool> float_output_enabled_{false};
     std::atomic<TimeNs> duration_ns_{0};
     std::atomic<TimeNs> position_ns_{0};
     std::atomic<PlaybackState> state_{PlaybackState::stopped};

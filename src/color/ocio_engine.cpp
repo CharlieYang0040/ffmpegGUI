@@ -6,12 +6,40 @@
 #include <cctype>
 #include <ranges>
 #include <iomanip>
+#include <filesystem>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace OCIO = OCIO_NAMESPACE;
 
 namespace ffgui {
+namespace {
+
+OCIO::ConstConfigRcPtr cached_config(const ColorPipelineSettings& settings) {
+    static std::mutex cacheMutex;
+    static std::unordered_map<std::string, OCIO::ConstConfigRcPtr> cache;
+    std::string key = "aces-studio-v4-aces2-ocio25";
+    if (settings.mode == ColorPipelineMode::custom_ocio) {
+        std::error_code error;
+        const auto modified = std::filesystem::last_write_time(
+            settings.ocio_config_path, error).time_since_epoch().count();
+        key = "custom:" + settings.ocio_config_path + ':' +
+            (error ? std::string{"unknown"} : std::to_string(modified));
+    }
+    std::scoped_lock lock(cacheMutex);
+    if (const auto found = cache.find(key); found != cache.end()) return found->second;
+    auto config = settings.mode == ColorPipelineMode::aces_managed
+        ? OCIO::Config::CreateFromBuiltinConfig(
+            "studio-config-v4.0.0_aces-v2.0_ocio-v2.5")
+        : OCIO::Config::CreateFromFile(settings.ocio_config_path.c_str());
+    config->validate();
+    cache.emplace(std::move(key), config);
+    return config;
+}
+
+}  // namespace
 
 struct OcioEngine::Impl final {
     ColorPipelineSettings settings;
@@ -24,11 +52,7 @@ OcioEngine::OcioEngine(const ColorPipelineSettings& settings)
     impl_->settings = settings;
     if (settings.mode == ColorPipelineMode::legacy) return;
     try {
-        impl_->config = settings.mode == ColorPipelineMode::aces_managed
-            ? OCIO::Config::CreateFromBuiltinConfig(
-                "studio-config-v4.0.0_aces-v2.0_ocio-v2.5")
-            : OCIO::Config::CreateFromFile(settings.ocio_config_path.c_str());
-        impl_->config->validate();
+        impl_->config = cached_config(settings);
     } catch (const OCIO::Exception& error) {
         throw std::runtime_error(std::string("OpenColorIO configuration failed: ") + error.what());
     }

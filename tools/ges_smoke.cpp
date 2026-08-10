@@ -112,11 +112,39 @@ int main(int argc, char* argv[]) {
                 std::to_string(videoFrames.load()));
         }
 
+        std::atomic<std::uint64_t> floatFrames{0};
+        std::atomic<bool> invalidFloatFrame{false};
+        player.set_video_frame_callback([&](ffgui::PreviewVideoFrame frame) {
+            if (frame.cpu_format != ffgui::PreviewCpuFormat::rgba16le ||
+                frame.cpu_pixels == nullptr || frame.width != 640 || frame.height != 360 ||
+                frame.cpu_stride != frame.width * 8 ||
+                frame.cpu_pixels->size() !=
+                    static_cast<std::size_t>(frame.cpu_stride) * frame.height) {
+                invalidFloatFrame.store(true);
+            }
+            floatFrames.fetch_add(1);
+        });
+        player.set_float_output_enabled(true);
+        player.set_timeline(timeline.snapshot());
+        player.seek(milliseconds(300));
+        player.play();
+        const auto floatDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+        while (floatFrames.load() < 2 && std::chrono::steady_clock::now() < floatDeadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        player.stop();
+        if (invalidFloatFrame.load() || floatFrames.load() < 2) {
+            throw std::runtime_error(
+                "float appsink did not deliver valid 640x360 RGBA16 frames: " +
+                std::to_string(floatFrames.load()));
+        }
+
         std::cout << "GES continuous playback passed: 4 shots including VFR and 2x speed, "
                   << player.duration() / 1'000'000 << " ms; "
                   << audio.buffer_count << " audio buffers, max gap "
                   << audio.maximum_positive_gap << " ns; "
-                  << videoFrames.load() << " CPU BGRA frames\n";
+                  << videoFrames.load() << " CPU BGRA frames and "
+                  << floatFrames.load() << " RGBA16 frames\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "GES smoke failed: " << error.what() << '\n';

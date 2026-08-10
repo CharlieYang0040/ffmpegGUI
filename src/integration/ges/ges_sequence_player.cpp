@@ -364,6 +364,10 @@ void GesSequencePlayer::set_video_frame_callback(
     video_frame_callback_ = std::move(callback);
 }
 
+void GesSequencePlayer::set_float_output_enabled(bool enabled) {
+    float_output_enabled_.store(enabled, std::memory_order_release);
+}
+
 TimeNs GesSequencePlayer::duration() const noexcept {
     return duration_ns_.load();
 }
@@ -466,15 +470,18 @@ GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_d
     } else {
         GstVideoInfo videoInfo{};
         auto* caps = gst_sample_get_caps(sample);
-        if (caps == nullptr || !gst_video_info_from_caps(&videoInfo, caps) ||
-            GST_VIDEO_INFO_FORMAT(&videoInfo) != GST_VIDEO_FORMAT_BGRA) {
+        if (caps == nullptr || !gst_video_info_from_caps(&videoInfo, caps)) {
             return GST_FLOW_OK;
         }
+        const auto format = GST_VIDEO_INFO_FORMAT(&videoInfo);
+        const auto rgba16 = format == GST_VIDEO_FORMAT_RGBA64_LE;
+        if (!rgba16 && format != GST_VIDEO_FORMAT_BGRA) return GST_FLOW_OK;
         GstMapInfo map{};
         if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) return GST_FLOW_OK;
         frame.width = GST_VIDEO_INFO_WIDTH(&videoInfo);
         frame.height = GST_VIDEO_INFO_HEIGHT(&videoInfo);
-        frame.cpu_stride = frame.width * 4;
+        frame.cpu_stride = frame.width * (rgba16 ? 8U : 4U);
+        frame.cpu_format = rgba16 ? PreviewCpuFormat::rgba16le : PreviewCpuFormat::bgra8;
         const auto sourceStride = GST_VIDEO_INFO_PLANE_STRIDE(&videoInfo, 0);
         const auto rowBytes = static_cast<std::size_t>(frame.cpu_stride);
         if (sourceStride < 0 || static_cast<std::size_t>(sourceStride) < rowBytes ||
@@ -628,9 +635,22 @@ void GesSequencePlayer::rebuild_pipeline_locked(
             GstElement* sink = nullptr;
             GstElement* appSink = nullptr;
             const bool cpuAppSink = video_sink_factory_ == "cpu-appsink";
+            const bool floatAppSink = float_output_enabled_.load(std::memory_order_acquire);
             const bool d3d11AppSink = video_sink_factory_ == "d3d11-appsink" ||
                 video_sink_factory_ == "appsink";
-            if (cpuAppSink) {
+            if (floatAppSink) {
+                GError* parseError = nullptr;
+                sink = gst_parse_bin_from_description(
+                    "videoconvert ! videoscale ! "
+                    "video/x-raw,format=RGBA64_LE,width=640,height=360,pixel-aspect-ratio=1/1 ! "
+                    "appsink name=qtappsink max-buffers=2 drop=true sync=true "
+                    "enable-last-sample=false",
+                    TRUE, &parseError);
+                if (sink == nullptr) {
+                    throw glib_error("failed to create float CPU appsink bin", parseError);
+                }
+                appSink = gst_bin_get_by_name(GST_BIN(sink), "qtappsink");
+            } else if (cpuAppSink) {
                 GError* parseError = nullptr;
                 sink = gst_parse_bin_from_description(
                     "videoconvert ! videoscale add-borders=true ! "
@@ -674,7 +694,7 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                     gst_object_unref(wrappedDevice);
                 }
             }
-            if (cpuAppSink || d3d11AppSink) {
+            if (floatAppSink || cpuAppSink || d3d11AppSink) {
                 if (appSink == nullptr) {
                     gst_object_unref(sink);
                     gst_object_unref(new_pipeline);

@@ -146,6 +146,7 @@ int main(int argc, char* argv[]) {
     bool hevcExportSmoke = false;
     bool gifExportSmoke = false;
     bool floatExportSmoke = false;
+    bool floatVideoSmoke = false;
     const auto arguments = application.arguments();
     for (int index = 1; index < arguments.size(); ++index) {
         if (arguments[index] == "--project-roundtrip" && index + 1 < arguments.size()) {
@@ -183,6 +184,10 @@ int main(int argc, char* argv[]) {
             floatExportSmoke = true;
             continue;
         }
+        if (arguments[index] == "--float-video-smoke") {
+            floatVideoSmoke = true;
+            continue;
+        }
         if (arguments[index] == "--export-project-smoke" && index + 2 < arguments.size()) {
             exportProjectSmoke = arguments[++index];
             exportProjectOutput = arguments[++index];
@@ -208,7 +213,8 @@ int main(int argc, char* argv[]) {
         controller.loadProject(exportProjectSmoke);
         if (controller.durationNs() <= 0) return EXIT_FAILURE;
     }
-    if ((!roundtripProject.isEmpty() || !exportSmokeOutput.isEmpty() || playbackSmoke) &&
+    if ((!roundtripProject.isEmpty() || !exportSmokeOutput.isEmpty() || playbackSmoke ||
+         floatVideoSmoke) &&
         controller.importing()) {
         QEventLoop importLoop;
         QTimer importTimeout;
@@ -221,6 +227,61 @@ int main(int argc, char* argv[]) {
         if (controller.importing() || controller.durationNs() <= 0) {
             return EXIT_FAILURE;
         }
+    }
+    if (floatVideoSmoke) {
+        const auto clips = controller.clips();
+        const auto assets = controller.mediaAssets();
+        bool hasTaggedRec709 = false;
+        for (const auto& asset : assets) {
+            if (asset.toMap().value("colorSpace").toString() ==
+                QStringLiteral("Camera Rec.709")) hasTaggedRec709 = true;
+        }
+        if (clips.isEmpty() || !hasTaggedRec709) return EXIT_FAILURE;
+        const auto firstClipDuration = clips.front().toMap().value("durationNs").toLongLong();
+        controller.selectClip(clips.front().toMap().value("id").toString());
+        controller.addGradeNode(0);
+        const auto nodes = controller.selectedGradeNodes();
+        if (nodes.isEmpty()) return EXIT_FAILURE;
+        controller.setGradeParameter(
+            nodes.front().toMap().value("id").toString(), QStringLiteral("exposure"), 0.25);
+        controller.setColorPipelineMode(1);
+        const auto deliveredBefore = controller.videoFramesDelivered();
+        const auto processedBefore = controller.floatVideoFramesProcessed();
+        QEventLoop previewLoop;
+        QTimer previewPoll;
+        QTimer previewTimeout;
+        previewPoll.setInterval(10);
+        previewTimeout.setSingleShot(true);
+        QObject::connect(&previewPoll, &QTimer::timeout, &previewLoop, [&] {
+            if (!controller.previewBusy()) previewLoop.quit();
+        });
+        QObject::connect(&previewTimeout, &QTimer::timeout, &previewLoop, &QEventLoop::quit);
+        previewPoll.start();
+        previewTimeout.start(15'000);
+        previewLoop.exec();
+        if (controller.previewBusy()) return EXIT_FAILURE;
+        controller.seek(0);
+        controller.togglePlayback();
+        QEventLoop playbackLoop;
+        QTimer playbackPoll;
+        QTimer playbackTimeout;
+        playbackPoll.setInterval(10);
+        playbackTimeout.setSingleShot(true);
+        QObject::connect(&playbackPoll, &QTimer::timeout, &playbackLoop, [&] {
+            if (controller.videoFramesDelivered() > deliveredBefore &&
+                controller.floatVideoFramesProcessed() >= processedBefore + 2 &&
+                controller.playheadNs() > 100'000'000) playbackLoop.quit();
+        });
+        QObject::connect(&playbackTimeout, &QTimer::timeout, &playbackLoop, &QEventLoop::quit);
+        playbackPoll.start();
+        playbackTimeout.start(15'000);
+        playbackLoop.exec();
+        const auto passed = controller.videoFramesDelivered() > deliveredBefore &&
+            controller.floatVideoFramesProcessed() >= processedBefore + 2 &&
+            controller.playheadNs() > 100'000'000 &&
+            controller.playheadNs() < firstClipDuration && controller.playing();
+        controller.togglePlayback();
+        return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
     if (!roundtripProject.isEmpty()) {
         const auto importedClips = controller.clips();

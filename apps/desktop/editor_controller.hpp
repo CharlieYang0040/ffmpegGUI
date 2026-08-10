@@ -204,6 +204,9 @@ public:
     [[nodiscard]] std::uint64_t scrubFramesSubmitted() const noexcept {
         return scrub_frames_submitted_;
     }
+    [[nodiscard]] std::uint64_t floatVideoFramesProcessed() const noexcept {
+        return float_video_frames_processed_;
+    }
     [[nodiscard]] bool videoSurfaceExposed() const noexcept;
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);
@@ -342,6 +345,9 @@ private:
     void startFloatPlayback();
     void stopFloatPlayback(bool rewindAtEnd = false);
     void advanceFloatPlayback();
+    [[nodiscard]] bool requiresFloatVideoPreview() const;
+    void submitFloatVideoFrame(ffgui::PreviewVideoFrame frame);
+    void startFloatVideoFrame(ffgui::PreviewVideoFrame frame);
     [[nodiscard]] bool canUseFloatExport() const;
     void startFloatExport();
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
@@ -370,6 +376,12 @@ private:
     struct FloatExportResult final {
         bool success{};
         QByteArray error;
+    };
+    struct FloatVideoResult final {
+        std::uint64_t generation{};
+        ffgui::PreviewVideoFrame frame;
+        QString error;
+        qint64 elapsed_ms{};
     };
 #endif
 
@@ -430,6 +442,10 @@ private:
     QFutureWatcher<FloatExportResult> float_export_watcher_;
     std::shared_ptr<std::atomic_bool> float_export_cancel_;
     bool float_export_active_{};
+    QFutureWatcher<FloatVideoResult> float_video_watcher_;
+    bool float_video_active_{};
+    std::uint64_t float_video_frames_processed_{};
+    std::optional<ffgui::PreviewVideoFrame> pending_float_video_frame_;
 #endif
     QHash<QString, QString> thumbnail_atlases_;
     QHash<QString, QImage> thumbnail_images_;

@@ -249,6 +249,11 @@
 - [x] 디졸브 양쪽 클립의 컬러 처리 후 선형 합성을 수행하는 공통 타임라인 프레임 서버
 - [x] 이미지 시퀀스 컬러 결과를 16-bit RGBA로 FFmpeg에 공급하는 MP4/MOV/MKV/GIF 출력
 - [x] float 출력 진행률·취소·NVENC 실패 시 CPU 재시도·ffprobe 결과 검증
+- [x] GES 지속 디코더의 RGBA64_LE 일반 영상 프레임 계약과 640×360 컬러 프록시
+- [x] 일반 영상·이미지 시퀀스 혼합 타임라인의 비동기 OCIO/GradeGraph 미리보기
+- [x] 디코더 프레임 최신 요청 병합과 편집 세대가 지난 결과 폐기
+- [x] 1280×720→640×360 float 프록시로 Debug 첫 프레임 처리 약 217ms→56ms
+- [x] OCIO 구성 캐시·비동기 사전 준비로 ACES 첫 표시 프레임 약 397ms→95ms, 후속 약 83ms
 - [x] 노드 파라미터 프레임 단위 컴파일로 640×360 Primary 처리 5초 이상→약 47ms
 - [x] Legacy/ACES Managed/Custom OCIO 프로젝트 모델과 HDR 메타데이터 설정 기반
 - [x] 클립별 순서형 GradeGraph, 노드 추가·삭제·순서·bypass·mix·기본 파라미터 UI
@@ -257,14 +262,15 @@
 
 ### 다음 구현 순서
 
-1. 일반 영상용 float 디코더와 이미지 시퀀스/영상 혼합 타임라인 공통 재생·출력
-2. float 렌더 뒤 문구·스탬프·레터박스 합성과 오디오 출력 결합
-3. OpenImageIO 선택 EXR part/view/AOV 실제 픽셀 경로와 캐시 증분 갱신 완성
-4. OCIO CPU 기준·GPU shader를 공유하는 D3D11 표시 경로 연결
-5. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
-6. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
-7. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
-8. qualifier/window/tracking과 shot still/reference 비교
+1. 일반 영상 GradeGraph의 float 최종 출력과 영상·시퀀스 혼합 출력
+2. 디졸브 전 클립별 컬러 처리와 float 렌더 뒤 문구·스탬프·레터박스 합성
+3. float 영상 출력에 기존 오디오 편집 결과 결합
+4. OpenImageIO 선택 EXR part/view/AOV 실제 픽셀 경로와 캐시 증분 갱신 완성
+5. OCIO CPU 기준·GPU shader를 공유하는 D3D11 표시 경로 연결
+6. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
+7. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
+8. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
+9. qualifier/window/tracking과 shot still/reference 비교
 
 ### 현재 완료 경계
 
@@ -274,9 +280,13 @@
 - 이미지 시퀀스 float 출력은 현재 무음 영상과 GIF를 지원한다. 문구·스탬프가 있는
   GradeGraph 출력은 합성 누락을 방지하기 위해 명시적으로 차단하며, 다음 단계에서
   float 합성 후 오디오와 함께 결합한다.
+- 일반 영상과 영상·이미지 시퀀스 혼합 타임라인은 16-bit GES 디코더를 통해 컬러
+  미리보기가 가능하지만 최종 출력은 아직 일반 영상 GradeGraph를 차단한다. 디졸브가
+  포함된 혼합 타임라인은 현재 GES 합성 뒤 활성 클립의 컬러를 적용하므로, 다음 단계에서
+  클립별 컬러를 전환 전에 적용하는 렌더 그래프로 교체해야 한다.
 - HDR 설정은 프로젝트 계약까지 구현되었고 scRGB/PQ 스왑체인 전환은 미구현이다.
 - EXR AOV 선택 정보는 저장되지만 선택 채널의 실제 렌더 소스 생성은 다음 단계다.
 
-검증 기준선: Debug 빌드, 코어 43/43와 타임라인 테스트 통과. 누락 1장을 포함한
+검증 기준선: Debug 빌드, 코어 44/44와 타임라인 테스트 통과. 누락 1장을 포함한
 1001–1048 PNG 시퀀스를 별도 환경 변수 없이 Debug EXE에서 가져와 프로젝트 v3
 저장·재로드했으며 `proxy-v4.mkv`와 `export-nearest-v3.mov` 생성을 확인했다.

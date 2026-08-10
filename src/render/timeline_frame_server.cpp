@@ -7,6 +7,25 @@
 
 namespace ffgui {
 
+GradeGraph compose_clip_grade(const Clip& clip) {
+    GradeGraph combined;
+    if (clip.color.brightness != 0.0 || clip.color.contrast != 1.0 ||
+        clip.color.saturation != 1.0) {
+        auto controls = make_default_grade_node(
+            GradeNodeType::primary, "legacy-clip-controls");
+        controls.name = "Clip color controls";
+        controls.parameters["contrast"] = clip.color.contrast;
+        controls.parameters["pivot"] = 0.5;
+        controls.parameters["saturation"] = clip.color.saturation;
+        controls.parameters["offsetR"] = clip.color.brightness;
+        controls.parameters["offsetG"] = clip.color.brightness;
+        controls.parameters["offsetB"] = clip.color.brightness;
+        combined.add(std::move(controls));
+    }
+    for (const auto& node : clip.grade.nodes()) combined.add(node);
+    return combined;
+}
+
 TimelineFrameServer::TimelineFrameServer(std::size_t cache_bytes) : cache_(cache_bytes) {}
 
 RenderedTimelineFrame TimelineFrameServer::render(
@@ -46,21 +65,7 @@ RenderedTimelineFrame TimelineFrameServer::render(
             ? requested : sequence.nearest_present_frame(requested);
         auto source = cache_.get(ImageFrameRequest{
             sequence.frame_path(resolved), sequence.exr_part, sequence.channel_mapping});
-        GradeGraph combinedGrade;
-        if (span.clip.color.brightness != 0.0 || span.clip.color.contrast != 1.0 ||
-            span.clip.color.saturation != 1.0) {
-            auto controls = make_default_grade_node(
-                GradeNodeType::primary, "legacy-clip-controls");
-            controls.name = "Clip color controls";
-            controls.parameters["contrast"] = span.clip.color.contrast;
-            controls.parameters["pivot"] = 0.5;
-            controls.parameters["saturation"] = span.clip.color.saturation;
-            controls.parameters["offsetR"] = span.clip.color.brightness;
-            controls.parameters["offsetG"] = span.clip.color.brightness;
-            controls.parameters["offsetB"] = span.clip.color.brightness;
-            combinedGrade.add(std::move(controls));
-        }
-        for (const auto& node : span.clip.grade.nodes()) combinedGrade.add(node);
+        auto combinedGrade = compose_clip_grade(span.clip);
         auto processed = process_color_frame(
             *source, asset->source_color(), color_pipeline, combinedGrade, output_space);
         return RenderedTimelineFrame{

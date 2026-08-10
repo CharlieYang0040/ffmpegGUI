@@ -9,6 +9,8 @@
 
 namespace ffgui {
 
+[[nodiscard]] GradeGraph compose_clip_grade(const Clip& clip);
+
 struct RenderedTimelineFrame final {
     std::shared_ptr<const FloatImageFrame> source;
     FloatImageFrame processed;

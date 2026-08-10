@@ -217,9 +217,9 @@ SourceColorDescriptor probe_video_color(const QString& ffprobe, const QString& p
     result.unresolved = result.primaries.empty() || result.transfer.empty() || result.matrix.empty();
     if (!result.unresolved) {
         if (result.primaries == "bt709" && result.transfer == "bt709") {
-            result.input_color_space = "Rec.709";
+            result.input_color_space = "Camera Rec.709";
         } else if (result.primaries == "bt2020" && result.transfer == "smpte2084") {
-            result.input_color_space = "Rec.2100-PQ";
+            result.input_color_space = "Rec.2100-PQ - Display";
         }
     }
     return result;
