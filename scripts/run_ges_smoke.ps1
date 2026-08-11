@@ -50,6 +50,7 @@ $env:GST_PLUGIN_PATH = "$gstRoot\lib\gstreamer-1.0"
 $env:GST_REGISTRY = Join-Path $root ".tools\gst-registry.bin"
 $env:GIO_MODULE_DIR = Join-Path $root ".tools\empty-gio-modules"
 $env:GST_PLUGIN_FEATURE_RANK = "avdec_h264:MAX,nvh264dec:NONE,d3d12h264dec:NONE,mfh264dec:NONE"
+$env:G_DEBUG = "fatal-criticals"
 New-Item -ItemType Directory -Path $env:GIO_MODULE_DIR -Force | Out-Null
 
 & $smokeExe $clipA $clipB $clipVfr

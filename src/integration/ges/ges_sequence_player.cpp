@@ -10,6 +10,8 @@
 #include <gst/video/videooverlay.h>
 #include <gst/video/video.h>
 #include <gst/d3d11/gstd3d11.h>
+#include <gst/controller/gstinterpolationcontrolsource.h>
+#include <gst/controller/gsttimedvaluecontrolsource.h>
 
 #include <algorithm>
 #include <chrono>
@@ -23,6 +25,77 @@
 
 namespace ffgui {
 namespace {
+
+GESTrackElement* find_core_track_element(GESClip* clip, GESTrackType type) {
+    auto* elements = ges_clip_find_track_elements(clip, nullptr, type, G_TYPE_NONE);
+    GESTrackElement* result = nullptr;
+    for (auto* item = elements; item != nullptr; item = item->next) {
+        auto* element = GES_TRACK_ELEMENT(item->data);
+        if (ges_track_element_is_core(element)) {
+            result = element;
+            break;
+        }
+    }
+    g_list_free(elements);
+    return result;
+}
+
+TimeNs source_control_time(const TimelineSpan& span, TimeNs timeline_local) {
+    return checked_add(
+        span.clip.source_in, span.clip.source_offset_for_timeline(timeline_local));
+}
+
+void bind_linear_control(
+    GESTrackElement* element,
+    const char* property,
+    const std::vector<std::pair<TimeNs, double>>& points) {
+    if (element == nullptr || points.empty()) {
+        throw std::runtime_error("GES source control has no track element or points");
+    }
+    auto* source = gst_interpolation_control_source_new();
+    if (source == nullptr) throw std::runtime_error("failed to create GES source controller");
+    g_object_set(source, "mode", GST_INTERPOLATION_MODE_LINEAR, nullptr);
+    auto* timed = GST_TIMED_VALUE_CONTROL_SOURCE(source);
+    bool valid = true;
+    for (const auto& [time, value] : points) {
+        valid = valid && gst_timed_value_control_source_set(
+            timed, static_cast<GstClockTime>(time), value);
+    }
+    const auto bound = valid && ges_track_element_set_control_source(
+        element, GST_CONTROL_SOURCE(source), property, "direct-absolute");
+    gst_object_unref(source);
+    if (!bound) throw std::runtime_error(std::string{"failed to bind GES source property: "} + property);
+}
+
+std::vector<std::pair<TimeNs, double>> audio_envelope(
+    const TimelineSpan& span, TimeNs outgoing_transition) {
+    const auto duration = span.timeline_out - span.timeline_in;
+    const auto gain = span.clip.audio.muted ? 0.0 : span.clip.audio.gain;
+    const auto fadeIn = std::min(span.clip.audio.fade_in, duration);
+    const auto fadeOut = std::min(span.clip.audio.fade_out, duration);
+    const auto transitionIn = std::min(span.clip.transition_in, duration);
+    const auto transitionOut = std::min(outgoing_transition, duration);
+    std::vector<TimeNs> times{
+        0, fadeIn, transitionIn, duration - fadeOut, duration - transitionOut, duration};
+    std::ranges::sort(times);
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+    std::vector<std::pair<TimeNs, double>> result;
+    result.reserve(times.size());
+    for (const auto time : times) {
+        auto factor = 1.0;
+        if (fadeIn > 0) factor *= std::min(1.0, static_cast<double>(time) / fadeIn);
+        if (transitionIn > 0) factor *= std::min(1.0, static_cast<double>(time) / transitionIn);
+        if (fadeOut > 0 && time > duration - fadeOut) {
+            factor *= static_cast<double>(duration - time) / fadeOut;
+        }
+        if (transitionOut > 0 && time > duration - transitionOut) {
+            factor *= static_cast<double>(duration - time) / transitionOut;
+        }
+        result.emplace_back(
+            source_control_time(span, time), gain * std::clamp(factor, 0.0, 1.0));
+    }
+    return result;
+}
 
 void add_speed_effect(GESUriClip* uri_clip, double playback_rate, bool has_audio) {
     if (std::abs(playback_rate - 1.0) < 0.0000005) return;
@@ -105,6 +178,7 @@ GesSequencePlayer::~GesSequencePlayer() {
     }
     std::scoped_lock lock(mutex_);
     destroy_pipeline_locked();
+    source_automation_bindings_.store(0);
 }
 
 void GesSequencePlayer::set_timeline(std::vector<TimelineSpan> timeline) {
@@ -474,6 +548,8 @@ void GesSequencePlayer::rebuild_pipeline_locked(
     }
 
     try {
+        std::vector<GESUriClip*> uriClips;
+        uriClips.reserve(spans.size());
         for (const auto& span : spans) {
             GError* error = nullptr;
             const auto path = path_to_utf8(span.source_path);
@@ -504,12 +580,34 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 gst_object_unref(uri_clip);
                 throw std::runtime_error("failed to add GES clip to its layer");
             }
+            uriClips.push_back(uri_clip);
             add_speed_effect(uri_clip, span.clip.playback_rate, span.has_audio);
             // Color is evaluated by the shared float frame processor after GES decoding.
-            // Current GES releases can leave the native child of volume/videobalance effects
-            // unresolved for URI clips, which makes child-property control crash the process.
-            // Audio controls remain authoritative in the FFmpeg export graph; preview keeps
-            // decoded audio unmodified until it moves to the same frame-server mixer.
+        }
+
+        // Drive the core URI source properties directly. This keeps transitions and audio
+        // automation out of GES effect/transition objects, whose dynamic native children are
+        // unstable during rapid timeline rebuilds on GStreamer 1.28.
+        for (std::size_t index = 0; index < spans.size(); ++index) {
+            const auto& span = spans[index];
+            if (span.clip.transition_in > 0) {
+                bind_linear_control(
+                    find_core_track_element(GES_CLIP(uriClips[index]), GES_TRACK_TYPE_VIDEO),
+                    "alpha",
+                    {{source_control_time(span, 0), 0.0},
+                     {source_control_time(span, span.clip.transition_in), 1.0},
+                     {source_control_time(span, span.timeline_out - span.timeline_in), 1.0}});
+                source_automation_bindings_.fetch_add(1);
+            }
+            const auto outgoingTransition = index + 1 < spans.size()
+                ? spans[index + 1].clip.transition_in : 0;
+            if (span.has_audio && (span.clip.audio != ClipAudio{} ||
+                                  span.clip.transition_in > 0 || outgoingTransition > 0)) {
+                bind_linear_control(
+                    find_core_track_element(GES_CLIP(uriClips[index]), GES_TRACK_TYPE_AUDIO),
+                    "volume", audio_envelope(span, outgoingTransition));
+                source_automation_bindings_.fetch_add(1);
+            }
         }
 
         for (const auto& caption : captions) {

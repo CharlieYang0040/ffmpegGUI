@@ -77,6 +77,9 @@ public:
     [[nodiscard]] std::uint64_t video_frames_received() const noexcept {
         return video_frame_serial_.load();
     }
+    [[nodiscard]] std::uint64_t source_automation_bindings() const noexcept {
+        return source_automation_bindings_.load();
+    }
 
 private:
     void rebuild_pipeline_locked(
@@ -104,6 +107,7 @@ private:
     std::vector<TimeNs> hard_cut_points_;
     std::atomic<void*> d3d11_device_handle_{nullptr};
     std::atomic<std::uint64_t> video_frame_serial_{0};
+    std::atomic<std::uint64_t> source_automation_bindings_{0};
     std::atomic<bool> float_output_enabled_{false};
     std::atomic<TimeNs> duration_ns_{0};
     std::atomic<TimeNs> position_ns_{0};
