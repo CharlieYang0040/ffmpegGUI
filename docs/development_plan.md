@@ -277,11 +277,14 @@
 - [x] straight alpha를 보존하는 GStreamer LUT 필터와 전환 양쪽 소스 바인딩 회귀
 - [x] 공통 33³ 기준 LUT를 D3D11 3D texture shader로 처리하고 CPU 자동 대체
 - [x] GPU 업로드·셰이더·다운로드 RGBA64 경로에서 straight alpha와 소스별 디졸브 검증
+- [x] OCIO 동적 HLSL과 1D/2D/3D LUT texture를 D3D reflection으로 실제 slot에 바인딩
+- [x] 관리형 입력·출력은 정확한 OCIO shader, 창작용 GradeGraph는 working-space 33³ texture로 분리
+- [x] GStreamer C 객체에서 C++ GPU 상태를 분리하고 재협상·프레임 실행을 직렬화해 디졸브 충돌 제거
 - [x] 개발 Debug EXE의 Qt/GStreamer 런타임 자동 배치와 탐색기 직접 실행
 
 ### 다음 구현 순서
 
-1. 현재 D3D11 LUT 경로를 OCIO 동적 HLSL과 GPU compositor 직접 연결로 확장
+1. 현재 source shader 앞뒤의 upload/download를 제거하고 D3D11 compositor에 직접 연결
 2. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
 3. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
 4. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
@@ -305,10 +308,11 @@
   관리형 컬러가 필요한 소스에는 공통 CPU 기준 결과를 33³ LUT로 게시하고 `RGBA64_LE`
   top effect에서 straight alpha를 보존해 적용한다. 따라서 전환 양쪽은 각각 색처리된 뒤
   source alpha로 합성되고, 합성 결과에 활성 클립 컬러를 다시 적용하지 않는다. D3D11이
-  가능하면 같은 cube를 3D texture로 올려 pixel shader에서 계산하고, 사용할 수 없거나
-  `FFGUI_FORCE_CPU_COLOR=1`이면 CPU trilinear 필터로 자동 대체한다. GES effect 경계 때문에
-  현재는 source shader 앞뒤에 한 번씩 upload/download가 남아 있으며, 다음 최적화는 OCIO가
-  추출한 동적 HLSL과 D3D11 compositor를 직접 연결해 이 왕복을 없애는 것이다.
+   가능하면 OCIO가 추출한 입력·출력 HLSL과 LUT texture를 직접 실행하고 창작용 GradeGraph만
+   working-space 33³ texture로 적용한다. 사용할 수 없거나 `FFGUI_FORCE_CPU_COLOR=1`이면 전체
+   기준 결과를 CPU trilinear 필터로 자동 대체한다. GES effect 경계 때문에 현재는 source shader
+   앞뒤에 한 번씩 upload/download가 남아 있으며, 다음 최적화는 D3D11 compositor를 같은 native
+   graph에 연결해 이 왕복을 없애는 것이다.
 - HDR 설정은 프로젝트 계약까지 구현되었고 scRGB/PQ 스왑체인 전환은 미구현이다.
 - 자동 또는 사용자가 선택한 EXR part/view/AOV는 float 미리보기와 프록시·혼합 출력에서
   같은 픽셀을 사용한다. 선택은 기존 자산 ID와 타임라인 클립을 보존한 채 백그라운드에서

@@ -17,6 +17,8 @@ struct OcioGpuTexture final {
     unsigned depth{};
     unsigned channels{};
     unsigned binding{};
+    unsigned dimensions{2};
+    bool nearest{};
     std::vector<float> values;
 };
 
@@ -46,7 +48,9 @@ public:
                                         const std::string& output_space,
                                         int cube_size) const;
     [[nodiscard]] OcioGpuShader gpu_shader_hlsl(const std::string& input_space,
-                                                const std::string& output_space) const;
+                                                const std::string& output_space,
+                                                std::string function_name = "ffgui_ocio_transform",
+                                                std::string resource_prefix = "ffgui_ocio_") const;
 
 private:
     struct Impl;

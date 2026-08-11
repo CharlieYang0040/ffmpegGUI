@@ -116,19 +116,20 @@ D3D11 장치를 쓰고 멀티스레드 보호를 켠 상태에서 셰이더 리�
 `FFGUI_FORCE_CPU_PREVIEW=1`은 드라이버·원격 데스크톱 호환성 진단을 위한 안전 경로다.
 이 모드도 실제 노출 창에서 CPU BGRA 프레임 표시를 별도로 회귀한다.
 
-GradeGraph 또는 관리형 컬러가 필요한 일반 영상은 입력→working space→GradeGraph→표시 변환의
-공통 CPU 기준 결과를 33³ cube로 만든다. GES의 각 URI 소스는 `RGBA64_LE` top effect에서
-그 cube를 trilinear 보간하고 straight alpha는 변경하지 않는다. 이후 source alpha 디졸브가
-수행되므로 서로 다른 두 샷의 색이 합성 전에 독립적으로 처리되며 합성 결과를 다시 그레이드하지
-않는다. D3D11이 가능하면 cube를 immutable 3D texture로 올리고 RGBA64 source texture를
-pixel shader로 변환한다. straight alpha는 shader에서 그대로 전달한다. GPU 생성이나 협상이
-불가능하면 같은 cube의 CPU trilinear 경로를 사용한다. 컬러 처리가 없는 타임라인은 기존
-D3D11 texture 공유 경로를 그대로 사용한다.
+GradeGraph 또는 관리형 컬러가 필요한 일반 영상은 입력→working space→GradeGraph→표시 변환을
+소스별 `RGBA64_LE` top effect에서 수행한다. 관리형 GPU 경로는 OCIO 2.5가 생성한 입력·출력
+HLSL과 1D/2D/3D LUT texture를 그대로 컴파일하고, D3D reflection으로 실제 texture·sampler
+slot을 바인딩한다. 현재 창작용 GradeGraph만 working-space 33³ texture로 평가한다. straight
+alpha는 shader 밖에서 보존한다. 이후 source alpha 디졸브가 수행되므로 서로 다른 두 샷의 색이
+합성 전에 독립적으로 처리되며 합성 결과를 다시 그레이드하지 않는다. GPU 생성이나 협상이
+불가능하면 입력·GradeGraph·출력 전체를 평가한 33³ CPU 기준 경로를 사용한다. Legacy GradeGraph도
+같은 cube 경로를 사용하고, 컬러 처리가 없는 타임라인은 기존 D3D11 texture 공유 경로를 유지한다.
 Legacy 밝기·대비·채도는 `GESClip`의 안정적인 top `videobalance` effect로 먼저 적용하고,
 GradeGraph가 있으면 그 뒤 LUT effect를 연결한다. 현재 GES top-effect와 mixer 사이에는
-system-memory 협상 경계가 있어 GPU source effect 앞뒤에 upload/download가 한 번씩 남지만,
-1280×720 Debug 회귀에서도 CPU LUT 대비 약 3.4배 많은 프레임을 전달했다. 다음 최적화는
-OCIO 동적 HLSL과 D3D11 compositor를 직접 연결해 이 경계를 제거하는 것이다.
+system-memory 협상 경계가 있어 GPU source effect 앞뒤에 upload/download가 한 번씩 남는다.
+이 경계에서 `d3d11compositor`를 강제로 선택하면 디졸브의 두 source graph가 GES smart mixer와
+경합하므로, 직접 연결이 끝날 때까지 안정적인 system-memory compositor를 사용한다. 다음 최적화는
+source shader와 D3D11 compositor를 하나의 native graph로 연결해 이 왕복을 제거하는 것이다.
 
 구조 편집은 `TimelineModel`과 Scene Graph 화면에 즉시 반영하지만 GES 파이프라인은
 각 마우스 동작마다 다시 만들지 않는다. 50ms 단일 타이머가 연속 편집을 최신 스냅샷

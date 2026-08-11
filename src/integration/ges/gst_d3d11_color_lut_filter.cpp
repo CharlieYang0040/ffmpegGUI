@@ -7,10 +7,16 @@
 #include <gst/d3d11/gstd3d11.h>
 #include <gst/video/video.h>
 
+#include <d3dcompiler.h>
+
 #include <cstdint>
+#include <algorithm>
 #include <memory>
 #include <mutex>
+#include <ranges>
+#include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -38,33 +44,65 @@ float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
     return float4(transformed, source.a);
 })";
 
+std::mutex shaderRegistryMutex;
+std::unordered_map<std::string, std::shared_ptr<const ffgui::OcioGpuShader>> shaderRegistry;
+
+std::shared_ptr<const ffgui::OcioGpuShader> find_shader(const char* id) {
+    if (id == nullptr || *id == '\0') return {};
+    std::scoped_lock lock(shaderRegistryMutex);
+    const auto found = shaderRegistry.find(id);
+    return found == shaderRegistry.end() ? nullptr : found->second;
+}
+
 template <typename T>
 void release_com(T*& value) noexcept {
     if (value != nullptr) value->Release();
     value = nullptr;
 }
 
+struct OcioResourceState final {
+    std::mutex mutex;
+    std::vector<ID3D11Resource*> textures;
+    std::vector<ID3D11ShaderResourceView*> views;
+    std::vector<ID3D11SamplerState*> samplers;
+    std::vector<unsigned> texture_bindings;
+    std::vector<unsigned> sampler_bindings;
+};
+
 struct GstFfguiD3D11Lut final {
     GstBaseTransform parent;
     gchar* lut_id{};
+    gchar* shader_id{};
     GstVideoInfo info{};
     GstD3D11Device* device{};
     std::shared_ptr<const ffgui::ColorCube>* cube{};
+    std::shared_ptr<const ffgui::OcioGpuShader>* ocio_shader{};
     ID3D11VertexShader* vertex_shader{};
     ID3D11PixelShader* pixel_shader{};
     ID3D11SamplerState* sampler{};
     ID3D11BlendState* blend_state{};
     ID3D11Texture3D* lut_texture{};
     ID3D11ShaderResourceView* lut_view{};
+    OcioResourceState* ocio_resources{};
 };
 
 struct GstFfguiD3D11LutClass final { GstBaseTransformClass parent_class; };
 
 G_DEFINE_TYPE(GstFfguiD3D11Lut, gst_ffgui_d3d11_lut, GST_TYPE_BASE_TRANSFORM)
 
-enum { property_zero, property_lut_id };
+enum { property_zero, property_lut_id, property_shader_id };
 
 void release_gpu_resources(GstFfguiD3D11Lut* self) noexcept {
+    if (self->ocio_resources != nullptr) {
+        for (auto*& value : self->ocio_resources->samplers) release_com(value);
+        for (auto*& value : self->ocio_resources->views) release_com(value);
+        for (auto*& value : self->ocio_resources->textures) release_com(value);
+        self->ocio_resources->samplers.clear();
+        self->ocio_resources->views.clear();
+        self->ocio_resources->textures.clear();
+        self->ocio_resources->texture_bindings.clear();
+        self->ocio_resources->sampler_bindings.clear();
+    }
     release_com(self->lut_view);
     release_com(self->lut_texture);
     release_com(self->sampler);
@@ -73,12 +111,108 @@ void release_gpu_resources(GstFfguiD3D11Lut* self) noexcept {
     release_com(self->vertex_shader);
 }
 
+bool create_ocio_texture(
+    ID3D11Device* device, const ffgui::OcioGpuTexture& texture,
+    ID3D11Resource** resource, ID3D11ShaderResourceView** view) {
+    if (device == nullptr || resource == nullptr || view == nullptr ||
+        texture.width == 0 || texture.height == 0 || texture.depth == 0 ||
+        (texture.channels != 1 && texture.channels != 3) ||
+        texture.dimensions < 1 || texture.dimensions > 3 ||
+        (texture.dimensions == 1 && (texture.height != 1 || texture.depth != 1)) ||
+        (texture.dimensions == 2 && texture.depth != 1)) return false;
+    const auto texelCount = static_cast<std::size_t>(texture.width) * texture.height *
+        texture.depth;
+    if (texture.values.size() != texelCount * texture.channels) return false;
+    std::vector<float> expanded;
+    const float* pixels = texture.values.data();
+    auto bytesPerTexel = sizeof(float);
+    auto format = DXGI_FORMAT_R32_FLOAT;
+    if (texture.channels == 3) {
+        expanded.resize(texelCount * 4);
+        for (std::size_t input = 0, output = 0; input < texture.values.size(); input += 3) {
+            expanded[output++] = texture.values[input];
+            expanded[output++] = texture.values[input + 1];
+            expanded[output++] = texture.values[input + 2];
+            expanded[output++] = 1.0F;
+        }
+        pixels = expanded.data();
+        bytesPerTexel = 4 * sizeof(float);
+        format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    }
+    D3D11_SUBRESOURCE_DATA initial{};
+    initial.pSysMem = pixels;
+    initial.SysMemPitch = static_cast<UINT>(texture.width * bytesPerTexel);
+    initial.SysMemSlicePitch = static_cast<UINT>(
+        static_cast<std::size_t>(texture.width) * texture.height * bytesPerTexel);
+    HRESULT hr = E_FAIL;
+    if (texture.dimensions == 1) {
+        D3D11_TEXTURE1D_DESC description{};
+        description.Width = texture.width;
+        description.MipLevels = 1;
+        description.ArraySize = 1;
+        description.Format = format;
+        description.Usage = D3D11_USAGE_IMMUTABLE;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        ID3D11Texture1D* value = nullptr;
+        hr = device->CreateTexture1D(&description, &initial, &value);
+        *resource = value;
+    } else if (texture.dimensions == 2) {
+        D3D11_TEXTURE2D_DESC description{};
+        description.Width = texture.width;
+        description.Height = texture.height;
+        description.MipLevels = 1;
+        description.ArraySize = 1;
+        description.Format = format;
+        description.SampleDesc.Count = 1;
+        description.Usage = D3D11_USAGE_IMMUTABLE;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        ID3D11Texture2D* value = nullptr;
+        hr = device->CreateTexture2D(&description, &initial, &value);
+        *resource = value;
+    } else {
+        D3D11_TEXTURE3D_DESC description{};
+        description.Width = texture.width;
+        description.Height = texture.height;
+        description.Depth = texture.depth;
+        description.MipLevels = 1;
+        description.Format = format;
+        description.Usage = D3D11_USAGE_IMMUTABLE;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        ID3D11Texture3D* value = nullptr;
+        hr = device->CreateTexture3D(&description, &initial, &value);
+        *resource = value;
+    }
+    if (FAILED(hr) || *resource == nullptr) return false;
+    hr = device->CreateShaderResourceView(*resource, nullptr, view);
+    return SUCCEEDED(hr);
+}
+
+std::string ocio_pixel_shader_source(const ffgui::OcioGpuShader& shader) {
+    std::ostringstream source;
+    source << "Texture2D<float4> ffgui_source_texture;\n"
+              "SamplerState ffgui_source_sampler;\n"
+           << shader.source << '\n'
+           << "float4 main(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
+              "  float4 source = ffgui_source_texture.Sample(ffgui_source_sampler, uv);\n"
+              "  float4 transformed = " << shader.function_name
+           << "(float4(source.rgb, 1.0));\n"
+              "  return float4(transformed.rgb, source.a);\n"
+              "}\n";
+    return source.str();
+}
+
 bool create_gpu_resources(GstFfguiD3D11Lut* self) {
+    if (self->ocio_resources == nullptr) return false;
+    std::scoped_lock resourceLock(self->ocio_resources->mutex);
     release_gpu_resources(self);
-    if (self->device == nullptr || self->cube == nullptr || !*self->cube) return false;
-    const auto& cube = **self->cube;
-    if (cube.size < 2 || cube.rgb.size() !=
-            static_cast<std::size_t>(cube.size) * cube.size * cube.size * 3) return false;
+    if (self->device == nullptr) return false;
+    const auto hasOcio = self->ocio_shader != nullptr && *self->ocio_shader;
+    const auto hasCube = self->cube != nullptr && *self->cube;
+    if (!hasOcio && !hasCube) return false;
+    if (hasOcio && hasCube) return false;
+    const auto* cube = hasCube ? self->cube->get() : nullptr;
+    if (cube != nullptr && (cube->size < 2 || cube->rgb.size() !=
+            static_cast<std::size_t>(cube->size) * cube->size * cube->size * 3)) return false;
 
     auto* device = gst_d3d11_device_get_device_handle(self->device);
     ID3DBlob* vertexCode = nullptr;
@@ -95,8 +229,10 @@ bool create_gpu_resources(GstFfguiD3D11Lut* self) {
         &self->vertex_shader);
     release_com(vertexCode);
     if (FAILED(hr)) return false;
+    const auto dynamicPixelSource = hasOcio
+        ? ocio_pixel_shader_source(**self->ocio_shader) : std::string{pixelShaderSource};
     hr = gst_d3d11_compile(
-        pixelShaderSource, std::char_traits<char>::length(pixelShaderSource),
+        dynamicPixelSource.c_str(), dynamicPixelSource.size(),
         "ffgui-lut-ps", nullptr, nullptr, "main", "ps_5_0", 0, 0,
         &pixelCode, &errors);
     release_com(errors);
@@ -104,8 +240,53 @@ bool create_gpu_resources(GstFfguiD3D11Lut* self) {
     hr = device->CreatePixelShader(
         pixelCode->GetBufferPointer(), pixelCode->GetBufferSize(), nullptr,
         &self->pixel_shader);
+    if (FAILED(hr)) {
+        release_com(pixelCode);
+        return false;
+    }
+    std::vector<std::pair<unsigned, unsigned>> reflectedBindings;
+    if (hasOcio) {
+        ID3D11ShaderReflection* reflection = nullptr;
+        hr = D3DReflect(pixelCode->GetBufferPointer(), pixelCode->GetBufferSize(),
+                        IID_ID3D11ShaderReflection,
+                        reinterpret_cast<void**>(&reflection));
+        if (FAILED(hr) || reflection == nullptr) {
+            release_com(pixelCode);
+            release_com(reflection);
+            return false;
+        }
+        D3D11_SHADER_INPUT_BIND_DESC sourceTexture{};
+        D3D11_SHADER_INPUT_BIND_DESC sourceSampler{};
+        const auto sourceValid = SUCCEEDED(reflection->GetResourceBindingDescByName(
+                "ffgui_source_texture", &sourceTexture)) && sourceTexture.BindPoint == 0 &&
+            SUCCEEDED(reflection->GetResourceBindingDescByName(
+                "ffgui_source_sampler", &sourceSampler)) && sourceSampler.BindPoint == 0;
+        if (!sourceValid) {
+            release_com(reflection);
+            release_com(pixelCode);
+            return false;
+        }
+        reflectedBindings.reserve((**self->ocio_shader).textures.size());
+        for (const auto& texture : (**self->ocio_shader).textures) {
+            D3D11_SHADER_INPUT_BIND_DESC textureBinding{};
+            D3D11_SHADER_INPUT_BIND_DESC samplerBinding{};
+            if (FAILED(reflection->GetResourceBindingDescByName(
+                    texture.name.c_str(), &textureBinding)) ||
+                FAILED(reflection->GetResourceBindingDescByName(
+                    texture.sampler.c_str(), &samplerBinding)) ||
+                textureBinding.BindPoint == 0 || samplerBinding.BindPoint == 0 ||
+                textureBinding.BindPoint >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT ||
+                samplerBinding.BindPoint >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+                release_com(reflection);
+                release_com(pixelCode);
+                return false;
+            }
+            reflectedBindings.emplace_back(
+                textureBinding.BindPoint, samplerBinding.BindPoint);
+        }
+        release_com(reflection);
+    }
     release_com(pixelCode);
-    if (FAILED(hr)) return false;
 
     D3D11_SAMPLER_DESC samplerDescription{};
     samplerDescription.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -121,26 +302,60 @@ bool create_gpu_resources(GstFfguiD3D11Lut* self) {
     hr = device->CreateBlendState(&blendDescription, &self->blend_state);
     if (FAILED(hr)) return false;
 
+    if (hasOcio) {
+        const auto& textures = (**self->ocio_shader).textures;
+        for (std::size_t index = 0; index < textures.size(); ++index) {
+            const auto& texture = textures[index];
+            const auto [textureBinding, samplerBinding] = reflectedBindings[index];
+            if (std::ranges::find(self->ocio_resources->texture_bindings, textureBinding) !=
+                    self->ocio_resources->texture_bindings.end() ||
+                std::ranges::find(self->ocio_resources->sampler_bindings, samplerBinding) !=
+                    self->ocio_resources->sampler_bindings.end()) return false;
+            ID3D11Resource* resource = nullptr;
+            ID3D11ShaderResourceView* view = nullptr;
+            if (!create_ocio_texture(device, texture, &resource, &view)) {
+                release_com(resource);
+                release_com(view);
+                return false;
+            }
+            D3D11_SAMPLER_DESC ocioSamplerDescription = samplerDescription;
+            ocioSamplerDescription.Filter = texture.nearest
+                ? D3D11_FILTER_MIN_MAG_MIP_POINT : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+            ID3D11SamplerState* ocioSampler = nullptr;
+            if (FAILED(device->CreateSamplerState(&ocioSamplerDescription, &ocioSampler))) {
+                release_com(view);
+                release_com(resource);
+                return false;
+            }
+            self->ocio_resources->textures.push_back(resource);
+            self->ocio_resources->views.push_back(view);
+            self->ocio_resources->samplers.push_back(ocioSampler);
+            self->ocio_resources->texture_bindings.push_back(textureBinding);
+            self->ocio_resources->sampler_bindings.push_back(samplerBinding);
+        }
+        return true;
+    }
+
     std::vector<float> rgba;
-    rgba.resize(static_cast<std::size_t>(cube.size) * cube.size * cube.size * 4);
-    for (std::size_t index = 0, output = 0; index < cube.rgb.size(); index += 3) {
-        rgba[output++] = cube.rgb[index];
-        rgba[output++] = cube.rgb[index + 1];
-        rgba[output++] = cube.rgb[index + 2];
+    rgba.resize(static_cast<std::size_t>(cube->size) * cube->size * cube->size * 4);
+    for (std::size_t index = 0, output = 0; index < cube->rgb.size(); index += 3) {
+        rgba[output++] = cube->rgb[index];
+        rgba[output++] = cube->rgb[index + 1];
+        rgba[output++] = cube->rgb[index + 2];
         rgba[output++] = 1.0F;
     }
     D3D11_TEXTURE3D_DESC textureDescription{};
-    textureDescription.Width = static_cast<UINT>(cube.size);
-    textureDescription.Height = static_cast<UINT>(cube.size);
-    textureDescription.Depth = static_cast<UINT>(cube.size);
+    textureDescription.Width = static_cast<UINT>(cube->size);
+    textureDescription.Height = static_cast<UINT>(cube->size);
+    textureDescription.Depth = static_cast<UINT>(cube->size);
     textureDescription.MipLevels = 1;
     textureDescription.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     textureDescription.Usage = D3D11_USAGE_IMMUTABLE;
     textureDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     D3D11_SUBRESOURCE_DATA textureData{};
     textureData.pSysMem = rgba.data();
-    textureData.SysMemPitch = static_cast<UINT>(cube.size * 4 * sizeof(float));
-    textureData.SysMemSlicePitch = static_cast<UINT>(cube.size * cube.size * 4 * sizeof(float));
+    textureData.SysMemPitch = static_cast<UINT>(cube->size * 4 * sizeof(float));
+    textureData.SysMemSlicePitch = static_cast<UINT>(cube->size * cube->size * 4 * sizeof(float));
     hr = device->CreateTexture3D(&textureDescription, &textureData, &self->lut_texture);
     if (FAILED(hr)) return false;
     hr = device->CreateShaderResourceView(self->lut_texture, nullptr, &self->lut_view);
@@ -153,6 +368,9 @@ void gst_ffgui_d3d11_lut_set_property(
     if (property == property_lut_id) {
         g_free(self->lut_id);
         self->lut_id = g_value_dup_string(value);
+    } else if (property == property_shader_id) {
+        g_free(self->shader_id);
+        self->shader_id = g_value_dup_string(value);
     } else {
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property, specification);
     }
@@ -163,6 +381,8 @@ void gst_ffgui_d3d11_lut_get_property(
     const auto* self = reinterpret_cast<const GstFfguiD3D11Lut*>(object);
     if (property == property_lut_id) {
         g_value_set_string(value, self->lut_id);
+    } else if (property == property_shader_id) {
+        g_value_set_string(value, self->shader_id);
     } else {
         G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property, specification);
     }
@@ -188,15 +408,25 @@ gboolean gst_ffgui_d3d11_lut_start(GstBaseTransform* transform) {
     delete self->cube;
     self->cube = new std::shared_ptr<const ffgui::ColorCube>(
         ffgui::find_published_gst_color_lut(self->lut_id == nullptr ? "" : self->lut_id));
-    return *self->cube && gst_d3d11_ensure_element_data(
+    delete self->ocio_shader;
+    self->ocio_shader = new std::shared_ptr<const ffgui::OcioGpuShader>(
+        find_shader(self->shader_id));
+    const auto sourceCount = static_cast<int>(static_cast<bool>(*self->cube)) +
+        static_cast<int>(static_cast<bool>(*self->ocio_shader));
+    return sourceCount == 1 && gst_d3d11_ensure_element_data(
         GST_ELEMENT(self), -1, &self->device);
 }
 
 gboolean gst_ffgui_d3d11_lut_stop(GstBaseTransform* transform) {
     auto* self = reinterpret_cast<GstFfguiD3D11Lut*>(transform);
-    release_gpu_resources(self);
+    if (self->ocio_resources != nullptr) {
+        std::scoped_lock resourceLock(self->ocio_resources->mutex);
+        release_gpu_resources(self);
+    }
     delete self->cube;
     self->cube = nullptr;
+    delete self->ocio_shader;
+    self->ocio_shader = nullptr;
     gst_clear_object(&self->device);
     return TRUE;
 }
@@ -260,8 +490,12 @@ gboolean gst_ffgui_d3d11_lut_decide_allocation(
 GstFlowReturn gst_ffgui_d3d11_lut_transform(
     GstBaseTransform* transform, GstBuffer* input, GstBuffer* output) {
     auto* self = reinterpret_cast<GstFfguiD3D11Lut*>(transform);
+    if (self->ocio_resources == nullptr) return GST_FLOW_ERROR;
+    std::scoped_lock resourceLock(self->ocio_resources->mutex);
     if (gst_buffer_n_memory(input) == 0 || gst_buffer_n_memory(output) == 0 ||
-        self->device == nullptr || self->lut_view == nullptr) return GST_FLOW_ERROR;
+        self->device == nullptr ||
+        (self->lut_view == nullptr && self->ocio_resources->views.empty() &&
+         (self->ocio_shader == nullptr || !*self->ocio_shader))) return GST_FLOW_ERROR;
     auto* inputMemory = gst_buffer_peek_memory(input, 0);
     auto* outputMemory = gst_buffer_peek_memory(output, 0);
     if (!gst_is_d3d11_memory(inputMemory) || !gst_is_d3d11_memory(outputMemory)) {
@@ -302,22 +536,47 @@ GstFlowReturn gst_ffgui_d3d11_lut_transform(
     viewport.Width = static_cast<float>(self->info.width);
     viewport.Height = static_cast<float>(self->info.height);
     viewport.MaxDepth = 1.0F;
-    ID3D11ShaderResourceView* resources[]{sourceView, self->lut_view};
+    const auto ocio = self->ocio_shader != nullptr && *self->ocio_shader;
+    std::vector<ID3D11ShaderResourceView*> resources;
+    std::vector<ID3D11SamplerState*> samplers;
+    if (ocio) {
+        auto maximumTextureBinding = 0U;
+        auto maximumSamplerBinding = 0U;
+        for (const auto binding : self->ocio_resources->texture_bindings) {
+            maximumTextureBinding = (std::max)(maximumTextureBinding, binding);
+        }
+        for (const auto binding : self->ocio_resources->sampler_bindings) {
+            maximumSamplerBinding = (std::max)(maximumSamplerBinding, binding);
+        }
+        resources.assign(static_cast<std::size_t>(maximumTextureBinding) + 1, nullptr);
+        samplers.assign(static_cast<std::size_t>(maximumSamplerBinding) + 1, nullptr);
+        resources[0] = sourceView;
+        samplers[0] = self->sampler;
+        for (std::size_t index = 0; index < self->ocio_resources->views.size(); ++index) {
+            resources[self->ocio_resources->texture_bindings[index]] =
+                self->ocio_resources->views[index];
+            samplers[self->ocio_resources->sampler_bindings[index]] =
+                self->ocio_resources->samplers[index];
+        }
+    } else {
+        resources = {sourceView, self->lut_view};
+        samplers = {self->sampler};
+    }
     gst_d3d11_device_lock(self->device);
     context->IASetInputLayout(nullptr);
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context->VSSetShader(self->vertex_shader, nullptr, 0);
     context->PSSetShader(self->pixel_shader, nullptr, 0);
-    context->PSSetShaderResources(0, 2, resources);
-    context->PSSetSamplers(0, 1, &self->sampler);
+    context->PSSetShaderResources(0, static_cast<UINT>(resources.size()), resources.data());
+    context->PSSetSamplers(0, static_cast<UINT>(samplers.size()), samplers.data());
     context->RSSetViewports(1, &viewport);
     context->OMSetBlendState(self->blend_state, nullptr, 0xffffffffU);
     context->OMSetRenderTargets(1, &targetView, nullptr);
     context->Draw(3, 0);
-    ID3D11ShaderResourceView* emptyResources[]{nullptr, nullptr};
-    context->PSSetShaderResources(0, 2, emptyResources);
-    ID3D11SamplerState* emptySampler = nullptr;
-    context->PSSetSamplers(0, 1, &emptySampler);
+    std::ranges::fill(resources, nullptr);
+    std::ranges::fill(samplers, nullptr);
+    context->PSSetShaderResources(0, static_cast<UINT>(resources.size()), resources.data());
+    context->PSSetSamplers(0, static_cast<UINT>(samplers.size()), samplers.data());
     context->PSSetShader(nullptr, nullptr, 0);
     context->VSSetShader(nullptr, nullptr, 0);
     context->OMSetBlendState(nullptr, nullptr, 0xffffffffU);
@@ -331,12 +590,21 @@ GstFlowReturn gst_ffgui_d3d11_lut_transform(
 
 void gst_ffgui_d3d11_lut_finalize(GObject* object) {
     auto* self = reinterpret_cast<GstFfguiD3D11Lut*>(object);
-    release_gpu_resources(self);
+    if (self->ocio_resources != nullptr) {
+        std::scoped_lock resourceLock(self->ocio_resources->mutex);
+        release_gpu_resources(self);
+    }
     delete self->cube;
     self->cube = nullptr;
+    delete self->ocio_shader;
+    self->ocio_shader = nullptr;
     gst_clear_object(&self->device);
     g_free(self->lut_id);
     self->lut_id = nullptr;
+    g_free(self->shader_id);
+    self->shader_id = nullptr;
+    delete self->ocio_resources;
+    self->ocio_resources = nullptr;
     G_OBJECT_CLASS(gst_ffgui_d3d11_lut_parent_class)->finalize(object);
 }
 
@@ -350,11 +618,18 @@ void gst_ffgui_d3d11_lut_class_init(GstFfguiD3D11LutClass* klass) {
         g_param_spec_string(
             "lut-id", "LUT identifier", "Published ffmpegGUI color cube identifier",
             nullptr, static_cast<GParamFlags>(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+    g_object_class_install_property(
+        objectClass, property_shader_id,
+        g_param_spec_string(
+            "shader-id", "OCIO shader identifier",
+            "Published exact OpenColorIO Direct3D 11 shader identifier",
+            nullptr, static_cast<GParamFlags>(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
     auto* elementClass = GST_ELEMENT_CLASS(klass);
     elementClass->set_context = gst_ffgui_d3d11_lut_set_context;
     gst_element_class_set_static_metadata(
-        elementClass, "ffmpegGUI D3D11 source color LUT", "Filter/Effect/Video/Hardware",
-        "Applies a published 3D color cube on D3D11 textures", "ffmpegGUI");
+        elementClass, "ffmpegGUI D3D11 source color processor", "Filter/Effect/Video/Hardware",
+        "Applies an exact OpenColorIO shader or a published 3D color cube on D3D11 textures",
+        "ffmpegGUI");
     auto* caps = gst_caps_from_string(
         "video/x-raw(memory:D3D11Memory),format=RGBA64_LE");
     gst_element_class_add_pad_template(
@@ -374,6 +649,7 @@ void gst_ffgui_d3d11_lut_class_init(GstFfguiD3D11LutClass* klass) {
 }
 
 void gst_ffgui_d3d11_lut_init(GstFfguiD3D11Lut* self) {
+    self->ocio_resources = new OcioResourceState;
     gst_video_info_init(&self->info);
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), FALSE);
     gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(self), FALSE);
@@ -402,6 +678,19 @@ bool gst_d3d11_color_lut_available() {
     if (compositor != nullptr) gst_object_unref(compositor);
     if (device != nullptr) gst_object_unref(device);
     return available;
+}
+
+void publish_gst_d3d11_ocio_shader(
+    std::string id, std::shared_ptr<const OcioGpuShader> shader) {
+    if (id.empty() || shader == nullptr || shader->source.empty() ||
+        shader->function_name.empty()) return;
+    std::scoped_lock lock(shaderRegistryMutex);
+    shaderRegistry.insert_or_assign(std::move(id), std::move(shader));
+}
+
+void remove_gst_d3d11_ocio_shader(const std::string& id) noexcept {
+    std::scoped_lock lock(shaderRegistryMutex);
+    shaderRegistry.erase(id);
 }
 
 }  // namespace ffgui

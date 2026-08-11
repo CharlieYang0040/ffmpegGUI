@@ -162,10 +162,30 @@ void test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube() {
     require(clipCube.contains("LUT_3D_SIZE 2") &&
                 std::ranges::count(clipCube, '\n') == 12,
             "managed video export LUT must evaluate input, ACEScg and display transforms");
-    const auto shader = engine.gpu_shader_hlsl("ACEScg", "ACES2065-1");
+    const auto shader = engine.gpu_shader_hlsl("Apple Log", "ACEScg");
     require(!shader.cache_id.empty() && !shader.source.empty() &&
-                shader.function_name == "ffgui_ocio_transform",
+                shader.function_name == "ffgui_ocio_transform" &&
+                shader.textures.size() == 1 && shader.textures.front().binding > 0 &&
+                shader.textures.front().dimensions == 2 &&
+                shader.textures.front().values.size() ==
+                    static_cast<std::size_t>(shader.textures.front().width) *
+                        shader.textures.front().height * shader.textures.front().channels,
             "ACES processor must produce a cacheable Direct3D 11 HLSL shader description");
+    ffgui::GradeGraph gpuGrade;
+    auto gpuPrimary = ffgui::make_default_grade_node(
+        ffgui::GradeNodeType::primary, "gpu-primary");
+    gpuPrimary.parameters["exposure"] = 0.25;
+    gpuGrade.add(std::move(gpuPrimary));
+    ffgui::SourceColorDescriptor appleLog;
+    appleLog.input_color_space = "Apple Log";
+    const auto managedShader = ffgui::build_managed_gpu_shader(
+        appleLog, settings, gpuGrade, "sRGB - Display");
+    require(managedShader.source.contains("ffgui_input_transform") &&
+                managedShader.source.contains("ffgui_grade_lut.Sample") &&
+                managedShader.source.contains("ffgui_output_transform") &&
+                managedShader.textures.size() >= 2 &&
+                managedShader.textures.back().dimensions == 3,
+            "managed GPU shader must keep exact OCIO stages around the creative grade cube");
 }
 
 void test_float_grade_pipeline_preserves_alpha_and_node_mix() {

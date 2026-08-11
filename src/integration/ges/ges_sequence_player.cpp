@@ -156,6 +156,20 @@ void add_color_lut_effect(
     }
 }
 
+void add_ocio_shader_effect(GESUriClip* uri_clip, const std::string& shader_id) {
+    const auto description =
+        "d3d11upload ! video/x-raw(memory:D3D11Memory),format=RGBA64_LE ! "
+        "ffguilut3d11 shader-id=" + shader_id +
+        " ! d3d11download ! video/x-raw,format=RGBA64_LE ! videoconvert";
+    auto* effect = ges_effect_new(description.c_str());
+    GError* error = nullptr;
+    if (effect == nullptr || !ges_clip_add_top_effect(
+            GES_CLIP(uri_clip), GES_BASE_EFFECT(effect), -1, &error)) {
+        if (effect != nullptr) gst_object_unref(effect);
+        throw glib_error("failed to attach exact OCIO source shader", error);
+    }
+}
+
 std::string path_to_utf8(const std::filesystem::path& path) {
     const auto value = path.u8string();
     return {reinterpret_cast<const char*>(value.data()), value.size()};
@@ -214,14 +228,11 @@ GesSequencePlayer::GesSequencePlayer(
     }
     d3d11_color_lut_available_ = g_getenv("FFGUI_FORCE_CPU_COLOR") == nullptr &&
         gst_d3d11_color_lut_available();
-    if (d3d11_color_lut_available_) {
-        auto* compositor = gst_registry_find_feature(
-            gst_registry_get(), "d3d11compositor", GST_TYPE_ELEMENT_FACTORY);
-        if (compositor != nullptr) {
-            gst_plugin_feature_set_rank(compositor, GST_RANK_PRIMARY + 100);
-            gst_object_unref(compositor);
-        }
-    }
+    // Source effects currently download RGBA64 back to system memory before the GES
+    // mixer. Forcing d3d11compositor at this boundary makes two simultaneously active
+    // source graphs contend with GES' smart mixer during a dissolve. Keep the stable
+    // system-memory compositor until the source shader and compositor share one native
+    // D3D11 graph with no download boundary.
     if (!ges_init()) {
         throw std::runtime_error("failed to initialize GStreamer Editing Services");
     }
@@ -238,6 +249,7 @@ GesSequencePlayer::~GesSequencePlayer() {
     source_automation_bindings_.store(0);
     source_color_lut_bindings_.store(0);
     source_gpu_color_lut_bindings_.store(0);
+    source_gpu_ocio_shader_bindings_.store(0);
 }
 
 void GesSequencePlayer::set_timeline(std::vector<TimelineSpan> timeline) {
@@ -573,6 +585,7 @@ void GesSequencePlayer::rebuild_pipeline_locked(
     source_automation_bindings_.store(0);
     source_color_lut_bindings_.store(0);
     source_gpu_color_lut_bindings_.store(0);
+    source_gpu_ocio_shader_bindings_.store(0);
     if (spans.empty()) {
         duration_ns_.store(0);
         std::scoped_lock cutLock(cut_points_mutex_);
@@ -673,12 +686,24 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                     ? (colorOutputSpace.empty() ? std::string{"sRGB - Display"}
                                                 : colorOutputSpace)
                     : std::string{};
-                auto cube = std::make_shared<const ColorCube>(build_color_cube(
-                    span.source_color, colorPipeline, grade, outputSpace, 33));
-                const auto lutId = "lut" + std::to_string(++lut_generation_);
-                publish_gst_color_lut(lutId, std::move(cube));
-                registered_lut_ids_.push_back(lutId);
-                add_color_lut_effect(uri_clip, lutId, d3d11_color_lut_available_);
+                const auto managedGpu = managed && d3d11_color_lut_available_;
+                if (managedGpu) {
+                    auto shader = std::make_shared<const OcioGpuShader>(
+                        build_managed_gpu_shader(
+                            span.source_color, colorPipeline, grade, outputSpace));
+                    const auto shaderId = "ocio" + std::to_string(++lut_generation_);
+                    publish_gst_d3d11_ocio_shader(shaderId, std::move(shader));
+                    registered_ocio_shader_ids_.push_back(shaderId);
+                    add_ocio_shader_effect(uri_clip, shaderId);
+                    source_gpu_ocio_shader_bindings_.fetch_add(1);
+                } else {
+                    auto cube = std::make_shared<const ColorCube>(build_color_cube(
+                        span.source_color, colorPipeline, grade, outputSpace, 33));
+                    const auto lutId = "lut" + std::to_string(++lut_generation_);
+                    publish_gst_color_lut(lutId, std::move(cube));
+                    registered_lut_ids_.push_back(lutId);
+                    add_color_lut_effect(uri_clip, lutId, d3d11_color_lut_available_);
+                }
                 source_color_lut_bindings_.fetch_add(1);
                 if (d3d11_color_lut_available_) {
                     source_gpu_color_lut_bindings_.fetch_add(1);
@@ -879,6 +904,8 @@ void GesSequencePlayer::destroy_pipeline_locked() noexcept {
     }
     for (const auto& id : registered_lut_ids_) remove_gst_color_lut(id);
     registered_lut_ids_.clear();
+    for (const auto& id : registered_ocio_shader_ids_) remove_gst_d3d11_ocio_shader(id);
+    registered_ocio_shader_ids_.clear();
     duration_ns_.store(0);
     position_ns_.store(0);
 }

@@ -2,12 +2,16 @@
 #include "core/timeline_model.hpp"
 #include "integration/ges/ges_sequence_player.hpp"
 #include "integration/ges/gst_color_lut_filter.hpp"
+#include "integration/ges/gst_d3d11_color_lut_filter.hpp"
+#include "color/color_frame_processor.hpp"
 
 #include <gst/app/gstappsink.h>
 #include <gst/gst.h>
 
 #include <chrono>
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -183,6 +187,85 @@ int main(int argc, char* argv[]) {
                     std::to_string(gpuLutValues[2]) + "," +
                     std::to_string(gpuLutValues[3])));
         }
+
+        ffgui::ColorPipelineSettings ocioSettings;
+        ocioSettings.mode = ffgui::ColorPipelineMode::aces_managed;
+        ocioSettings.working_space = "ACEScg";
+        ffgui::SourceColorDescriptor appleLog;
+        appleLog.input_color_space = "Apple Log";
+        ffgui::GradeGraph gpuGrade;
+        auto gpuPrimary = ffgui::make_default_grade_node(
+            ffgui::GradeNodeType::primary, "gpu-smoke-primary");
+        gpuPrimary.parameters["exposure"] = 0.25;
+        gpuGrade.add(std::move(gpuPrimary));
+        auto exactShader = std::make_shared<const ffgui::OcioGpuShader>(
+            ffgui::build_managed_gpu_shader(
+                appleLog, ocioSettings, gpuGrade, "sRGB - Display"));
+        if (exactShader->textures.size() < 2) {
+            throw std::runtime_error(
+                "managed GPU smoke requires OCIO and creative grade textures");
+        }
+        ffgui::publish_gst_d3d11_ocio_shader("smoke-ocio", exactShader);
+        GError* ocioPipelineError = nullptr;
+        auto* ocioPipeline = gst_parse_launch(
+            "videotestsrc num-buffers=1 pattern=solid-color foreground-color=0x80808080 ! "
+            "d3d11upload ! "
+            "video/x-raw(memory:D3D11Memory),format=RGBA64_LE,width=8,height=8 ! "
+            "ffguilut3d11 shader-id=smoke-ocio ! d3d11download ! "
+            "video/x-raw,format=RGBA64_LE ! appsink name=ociotestsink sync=false",
+            &ocioPipelineError);
+        if (ocioPipeline == nullptr) {
+            const std::string message = ocioPipelineError != nullptr &&
+                    ocioPipelineError->message != nullptr
+                ? ocioPipelineError->message : "unknown parse error";
+            if (ocioPipelineError != nullptr) g_error_free(ocioPipelineError);
+            ffgui::remove_gst_d3d11_ocio_shader("smoke-ocio");
+            throw std::runtime_error("D3D11 exact OCIO pipeline failed: " + message);
+        }
+        auto* ocioSink = gst_bin_get_by_name(GST_BIN(ocioPipeline), "ociotestsink");
+        gst_element_set_state(ocioPipeline, GST_STATE_PLAYING);
+        auto* ocioSample = gst_app_sink_try_pull_sample(
+            GST_APP_SINK(ocioSink), 5 * GST_SECOND);
+        GstMapInfo ocioMap{};
+        const auto ocioMapped = ocioSample != nullptr && gst_buffer_map(
+            gst_sample_get_buffer(ocioSample), &ocioMap, GST_MAP_READ);
+        const auto* ocioPixel = ocioMapped
+            ? reinterpret_cast<const std::uint16_t*>(ocioMap.data) : nullptr;
+        ffgui::FloatImageFrame referenceFrame;
+        referenceFrame.width = 1;
+        referenceFrame.height = 1;
+        referenceFrame.color_space = "Apple Log";
+        referenceFrame.rgba = {128.0F / 255.0F, 128.0F / 255.0F,
+                               128.0F / 255.0F, 128.0F / 255.0F};
+        const auto reference = ffgui::process_color_frame(
+            referenceFrame, appleLog, ocioSettings, gpuGrade, "sRGB - Display");
+        bool validOcioPixel = ocioPixel != nullptr;
+        for (std::size_t channel = 0; channel < 3 && validOcioPixel; ++channel) {
+            const auto expected = static_cast<int>(std::lround(
+                std::clamp(reference.rgba[channel], 0.0F, 1.0F) * 65535.0F));
+            // The creative stage is intentionally a 33^3 trilinear cube; exact OCIO input
+            // and output transforms surround it. Keep the acceptance bound below 1.6%.
+            validOcioPixel = std::abs(static_cast<int>(ocioPixel[channel]) - expected) <= 1'024;
+        }
+        validOcioPixel = validOcioPixel &&
+            std::abs(static_cast<int>(ocioPixel[3]) - 32'896) <= 300;
+        std::array<std::uint16_t, 4> ocioValues{};
+        if (ocioPixel != nullptr) std::copy_n(ocioPixel, 4, ocioValues.begin());
+        if (ocioMapped) gst_buffer_unmap(gst_sample_get_buffer(ocioSample), &ocioMap);
+        if (ocioSample != nullptr) gst_sample_unref(ocioSample);
+        gst_element_set_state(ocioPipeline, GST_STATE_NULL);
+        gst_object_unref(ocioSink);
+        gst_object_unref(ocioPipeline);
+        ffgui::remove_gst_d3d11_ocio_shader("smoke-ocio");
+        if (!validOcioPixel) {
+            throw std::runtime_error(
+                "D3D11 exact OCIO shader did not match the CPU processor: " +
+                std::to_string(ocioValues[0]) + "," + std::to_string(ocioValues[1]) + "," +
+                std::to_string(ocioValues[2]) + "," + std::to_string(ocioValues[3]) +
+                " expected " + std::to_string(reference.rgba[0]) + "," +
+                std::to_string(reference.rgba[1]) + "," +
+                std::to_string(reference.rgba[2]));
+        }
         player.set_video_frame_callback([&](ffgui::PreviewVideoFrame frame) {
             if (frame.cpu_pixels == nullptr || frame.width != 1280 || frame.height != 720 ||
                 frame.cpu_stride != frame.width * 4 ||
@@ -261,6 +344,10 @@ int main(int argc, char* argv[]) {
         }
         if (player.source_gpu_color_lut_bindings() != (expectGpuColor ? 4 : 0)) {
             throw std::runtime_error("managed color LUT did not use every D3D11 source shader");
+        }
+        if (player.source_gpu_ocio_shader_bindings() != (expectGpuColor ? 4 : 0)) {
+            throw std::runtime_error(
+                "managed sources did not use exact OCIO D3D11 transforms");
         }
         player.seek(milliseconds(300));
         player.play();

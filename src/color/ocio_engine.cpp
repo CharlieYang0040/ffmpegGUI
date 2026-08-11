@@ -131,9 +131,11 @@ std::string OcioEngine::bake_cube(const std::string& input_space,
 }
 
 OcioGpuShader OcioEngine::gpu_shader_hlsl(
-    const std::string& input_space, const std::string& output_space) const {
+    const std::string& input_space, const std::string& output_space,
+    std::string function_name, std::string resource_prefix) const {
     if (!managed()) throw std::logic_error("Legacy color mode has no OCIO GPU shader");
-    if (input_space.empty() || output_space.empty()) {
+    if (input_space.empty() || output_space.empty() || function_name.empty() ||
+        resource_prefix.empty()) {
         throw std::invalid_argument("OCIO GPU shader spaces are invalid");
     }
     try {
@@ -141,15 +143,15 @@ OcioGpuShader OcioEngine::gpu_shader_hlsl(
         const auto gpu = processor->getDefaultGPUProcessor();
         auto description = OCIO::GpuShaderDesc::CreateShaderDesc();
         description->setLanguage(OCIO::GPU_LANGUAGE_HLSL_DX11);
-        description->setFunctionName("ffgui_ocio_transform");
+        description->setFunctionName(function_name.c_str());
         description->setPixelName("pixel");
-        description->setResourcePrefix("ffgui_ocio_");
+        description->setResourcePrefix(resource_prefix.c_str());
         gpu->extractGpuShaderInfo(description);
 
         OcioGpuShader result;
         result.cache_id = description->getCacheID();
         result.source = description->getShaderText();
-        result.function_name = "ffgui_ocio_transform";
+        result.function_name = std::move(function_name);
         for (unsigned index = 0; index < description->getNumTextures(); ++index) {
             const char* name = nullptr;
             const char* sampler = nullptr;
@@ -172,6 +174,8 @@ OcioGpuShader OcioEngine::gpu_shader_hlsl(
             texture.depth = 1;
             texture.channels = channels;
             texture.binding = description->getTextureShaderBindingIndex(index);
+            texture.dimensions = dimensions == OCIO::GpuShaderCreator::TEXTURE_1D ? 1U : 2U;
+            texture.nearest = interpolation == OCIO::INTERP_NEAREST;
             texture.values.assign(values, values + count);
             result.textures.push_back(std::move(texture));
         }
@@ -192,6 +196,8 @@ OcioGpuShader OcioEngine::gpu_shader_hlsl(
             texture.depth = edge;
             texture.channels = 3;
             texture.binding = description->get3DTextureShaderBindingIndex(index);
+            texture.dimensions = 3;
+            texture.nearest = interpolation == OCIO::INTERP_NEAREST;
             texture.values.assign(values, values + count);
             result.textures.push_back(std::move(texture));
         }

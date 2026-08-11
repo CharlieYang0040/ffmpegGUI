@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 
@@ -96,6 +97,66 @@ ColorCube build_color_cube(
         result.rgb.push_back(processed.rgba[index + 1]);
         result.rgb.push_back(processed.rgba[index + 2]);
     }
+    return result;
+}
+
+OcioGpuShader build_managed_gpu_shader(
+    const SourceColorDescriptor& source_color,
+    const ColorPipelineSettings& settings,
+    const GradeGraph& grade,
+    const std::string& output_space,
+    int grade_cube_size) {
+    if (settings.mode == ColorPipelineMode::legacy ||
+        source_color.input_color_space.empty() || settings.working_space.empty() ||
+        output_space.empty()) {
+        throw std::invalid_argument(
+            "managed GPU color requires explicit input, working and output spaces");
+    }
+    OcioEngine engine(settings);
+    auto input = engine.gpu_shader_hlsl(
+        source_color.input_color_space, settings.working_space,
+        "ffgui_input_transform", "ffgui_input_");
+    auto output = engine.gpu_shader_hlsl(
+        settings.working_space, output_space,
+        "ffgui_output_transform", "ffgui_output_");
+    OcioGpuShader result;
+    result.cache_id = input.cache_id + ':' + output.cache_id;
+    result.function_name = "ffgui_managed_transform";
+    result.source = input.source + '\n' + output.source + '\n';
+    result.textures = std::move(input.textures);
+    result.textures.insert(result.textures.end(),
+                           std::make_move_iterator(output.textures.begin()),
+                           std::make_move_iterator(output.textures.end()));
+    const auto graded = !grade.nodes().empty();
+    if (graded) {
+        const auto cube = build_color_cube({}, {}, grade, {}, grade_cube_size);
+        OcioGpuTexture texture;
+        texture.name = "ffgui_grade_lut";
+        texture.sampler = "ffgui_grade_sampler";
+        texture.width = static_cast<unsigned>(cube.size);
+        texture.height = static_cast<unsigned>(cube.size);
+        texture.depth = static_cast<unsigned>(cube.size);
+        texture.channels = 3;
+        texture.dimensions = 3;
+        texture.values = cube.rgb;
+        result.textures.push_back(std::move(texture));
+        result.source +=
+            "Texture3D ffgui_grade_lut;\n"
+            "SamplerState ffgui_grade_sampler;\n";
+        result.cache_id += ":grade";
+    }
+    result.source +=
+        "float4 ffgui_managed_transform(float4 pixel) {\n"
+        "  pixel = ffgui_input_transform(pixel);\n";
+    if (graded) {
+        result.source +=
+            "  pixel.rgb = ffgui_grade_lut.Sample(ffgui_grade_sampler, "
+            "saturate(pixel.rgb)).rgb;\n";
+    }
+    result.source +=
+        "  pixel = ffgui_output_transform(pixel);\n"
+        "  return pixel;\n"
+        "}\n";
     return result;
 }
 
