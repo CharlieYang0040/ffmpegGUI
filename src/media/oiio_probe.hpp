@@ -9,6 +9,7 @@ namespace ffgui {
 struct ImagePartMetadata final {
     int subimage{};
     std::string name;
+    std::string view;
     int width{};
     int height{};
     bool deep{};

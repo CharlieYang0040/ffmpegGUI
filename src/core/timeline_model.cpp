@@ -17,6 +17,21 @@ void TimelineModel::add_asset(MediaAsset asset_value) {
     }
 }
 
+void TimelineModel::replace_asset(MediaAsset asset_value) {
+    const auto id = asset_value.id();
+    const auto found = assets_.find(id);
+    if (found == assets_.end()) {
+        throw std::invalid_argument("unknown asset id: " + id);
+    }
+    for (const auto& clip : clips_) {
+        if (clip.asset_id == id && !asset_value.contains_range(clip.source_in, clip.duration)) {
+            throw std::invalid_argument("replacement asset is shorter than a clip source range: " + id);
+        }
+    }
+    found->second = std::move(asset_value);
+    ++revision_;
+}
+
 const MediaAsset* TimelineModel::asset(const std::string& asset_id) const noexcept {
     const auto found = assets_.find(asset_id);
     return found == assets_.end() ? nullptr : &found->second;

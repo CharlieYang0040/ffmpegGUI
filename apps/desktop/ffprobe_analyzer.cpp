@@ -252,18 +252,31 @@ QString sequence_cache_key(const ImageSequenceDescriptor& sequence) {
 
 QString prepare_selected_exr_frame(
     const ImageSequenceDescriptor& sequence,
-    int frame_number,
-    const QString& cache_root) {
-    const auto directory = QDir(cache_root).filePath("selected-aov");
+    int frame_number) {
+    const auto source = sequence.frame_path(frame_number);
+    const QFileInfo sourceInfo(QString::fromStdWString(source.wstring()));
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(sourceInfo.absoluteFilePath().toUtf8());
+    hash.addData(QByteArray::number(sourceInfo.size()));
+    hash.addData(QByteArray::number(sourceInfo.lastModified().toMSecsSinceEpoch()));
+    hash.addData(QByteArray::fromStdString(sequence.exr_part));
+    hash.addData(QByteArray::fromStdString(sequence.exr_view));
+    for (const auto& channel : sequence.channel_mapping) {
+        hash.addData(QByteArray::fromStdString(channel));
+    }
+    const auto digest = QString::fromLatin1(hash.result().toHex());
+    const auto directory = QDir(
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+        .filePath(QStringLiteral("selected-exr-frames/%1").arg(digest.left(2)));
     QDir().mkpath(directory);
-    const auto target = QDir(directory).filePath(
-        QStringLiteral("frame-%1.exr").arg(frame_number));
+    const auto target = QDir(directory).filePath(digest + QStringLiteral(".exr"));
     if (QFileInfo(target).isFile()) return target;
     const auto partial = target + ".partial.exr";
     QFile::remove(partial);
     try {
         write_selected_exr_frame(
-            {sequence.frame_path(frame_number), sequence.exr_part, sequence.channel_mapping},
+            {source, sequence.exr_part,
+             sequence.channel_mapping, sequence.exr_view},
             std::filesystem::path(partial.toStdWString()));
     } catch (...) {
         QFile::remove(partial);
@@ -324,6 +337,14 @@ AnalyzedMedia analyze_sequence(
     if (is_exr_extension(std::filesystem::path(representative.toStdWString()))) {
         const auto metadata = probe_image_metadata(std::filesystem::path(representative.toStdWString()));
         detectedColorSpace = metadata.color_space;
+        const auto requestedPart = sequence.exr_part;
+        const auto requestedView = sequence.exr_view;
+        const auto requestedLayer = sequence.exr_layer;
+        sequence.available_parts.clear();
+        sequence.available_layers.clear();
+        sequence.available_channels.clear();
+        sequence.exr_parts.clear();
+        sequence.deep = false;
         for (const auto& part : metadata.parts) {
             sequence.available_parts.push_back(part.name);
             sequence.deep = sequence.deep || part.deep;
@@ -331,18 +352,34 @@ AnalyzedMedia analyze_sequence(
                 sequence.available_layers.end(), part.layers.begin(), part.layers.end());
             sequence.available_channels.insert(
                 sequence.available_channels.end(), part.channels.begin(), part.channels.end());
+            sequence.exr_parts.push_back(ExrPartDescriptor{
+                part.name, part.view, part.layers, part.channels});
         }
         if (sequence.deep) throw std::runtime_error("deep EXR is not supported as timeline media");
         if (!metadata.parts.empty()) {
-            sequence.exr_part = metadata.parts.front().name;
-            const auto& layers = metadata.parts.front().layers;
+            auto selected = std::ranges::find_if(metadata.parts, [&](const auto& part) {
+                return part.name == requestedPart &&
+                    (requestedView.empty() || part.view == requestedView);
+            });
+            if (selected == metadata.parts.end() && !requestedPart.empty()) {
+                selected = std::ranges::find(metadata.parts, requestedPart, &ImagePartMetadata::name);
+            }
+            if (selected == metadata.parts.end()) selected = metadata.parts.begin();
+            sequence.exr_part = selected->name;
+            sequence.exr_view = selected->view;
+            const auto& layers = selected->layers;
             const auto beauty = std::ranges::find(layers, "beauty");
-            if (beauty != layers.end()) sequence.exr_layer = *beauty;
+            const auto requested = std::ranges::find(layers, requestedLayer);
+            if (requested != layers.end()) sequence.exr_layer = *requested;
+            else if (beauty != layers.end()) sequence.exr_layer = *beauty;
             else if (!layers.empty()) sequence.exr_layer = layers.front();
+            else sequence.exr_layer.clear();
             if (!sequence.exr_layer.empty()) {
                 sequence.channel_mapping = {
                     sequence.exr_layer + ".R", sequence.exr_layer + ".G",
                     sequence.exr_layer + ".B", sequence.exr_layer + ".A"};
+            } else {
+                sequence.channel_mapping = {"R", "G", "B", "A"};
             }
         }
     }
@@ -356,15 +393,23 @@ AnalyzedMedia analyze_sequence(
     if (is_exr_extension(std::filesystem::path(representative.toStdWString()))) {
         const auto metadata = probe_image_metadata(
             std::filesystem::path(representative.toStdWString()));
-        const auto selected = std::ranges::find(
-            metadata.parts, sequence.exr_part, &ImagePartMetadata::name);
+        const auto selected = std::ranges::find_if(metadata.parts, [&](const auto& part) {
+            return part.name == sequence.exr_part &&
+                (sequence.exr_view.empty() || part.view == sequence.exr_view);
+        });
         if (selected != metadata.parts.end()) {
             sourceSize = QSize(selected->width, selected->height);
         }
     }
     const auto targetSize = proxy_dimensions(sourceSize);
+    const auto selectedPart = std::ranges::find_if(sequence.exr_parts, [&](const auto& part) {
+        return part.name == sequence.exr_part &&
+            (sequence.exr_view.empty() || part.view == sequence.exr_view);
+    });
+    const auto& alphaChannels = selectedPart == sequence.exr_parts.end()
+        ? sequence.available_channels : selectedPart->channels;
     const auto hasAlpha = std::ranges::any_of(
-        sequence.available_channels,
+        alphaChannels,
         [](const std::string& channel) { return channel == "A" || channel.ends_with(".A"); });
     const auto buildProxy = [&](const QString& target, const QString& manifestName, bool slateMissing) {
         if (QFileInfo(target).isFile()) return;
@@ -381,7 +426,7 @@ AnalyzedMedia analyze_sequence(
             const auto sourceFrame = sequence.has_frame(frame)
                 ? frame : sequence.nearest_present_frame(frame);
             const auto selectedPath = is_exr_extension(sequence.frame_path(sourceFrame))
-                ? prepare_selected_exr_frame(sequence, sourceFrame, cacheRoot)
+                ? prepare_selected_exr_frame(sequence, sourceFrame)
                 : QString::fromStdWString(sequence.frame_path(sourceFrame).wstring());
             const auto framePath = sequence.has_frame(frame)
                 ? selectedPath

@@ -12,6 +12,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
+#include <QQuickWindow>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
@@ -147,6 +148,7 @@ int main(int argc, char* argv[]) {
     bool gifExportSmoke = false;
     bool floatExportSmoke = false;
     bool floatVideoSmoke = false;
+    QString exrSelectionSmokeProject;
     const auto arguments = application.arguments();
     for (int index = 1; index < arguments.size(); ++index) {
         if (arguments[index] == "--project-roundtrip" && index + 1 < arguments.size()) {
@@ -188,6 +190,10 @@ int main(int argc, char* argv[]) {
             floatVideoSmoke = true;
             continue;
         }
+        if (arguments[index] == "--exr-selection-smoke" && index + 1 < arguments.size()) {
+            exrSelectionSmokeProject = arguments[++index];
+            continue;
+        }
         if (arguments[index] == "--export-project-smoke" && index + 2 < arguments.size()) {
             exportProjectSmoke = arguments[++index];
             exportProjectOutput = arguments[++index];
@@ -206,6 +212,17 @@ int main(int argc, char* argv[]) {
         [] { QCoreApplication::exit(EXIT_FAILURE); },
         Qt::QueuedConnection);
     engine.loadFromModule("FFGuiNext", "Main");
+    QTimer presentationPulse;
+    if (offscreenPresentationSmoke && !engine.rootObjects().isEmpty()) {
+        if (auto* rootWindow = qobject_cast<QQuickWindow*>(engine.rootObjects().front())) {
+            presentationPulse.setInterval(250);
+            QObject::connect(&presentationPulse, &QTimer::timeout, rootWindow, [rootWindow] {
+                rootWindow->requestUpdate();
+                static_cast<void>(rootWindow->grabWindow());
+            });
+            presentationPulse.start();
+        }
+    }
     if (!mediaFiles.isEmpty()) {
         controller.loadFiles(mediaFiles);
     }
@@ -214,7 +231,7 @@ int main(int argc, char* argv[]) {
         if (controller.durationNs() <= 0) return EXIT_FAILURE;
     }
     if ((!roundtripProject.isEmpty() || !exportSmokeOutput.isEmpty() || playbackSmoke ||
-         floatVideoSmoke) &&
+         floatVideoSmoke || !exrSelectionSmokeProject.isEmpty()) &&
         controller.importing()) {
         QEventLoop importLoop;
         QTimer importTimeout;
@@ -227,6 +244,42 @@ int main(int argc, char* argv[]) {
         if (controller.importing() || controller.durationNs() <= 0) {
             return EXIT_FAILURE;
         }
+    }
+    if (!exrSelectionSmokeProject.isEmpty()) {
+        const auto assetsBefore = controller.mediaAssets();
+        const auto clipsBefore = controller.clips();
+        if (assetsBefore.size() != 1 || clipsBefore.size() != 1) return EXIT_FAILURE;
+        const auto before = assetsBefore.front().toMap();
+        const auto partOptions = before.value("exrPartOptions").toList();
+        if (partOptions.isEmpty()) return EXIT_FAILURE;
+        const auto part = partOptions.front().toMap().value("value").toString();
+        const auto assetId = before.value("id").toString();
+        QEventLoop selectionLoop;
+        QTimer selectionTimeout;
+        selectionTimeout.setSingleShot(true);
+        QObject::connect(
+            &controller, &EditorController::mediaImportFinished,
+            &selectionLoop, &QEventLoop::quit);
+        QObject::connect(&selectionTimeout, &QTimer::timeout, &selectionLoop, &QEventLoop::quit);
+        controller.updateExrSelection(assetId, part, {}, {});
+        selectionTimeout.start(120'000);
+        if (controller.importing()) selectionLoop.exec();
+        if (controller.importing()) return EXIT_FAILURE;
+        const auto assetsAfter = controller.mediaAssets();
+        const auto clipsAfter = controller.clips();
+        if (assetsAfter.size() != 1 || clipsAfter.size() != 1 ||
+            assetsAfter.front().toMap().value("id").toString() != assetId ||
+            clipsAfter.front().toMap().value("id") != clipsBefore.front().toMap().value("id") ||
+            assetsAfter.front().toMap().value("exrPart").toString() != part) {
+            return EXIT_FAILURE;
+        }
+        controller.saveProject(exrSelectionSmokeProject);
+        controller.loadProject(exrSelectionSmokeProject);
+        const auto reloaded = controller.mediaAssets();
+        return reloaded.size() == 1 &&
+                !reloaded.front().toMap().value("exrPartOptions").toList().isEmpty() &&
+                reloaded.front().toMap().value("exrPart").toString() == part
+            ? EXIT_SUCCESS : EXIT_FAILURE;
     }
     if (floatVideoSmoke) {
         const auto clips = controller.clips();

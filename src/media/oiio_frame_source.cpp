@@ -43,9 +43,12 @@ FloatImageFrame read_float_image_frame(const ImageFrameRequest& request) {
         else if (!input->seek_subimage(subimage, 0, candidate)) break;
         std::string name = candidate.get_string_attribute("oiio:subimagename");
         if (name.empty()) name = "part" + std::to_string(subimage);
+        std::string view(candidate.get_string_attribute("view"));
+        if (view.empty()) view = std::string(candidate.get_string_attribute("oiio:view"));
         if (!discoveredParts.empty()) discoveredParts += ",";
-        discoveredParts += name;
-        if (request.part.empty() || request.part == name) {
+        discoveredParts += name + (view.empty() ? "" : "[" + view + "]");
+        if ((request.part.empty() || request.part == name) &&
+            (request.view.empty() || request.view == view)) {
             selected = subimage;
             spec = std::move(candidate);
             break;
@@ -122,7 +125,7 @@ ImageFrameCache::ImageFrameCache(std::size_t maximum_bytes) : maximum_bytes_(max
 std::string ImageFrameCache::key_for(const ImageFrameRequest& request) {
     std::ostringstream key;
     const auto absolute = std::filesystem::absolute(request.path);
-    key << absolute.string() << '|' << request.part;
+    key << absolute.string() << '|' << request.part << '|' << request.view;
     for (const auto& channel : request.channel_mapping) key << '|' << channel;
     std::error_code error;
     const auto size = std::filesystem::file_size(absolute, error);

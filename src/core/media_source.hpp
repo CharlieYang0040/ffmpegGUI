@@ -32,6 +32,15 @@ struct SourceColorDescriptor final {
     bool operator==(const SourceColorDescriptor&) const = default;
 };
 
+struct ExrPartDescriptor final {
+    std::string name;
+    std::string view;
+    std::vector<std::string> layers;
+    std::vector<std::string> channels;
+
+    bool operator==(const ExrPartDescriptor&) const = default;
+};
+
 struct ImageSequenceDescriptor final {
     std::filesystem::path directory;
     std::string prefix;
@@ -49,6 +58,7 @@ struct ImageSequenceDescriptor final {
     std::vector<std::string> available_parts;
     std::vector<std::string> available_layers;
     std::vector<std::string> available_channels;
+    std::vector<ExrPartDescriptor> exr_parts;
     std::vector<std::string> channel_mapping{"R", "G", "B", "A"};
 
     bool operator==(const ImageSequenceDescriptor&) const = default;

@@ -64,7 +64,8 @@ RenderedTimelineFrame TimelineFrameServer::render(
         const auto resolved = sequence.has_frame(requested)
             ? requested : sequence.nearest_present_frame(requested);
         auto source = cache_.get(ImageFrameRequest{
-            sequence.frame_path(resolved), sequence.exr_part, sequence.channel_mapping});
+            sequence.frame_path(resolved), sequence.exr_part,
+            sequence.channel_mapping, sequence.exr_view});
         auto combinedGrade = compose_clip_grade(span.clip);
         auto processed = process_color_frame(
             *source, asset->source_color(), color_pipeline, combinedGrade, output_space);

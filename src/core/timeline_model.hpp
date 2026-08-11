@@ -95,6 +95,7 @@ struct CaptionCue final {
 class TimelineModel final {
 public:
     void add_asset(MediaAsset asset);
+    void replace_asset(MediaAsset asset);
     [[nodiscard]] const MediaAsset* asset(const std::string& asset_id) const noexcept;
     [[nodiscard]] const std::unordered_map<std::string, MediaAsset>& assets() const noexcept {
         return assets_;

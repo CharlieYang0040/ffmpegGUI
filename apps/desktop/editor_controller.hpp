@@ -230,6 +230,11 @@ public slots:
     void moveClip(const QString& clipId, int insertionIndex);
     void moveClips(const QStringList& clipIds, int insertionIndex);
     void insertAssetAtTime(const QString& assetId, qint64 timelinePosition);
+    void updateExrSelection(
+        const QString& assetId,
+        const QString& part,
+        const QString& view,
+        const QString& layer);
     void splitAtPlayhead();
     void duplicateSelectedClip();
     void deleteSelectedClip();
@@ -332,6 +337,7 @@ private:
         ffgui::MediaAsset asset;
         std::string clip_id;
         QString thumbnail_atlas;
+        bool replace_existing{};
     };
 
     void publishTimeline(bool resetPlayhead = false);

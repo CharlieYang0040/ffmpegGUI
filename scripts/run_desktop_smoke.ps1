@@ -26,6 +26,9 @@ $mixedExportOutput = Join-Path $mediaDir "export-mixed-sequence.mp4"
 $copySource = Join-Path $mediaDir "stream-copy-source.mp4"
 $copyProject = Join-Path $mediaDir "stream-copy.ffnext"
 $copyOutput = Join-Path $mediaDir "stream-copy-output.mp4"
+$exrSelectionDir = Join-Path $root "out\test-media\exr-selection"
+$exrSelectionFrame = Join-Path $exrSelectionDir "plate.0001.exr"
+$exrSelectionProject = Join-Path $exrSelectionDir "selection.ffguiproject"
 
 foreach ($required in @($application, $clipA, $clipB, $clipVfr)) {
     if (-not (Test-Path -LiteralPath $required)) {
@@ -56,6 +59,29 @@ foreach ($asset in $savedProject.assets) {
     }
 }
 Write-Output "Thumbnail atlas passed: all imported media have cached timeline images"
+
+New-Item -ItemType Directory -Force -Path $exrSelectionDir | Out-Null
+& (Join-Path $root ".tools\ffmpeg\bin\ffmpeg.exe") `
+    -v error -y -f lavfi -i "color=c=red:s=64x48:r=1:d=2" `
+    -frames:v 2 -compression zip1 (Join-Path $exrSelectionDir "plate.%04d.exr")
+if ($LASTEXITCODE -ne 0) {
+    throw "EXR selection fixture generation failed"
+}
+Remove-Item -LiteralPath $exrSelectionProject -Force -ErrorAction SilentlyContinue
+$exrSelection = Start-Process -FilePath $application `
+    -ArgumentList @("--exr-selection-smoke", $exrSelectionProject, $exrSelectionFrame) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($exrSelection.ExitCode -ne 0 -or
+    -not (Test-Path -LiteralPath $exrSelectionProject -PathType Leaf)) {
+    throw "EXR part/AOV selection and project roundtrip failed"
+}
+$savedExrProject = Get-Content -LiteralPath $exrSelectionProject -Raw | ConvertFrom-Json
+if ($savedExrProject.assets.Count -ne 1 -or
+    $savedExrProject.assets[0].imageSequence.exrParts.Count -lt 1 -or
+    [string]::IsNullOrWhiteSpace($savedExrProject.assets[0].imageSequence.exrPart)) {
+    throw "EXR part options were not persisted"
+}
+Write-Output "EXR selection passed: part/view/AOV metadata survived asynchronous asset replacement and project reload"
 
 if (Test-Path -LiteralPath $exportOutput -PathType Leaf) {
     Remove-Item -LiteralPath $exportOutput -Force

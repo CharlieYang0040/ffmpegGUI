@@ -429,7 +429,7 @@ ApplicationWindow {
                             required property var modelData
                             property string assetId: modelData.id
                             width: ListView.view.width
-                            height: 78
+                            height: modelData.exrPartOptions.length > 0 ? 112 : 78
                             radius: 7
                             color: dragHandler.active ? "#2a3545" : "#1d232b"
                             border.color: dragHandler.active ? "#6d9cff" : "#2a323d"
@@ -492,6 +492,65 @@ ApplicationWindow {
                                               : mediaCard.modelData.colorSpace
                                         color: mediaCard.modelData.colorUnresolved ? "#ffb45e" : "#8193a8"
                                         font.pixelSize: 10
+                                    }
+                                    Loader {
+                                        Layout.fillWidth: true
+                                        active: mediaCard.modelData.exrPartOptions.length > 0
+                                        sourceComponent: RowLayout {
+                                        width: parent ? parent.width : 0
+                                        spacing: 5
+                                        Label {
+                                            text: "EXR"
+                                            color: "#8ca2bb"
+                                            font.pixelSize: 10
+                                        }
+                                        ComboBox {
+                                            id: exrPartBox
+                                            Layout.preferredWidth: 92
+                                            implicitHeight: 25
+                                            enabled: !EditorController.importing
+                                            model: mediaCard.modelData.exrPartOptions
+                                            textRole: "label"
+                                            valueRole: "value"
+                                            currentIndex: indexOfValue(mediaCard.modelData.exrPart)
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: "OpenEXR part"
+                                            onActivated: EditorController.updateExrSelection(
+                                                mediaCard.assetId, currentValue, "", "")
+                                        }
+                                        ComboBox {
+                                            id: exrViewBox
+                                            Layout.preferredWidth: 78
+                                            implicitHeight: 25
+                                            visible: mediaCard.modelData.exrViewOptions.length > 1
+                                                     || mediaCard.modelData.exrView.length > 0
+                                            enabled: !EditorController.importing
+                                            model: mediaCard.modelData.exrViewOptions
+                                            textRole: "label"
+                                            valueRole: "value"
+                                            currentIndex: indexOfValue(mediaCard.modelData.exrView)
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: "OpenEXR view"
+                                            onActivated: EditorController.updateExrSelection(
+                                                mediaCard.assetId, mediaCard.modelData.exrPart,
+                                                currentValue, "")
+                                        }
+                                        ComboBox {
+                                            id: exrLayerBox
+                                            Layout.fillWidth: true
+                                            implicitHeight: 25
+                                            enabled: !EditorController.importing
+                                            model: mediaCard.modelData.exrLayerOptions
+                                            textRole: "label"
+                                            valueRole: "value"
+                                            currentIndex: indexOfValue(mediaCard.modelData.exrLayer)
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: "표시할 레이어/AOV"
+                                            onActivated: EditorController.updateExrSelection(
+                                                mediaCard.assetId, mediaCard.modelData.exrPart,
+                                                mediaCard.modelData.exrView, currentValue)
+                                        }
+                                        }
                                     }
                                 }
                                 AppButton {

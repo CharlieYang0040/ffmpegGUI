@@ -30,6 +30,7 @@ struct ImageFrameRequest final {
     std::filesystem::path path;
     std::string part;
     std::vector<std::string> channel_mapping{"R", "G", "B", "A"};
+    std::string view;
 };
 
 [[nodiscard]] FloatImageFrame read_float_image_frame(const ImageFrameRequest& request);

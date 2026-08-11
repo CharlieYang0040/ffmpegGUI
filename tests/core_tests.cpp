@@ -13,6 +13,7 @@
 #include "export/ffmpeg_export_plan.hpp"
 
 #include <exception>
+#include <array>
 #include <filesystem>
 #include <functional>
 #include <fstream>
@@ -317,6 +318,43 @@ void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
     require(dissolveFrame.clip_id == "incoming" &&
                 std::abs(dissolveFrame.processed.rgba[0] - 0.15F) < 0.00001F,
             "timeline frame server must grade both clips before blending a dissolve");
+
+    const auto multipartPath = root / "stereo.exr";
+    std::array<OIIO::ImageSpec, 2> multipartSpecs{
+        OIIO::ImageSpec(1, 1, 4, OIIO::TypeDesc::FLOAT),
+        OIIO::ImageSpec(1, 1, 4, OIIO::TypeDesc::FLOAT)};
+    multipartSpecs[0].channelnames = {"R", "G", "B", "A"};
+    multipartSpecs[0].attribute("oiio:subimagename", "leftPart");
+    multipartSpecs[0].attribute("view", "left");
+    multipartSpecs[1].channelnames = {"R", "G", "B", "A"};
+    multipartSpecs[1].attribute("oiio:subimagename", "rightPart");
+    multipartSpecs[1].attribute("view", "right");
+    auto multipartOutput = OIIO::ImageOutput::create(multipartPath.string());
+    require(static_cast<bool>(multipartOutput) &&
+                multipartOutput->open(multipartPath.string(), 2, multipartSpecs.data()),
+            "multipart EXR test output must open");
+    const std::array<float, 4> leftPixel{0.1F, 0.2F, 0.3F, 1.0F};
+    const std::array<float, 4> rightPixel{0.7F, 0.8F, 0.9F, 1.0F};
+    require(multipartOutput->write_image(OIIO::TypeDesc::FLOAT, leftPixel.data()) &&
+                multipartOutput->open(
+                    multipartPath.string(), multipartSpecs[1],
+                    OIIO::ImageOutput::AppendSubimage) &&
+                multipartOutput->write_image(OIIO::TypeDesc::FLOAT, rightPixel.data()) &&
+                multipartOutput->close(),
+            "multipart EXR views must be written");
+    const auto multipartMetadata = ffgui::probe_image_metadata(multipartPath);
+    require(multipartMetadata.parts.size() == 2 &&
+                multipartMetadata.parts[0].view == "left" &&
+                multipartMetadata.parts[1].view == "right",
+            "EXR probe must retain per-part view metadata");
+    const auto rightFrame = ffgui::read_float_image_frame(
+        {multipartPath, "rightPart", {"R", "G", "B", "A"}, "right"});
+    require(std::abs(rightFrame.rgba[0] - 0.7F) < 0.00001F,
+            "EXR frame source must select the requested part/view pixels");
+    require_throws<std::invalid_argument>([&] {
+        static_cast<void>(ffgui::read_float_image_frame(
+            {multipartPath, "rightPart", {"R", "G", "B", "A"}, "left"}));
+    }, "mismatched EXR part/view selection must be rejected");
     std::filesystem::remove_all(root);
 }
 
@@ -713,6 +751,31 @@ void test_timeline_revision_changes_only_after_successful_edits() {
     require(timeline.revision() == edited + 2, "undo must publish a distinct revision");
     require(timeline.redo(), "trim redo must succeed");
     require(timeline.revision() == edited + 3, "redo must publish a distinct revision");
+}
+
+void test_asset_replacement_preserves_clips_and_validates_source_ranges() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"a", "asset-a", seconds(2), seconds(5)});
+    const auto revision = timeline.revision();
+    timeline.replace_asset(MediaAsset{
+        "asset-a", std::filesystem::path{"A-selected-aov.exr"}, seconds(10)});
+    require(timeline.revision() == revision + 1,
+            "asset replacement must publish a new preview revision");
+    require(timeline.clips().size() == 1 && timeline.clips()[0].asset_id == "asset-a" &&
+                timeline.clips()[0].source_in == seconds(2),
+            "asset replacement must preserve clip identity and edit ranges");
+    require(timeline.asset("asset-a")->path() ==
+                std::filesystem::path{"A-selected-aov.exr"},
+            "asset replacement must publish the new media source");
+    const auto acceptedRevision = timeline.revision();
+    require_throws<std::invalid_argument>(
+        [&] { timeline.replace_asset(MediaAsset{
+            "asset-a", std::filesystem::path{"too-short.exr"}, seconds(6)}); },
+        "shorter replacement must reject clips outside its source duration");
+    require(timeline.revision() == acceptedRevision &&
+                timeline.asset("asset-a")->path() ==
+                    std::filesystem::path{"A-selected-aov.exr"},
+            "rejected asset replacement must leave the model unchanged");
 }
 
 void test_clip_audio_edits_are_atomic_and_follow_split_edges() {
@@ -1210,6 +1273,7 @@ int main() {
         {"invalid_edits_are_rejected_without_mutation", test_invalid_edits_are_rejected_without_mutation},
         {"undo_redo_covers_structural_edits", test_undo_redo_covers_structural_edits},
         {"timeline_revision_changes_only_after_successful_edits", test_timeline_revision_changes_only_after_successful_edits},
+        {"asset_replacement_preserves_clips_and_validates_source_ranges", test_asset_replacement_preserves_clips_and_validates_source_ranges},
         {"clip_audio_edits_are_atomic_and_follow_split_edges", test_clip_audio_edits_are_atomic_and_follow_split_edges},
         {"playback_rate_maps_source_sequence_frames_and_captions", test_playback_rate_maps_source_sequence_frames_and_captions},
         {"caption_edits_and_ripple_mapping_share_undo_state", test_caption_edits_and_ripple_mapping_share_undo_state},

@@ -168,6 +168,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             bool success = false;
             try {
                 auto imported = import_watcher_.result();
+                bool addedAsset = false;
                 for (auto& item : imported) {
                     const auto assetId = item.asset.id();
                     const auto assetKey = QString::fromStdString(assetId);
@@ -177,16 +178,21 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                     if (!item.thumbnail_atlas.isEmpty()) {
                         thumbnail_atlases_.insert(assetKey, std::move(item.thumbnail_atlas));
                     }
-                    timeline_.add_asset(std::move(item.asset));
-                    timeline_.append_clip(ffgui::Clip{
-                        std::move(item.clip_id), assetId, 0, duration});
-                    if (selected_clip_id_.isEmpty()) {
-                        setSingleSelection(
-                            QString::fromStdString(timeline_.clips().back().id));
+                    if (item.replace_existing) {
+                        timeline_.replace_asset(std::move(item.asset));
+                    } else {
+                        timeline_.add_asset(std::move(item.asset));
+                        timeline_.append_clip(ffgui::Clip{
+                            std::move(item.clip_id), assetId, 0, duration});
+                        addedAsset = true;
+                        if (selected_clip_id_.isEmpty()) {
+                            setSingleSelection(
+                                QString::fromStdString(timeline_.clips().back().id));
+                        }
                     }
                 }
-                timeline_.clear_history();
-                publishTimeline(true);
+                if (addedAsset) timeline_.clear_history();
+                publishTimeline(addedAsset);
                 success = true;
             } catch (const std::exception& error) {
                 qWarning().noquote() << "media import failed" << error.what();
@@ -607,6 +613,13 @@ std::uint64_t EditorController::videoFramesReceived() const noexcept {
 
 bool EditorController::videoSurfaceExposed() const noexcept {
     const auto* item = qobject_cast<const VideoPreviewItem*>(video_item_);
+    if (item != nullptr) {
+        qInfo().noquote() << "video surface state"
+                          << "size=" << item->width() << "x" << item->height()
+                          << "visible=" << item->isVisible()
+                          << "window=" << (item->window() != nullptr)
+                          << "exposed=" << (item->window() != nullptr && item->window()->isExposed());
+    }
     return item != nullptr && item->window() != nullptr && item->window()->isExposed();
 }
 
@@ -693,6 +706,45 @@ QVariantList EditorController::mediaAssets() const {
     for (const auto* asset : assets) {
         const auto id = QString::fromStdString(asset->id());
         const QFileInfo file(QString::fromStdWString(asset->path().wstring()));
+        QVariantList exrPartOptions;
+        QVariantList exrViewOptions;
+        QVariantList exrLayerOptions;
+        QString exrPart;
+        QString exrView;
+        QString exrLayer;
+        if (asset->image_sequence().has_value()) {
+            const auto& sequence = asset->image_sequence().value();
+            exrPart = QString::fromStdString(sequence.exr_part);
+            exrView = QString::fromStdString(sequence.exr_view);
+            exrLayer = QString::fromStdString(sequence.exr_layer);
+            QSet<QString> seenParts;
+            QSet<QString> seenViews;
+            for (const auto& part : sequence.exr_parts) {
+                const auto name = QString::fromStdString(part.name);
+                const auto view = QString::fromStdString(part.view);
+                if (!seenParts.contains(name)) {
+                    exrPartOptions.push_back(QVariantMap{{"label", name}, {"value", name}});
+                    seenParts.insert(name);
+                }
+                if (name == exrPart && !seenViews.contains(view)) {
+                    exrViewOptions.push_back(QVariantMap{
+                        {"label", view.isEmpty() ? QStringLiteral("기본") : view},
+                        {"value", view}});
+                    seenViews.insert(view);
+                }
+                if (name == exrPart && view == exrView) {
+                    if (part.layers.empty()) {
+                        exrLayerOptions.push_back(QVariantMap{
+                            {"label", QStringLiteral("RGBA")}, {"value", QString{}}});
+                    } else {
+                        for (const auto& layer : part.layers) {
+                            const auto value = QString::fromStdString(layer);
+                            exrLayerOptions.push_back(QVariantMap{{"label", value}, {"value", value}});
+                        }
+                    }
+                }
+            }
+        }
         int useCount = 0;
         for (const auto& clip : timeline_.clips()) {
             if (clip.asset_id == asset->id()) ++useCount;
@@ -710,8 +762,12 @@ QVariantList EditorController::mediaAssets() const {
             {"sequenceRange", asset->image_sequence().has_value()
                 ? QStringLiteral("%1–%2").arg(asset->image_sequence()->first_frame)
                     .arg(asset->image_sequence()->last_frame) : QString{}},
-            {"exrLayer", asset->image_sequence().has_value()
-                ? QString::fromStdString(asset->image_sequence()->exr_layer) : QString{}},
+            {"exrPart", exrPart},
+            {"exrView", exrView},
+            {"exrLayer", exrLayer},
+            {"exrPartOptions", exrPartOptions},
+            {"exrViewOptions", exrViewOptions},
+            {"exrLayerOptions", exrLayerOptions},
             {"thumbnailAtlas", thumbnail_atlases_.value(id)},
             {"useCount", useCount}});
     }
@@ -1070,7 +1126,8 @@ void EditorController::loadFiles(const QStringList& paths) {
                     result.push_back(PendingImport{
                         std::move(analyzed.asset),
                         clipId,
-                        std::move(analyzed.thumbnail_atlas)});
+                        std::move(analyzed.thumbnail_atlas),
+                        false});
                 }
                 return result;
             }));
@@ -1088,6 +1145,59 @@ void EditorController::loadUrls(const QList<QUrl>& urls) {
         }
     }
     loadFiles(paths);
+}
+
+void EditorController::updateExrSelection(
+    const QString& assetId,
+    const QString& part,
+    const QString& view,
+    const QString& layer) {
+    if (importing_) {
+        setStatus("현재 미디어 작업이 끝난 후 EXR 선택을 변경하세요");
+        return;
+    }
+    const auto* asset = timeline_.asset(assetId.toStdString());
+    if (asset == nullptr || !asset->image_sequence().has_value() ||
+        asset->image_sequence()->exr_parts.empty()) {
+        setStatus("선택 가능한 EXR 시퀀스가 아닙니다");
+        return;
+    }
+    auto sequence = asset->image_sequence().value();
+    const auto requestedPart = part.toStdString();
+    const auto requestedView = view.toStdString();
+    const auto requestedLayer = layer.toStdString();
+    const auto option = std::ranges::find_if(sequence.exr_parts, [&](const auto& candidate) {
+        return candidate.name == requestedPart &&
+            (requestedView.empty() || candidate.view == requestedView);
+    });
+    if (option == sequence.exr_parts.end()) {
+        setStatus("EXR part/view 조합을 찾을 수 없습니다");
+        return;
+    }
+    if (!requestedLayer.empty() &&
+        std::ranges::find(option->layers, requestedLayer) == option->layers.end()) {
+        setStatus("선택한 EXR part에 해당 AOV 레이어가 없습니다");
+        return;
+    }
+    sequence.exr_part = requestedPart;
+    sequence.exr_view = option->view;
+    sequence.exr_layer = requestedLayer;
+    const auto sourcePath = QString::fromStdWString(asset->path().wstring());
+    const auto ffprobe = ffgui::locate_ffprobe();
+    const auto ffmpeg = ffgui::locate_ffmpeg();
+    importing_ = true;
+    emit importingChanged();
+    setStatus(QStringLiteral("EXR AOV 준비 중 · %1%2")
+        .arg(part, requestedLayer.empty() ? QString{} : QStringLiteral(" / ") + layer));
+    import_watcher_.setFuture(QtConcurrent::run(
+        [ffprobe, ffmpeg, sourcePath, assetId, sequence = std::move(sequence)]() mutable {
+            auto analyzed = ffgui::analyze_media_source(
+                ffprobe, ffmpeg, sourcePath, assetId.toStdString(), std::move(sequence));
+            std::vector<PendingImport> result;
+            result.push_back(PendingImport{
+                std::move(analyzed.asset), {}, std::move(analyzed.thumbnail_atlas), true});
+            return result;
+        }));
 }
 
 void EditorController::seek(qint64 timelinePosition) {
@@ -2388,6 +2498,7 @@ void EditorController::saveProject(const QString& path) {
                 QJsonArray availableParts;
                 QJsonArray availableLayers;
                 QJsonArray availableChannels;
+                QJsonArray exrParts;
                 for (const auto frame : sequence.present_frames) present.push_back(frame);
                 for (const auto frame : sequence.missing_frames) missing.push_back(frame);
                 for (const auto& channel : sequence.channel_mapping) {
@@ -2396,6 +2507,17 @@ void EditorController::saveProject(const QString& path) {
                 for (const auto& part : sequence.available_parts) availableParts.push_back(QString::fromStdString(part));
                 for (const auto& layer : sequence.available_layers) availableLayers.push_back(QString::fromStdString(layer));
                 for (const auto& channel : sequence.available_channels) availableChannels.push_back(QString::fromStdString(channel));
+                for (const auto& part : sequence.exr_parts) {
+                    QJsonArray layers;
+                    QJsonArray partChannels;
+                    for (const auto& layer : part.layers) layers.push_back(QString::fromStdString(layer));
+                    for (const auto& channel : part.channels) partChannels.push_back(QString::fromStdString(channel));
+                    exrParts.push_back(QJsonObject{
+                        {"name", QString::fromStdString(part.name)},
+                        {"view", QString::fromStdString(part.view)},
+                        {"layers", layers},
+                        {"channels", partChannels}});
+                }
                 assetObject.insert("imageSequence", QJsonObject{
                     {"directory", QString::fromStdWString(sequence.directory.wstring())},
                     {"prefix", QString::fromStdString(sequence.prefix)},
@@ -2414,6 +2536,7 @@ void EditorController::saveProject(const QString& path) {
                     {"availableParts", availableParts},
                     {"availableLayers", availableLayers},
                     {"availableChannels", availableChannels},
+                    {"exrParts", exrParts},
                     {"channels", channels}});
             }
             assets.push_back(assetObject);
@@ -2574,6 +2697,24 @@ void EditorController::loadProject(const QString& path) {
                 }
                 for (const auto item : sequenceObject.value("availableChannels").toArray()) {
                     value.available_channels.push_back(item.toString().toStdString());
+                }
+                for (const auto item : sequenceObject.value("exrParts").toArray()) {
+                    const auto partObject = item.toObject();
+                    ffgui::ExrPartDescriptor part;
+                    part.name = partObject.value("name").toString().toStdString();
+                    part.view = partObject.value("view").toString().toStdString();
+                    for (const auto layer : partObject.value("layers").toArray()) {
+                        part.layers.push_back(layer.toString().toStdString());
+                    }
+                    for (const auto channel : partObject.value("channels").toArray()) {
+                        part.channels.push_back(channel.toString().toStdString());
+                    }
+                    if (!part.name.empty()) value.exr_parts.push_back(std::move(part));
+                }
+                if (value.exr_parts.empty() && !value.exr_part.empty()) {
+                    value.exr_parts.push_back(ffgui::ExrPartDescriptor{
+                        value.exr_part, value.exr_view,
+                        value.available_layers, value.available_channels});
                 }
                 value.channel_mapping.clear();
                 for (const auto channel : sequenceObject.value("channels").toArray()) {
