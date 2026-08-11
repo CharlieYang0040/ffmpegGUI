@@ -54,6 +54,7 @@ if(FFGUI_ENABLE_GES)
         pkg_check_modules(GES QUIET IMPORTED_TARGET
             gstreamer-1.0>=1.28
             gstreamer-video-1.0>=1.28
+            gstreamer-base-1.0>=1.28
             gstreamer-app-1.0>=1.28
             gstreamer-d3d11-1.0>=1.28
             gst-editing-services-1.0>=1.28
@@ -62,6 +63,7 @@ if(FFGUI_ENABLE_GES)
     if(GES_FOUND)
         add_library(ffgui_ges STATIC
             src/integration/ges/ges_sequence_player.cpp
+            src/integration/ges/gst_color_lut_filter.cpp
         )
         add_library(ffgui::ges ALIAS ffgui_ges)
         target_include_directories(ffgui_ges PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")

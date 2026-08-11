@@ -63,6 +63,7 @@ struct TimelineSpan final {
     Clip clip;
     std::filesystem::path source_path;
     std::filesystem::path export_path;
+    SourceColorDescriptor source_color;
     TimeNs timeline_in{};
     TimeNs timeline_out{};
     bool has_audio{};

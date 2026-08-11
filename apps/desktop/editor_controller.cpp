@@ -611,6 +611,14 @@ std::uint64_t EditorController::videoFramesReceived() const noexcept {
 #endif
 }
 
+std::uint64_t EditorController::sourceColorLutBindings() const noexcept {
+#ifdef FFGUI_HAS_GES
+    return player_ ? player_->source_color_lut_bindings() : 0;
+#else
+    return 0;
+#endif
+}
+
 bool EditorController::videoSurfaceExposed() const noexcept {
     const auto* item = qobject_cast<const VideoPreviewItem*>(video_item_);
     if (item != nullptr) {
@@ -1200,6 +1208,41 @@ void EditorController::updateExrSelection(
         }));
 }
 
+void EditorController::setAssetInputColorSpace(
+    const QString& assetId, const QString& colorSpace) {
+    const auto id = assetId.trimmed().toStdString();
+    const auto requested = colorSpace.trimmed().toStdString();
+    const auto* asset = timeline_.asset(id);
+    if (asset == nullptr || requested.empty()) {
+        setStatus(QStringLiteral("입력 색공간을 선택하세요"));
+        return;
+    }
+    try {
+        auto validationSettings = color_pipeline_;
+        if (validationSettings.mode == ffgui::ColorPipelineMode::legacy) {
+            validationSettings.mode = ffgui::ColorPipelineMode::aces_managed;
+        }
+        const auto spaces = ffgui::OcioEngine(validationSettings).color_spaces();
+        if (std::ranges::find(spaces, requested) == spaces.end()) {
+            setStatus(QStringLiteral("현재 OCIO 설정에 없는 색공간입니다 · %1")
+                .arg(QString::fromStdString(requested)));
+            return;
+        }
+        auto replacement = *asset;
+        auto descriptor = replacement.source_color();
+        descriptor.input_color_space = requested;
+        descriptor.unresolved = false;
+        replacement.set_source_color(std::move(descriptor));
+        timeline_.replace_asset(std::move(replacement));
+        publishTimeline(false);
+        setStatus(QStringLiteral("입력 색공간 지정 · %1")
+            .arg(QString::fromStdString(requested)));
+    } catch (const std::exception& error) {
+        setStatus(QStringLiteral("입력 색공간을 적용할 수 없습니다 · %1")
+            .arg(QString::fromUtf8(error.what())));
+    }
+}
+
 void EditorController::seek(qint64 timelinePosition) {
     stopFloatPlayback();
     playhead_ns_ = std::clamp<qint64>(timelinePosition, 0, durationNs());
@@ -1441,15 +1484,10 @@ void EditorController::advanceFloatPlayback() {
 
 bool EditorController::requiresFloatVideoPreview() const {
 #ifdef FFGUI_HAS_GES
-    const auto hasNonSequence = std::ranges::any_of(timeline_.clips(), [this](const auto& clip) {
-        const auto* asset = timeline_.asset(clip.asset_id);
-        return asset != nullptr && !asset->image_sequence().has_value();
-    });
-    if (!hasNonSequence) return false;
-    if (color_pipeline_.mode != ffgui::ColorPipelineMode::legacy) return true;
-    return std::ranges::any_of(timeline_.clips(), [](const auto& clip) {
-        return !clip.grade.nodes().empty();
-    });
+    // Ordinary video and mixed timelines apply their clip LUT inside each GES source,
+    // before alpha composition. The composited appsink must therefore stay on its normal
+    // BGRA/D3D11 path instead of grading the already blended frame a second time.
+    return false;
 #else
     return false;
 #endif
@@ -2997,6 +3035,22 @@ QString EditorController::colorPipelineSummary() const {
     return QFileInfo(QString::fromStdString(color_pipeline_.ocio_config_path)).fileName();
 }
 
+QStringList EditorController::inputColorSpaceOptions() const {
+    try {
+        auto settings = color_pipeline_;
+        if (settings.mode == ffgui::ColorPipelineMode::legacy) {
+            settings.mode = ffgui::ColorPipelineMode::aces_managed;
+        }
+        const auto spaces = ffgui::OcioEngine(settings).color_spaces();
+        QStringList result;
+        result.reserve(static_cast<qsizetype>(spaces.size()));
+        for (const auto& space : spaces) result.push_back(QString::fromStdString(space));
+        return result;
+    } catch (...) {
+        return {};
+    }
+}
+
 void EditorController::setColorPipelineMode(int mode) {
     mode = std::clamp(mode, 0, 2);
     const auto value = static_cast<ffgui::ColorPipelineMode>(mode);
@@ -3791,6 +3845,12 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     pending_float_video_frame_.reset();
     player_->set_legacy_source_color_enabled(
         color_pipeline_.mode == ffgui::ColorPipelineMode::legacy);
+    player_->set_color_pipeline(
+        color_pipeline_, color_pipeline_.mode == ffgui::ColorPipelineMode::legacy
+            ? std::string{}
+            : color_pipeline_.output_space.empty()
+                ? std::string{"sRGB - Display"}
+                : color_pipeline_.output_space);
     player_->set_float_output_enabled(requiresFloatVideoPreview());
 #endif
     if (resetPlayhead) {

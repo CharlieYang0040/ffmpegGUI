@@ -5,8 +5,14 @@
 #include "media/oiio_frame_source.hpp"
 
 #include <string>
+#include <vector>
 
 namespace ffgui {
+
+struct ColorCube final {
+    int size{};
+    std::vector<float> rgb;
+};
 
 [[nodiscard]] FloatImageFrame process_color_frame(
     const FloatImageFrame& source,
@@ -19,6 +25,13 @@ namespace ffgui {
 // The resulting LUT can be attached to ordinary video/image inputs before timeline
 // transitions, keeping FFmpeg composition and the managed color path in agreement.
 [[nodiscard]] std::string bake_color_cube(
+    const SourceColorDescriptor& source_color,
+    const ColorPipelineSettings& settings,
+    const GradeGraph& grade,
+    const std::string& output_space,
+    int cube_size = 33);
+
+[[nodiscard]] ColorCube build_color_cube(
     const SourceColorDescriptor& source_color,
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,

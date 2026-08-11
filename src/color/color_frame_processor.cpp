@@ -54,7 +54,7 @@ FloatImageFrame process_color_frame(
     return result;
 }
 
-std::string bake_color_cube(
+ColorCube build_color_cube(
     const SourceColorDescriptor& source_color,
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
@@ -88,14 +88,33 @@ std::string bake_color_cube(
     const auto processed = process_color_frame(
         lattice, source_color, settings, grade, output_space);
 
+    ColorCube result;
+    result.size = cube_size;
+    result.rgb.reserve(processed.rgba.size() / 4 * 3);
+    for (std::size_t index = 0; index < processed.rgba.size(); index += 4) {
+        result.rgb.push_back(processed.rgba[index]);
+        result.rgb.push_back(processed.rgba[index + 1]);
+        result.rgb.push_back(processed.rgba[index + 2]);
+    }
+    return result;
+}
+
+std::string bake_color_cube(
+    const SourceColorDescriptor& source_color,
+    const ColorPipelineSettings& settings,
+    const GradeGraph& grade,
+    const std::string& output_space,
+    int cube_size) {
+    const auto values = build_color_cube(
+        source_color, settings, grade, output_space, cube_size);
     std::ostringstream cube;
     cube << "TITLE \"ffmpegGUI clip color\"\n"
          << "LUT_3D_SIZE " << cube_size << "\n"
          << "DOMAIN_MIN 0.0 0.0 0.0\n"
          << "DOMAIN_MAX 1.0 1.0 1.0\n" << std::fixed << std::setprecision(9);
-    for (std::size_t index = 0; index < processed.rgba.size(); index += 4) {
-        cube << processed.rgba[index] << ' ' << processed.rgba[index + 1] << ' '
-             << processed.rgba[index + 2] << '\n';
+    for (std::size_t index = 0; index < values.rgb.size(); index += 3) {
+        cube << values.rgb[index] << ' ' << values.rgb[index + 1] << ' '
+             << values.rgb[index + 2] << '\n';
     }
     return cube.str();
 }

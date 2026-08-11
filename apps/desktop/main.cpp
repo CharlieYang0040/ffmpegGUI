@@ -284,12 +284,11 @@ int main(int argc, char* argv[]) {
     if (floatVideoSmoke) {
         const auto clips = controller.clips();
         const auto assets = controller.mediaAssets();
-        bool hasTaggedRec709 = false;
         for (const auto& asset : assets) {
-            if (asset.toMap().value("colorSpace").toString() ==
-                QStringLiteral("Camera Rec.709")) hasTaggedRec709 = true;
+            controller.setAssetInputColorSpace(
+                asset.toMap().value("id").toString(), QStringLiteral("Camera Rec.709"));
         }
-        if (clips.isEmpty() || !hasTaggedRec709) return EXIT_FAILURE;
+        if (clips.isEmpty() || assets.size() != clips.size()) return EXIT_FAILURE;
         const auto firstClipDuration = clips.front().toMap().value("durationNs").toLongLong();
         controller.selectClip(clips.front().toMap().value("id").toString());
         controller.addGradeNode(0);
@@ -306,13 +305,23 @@ int main(int argc, char* argv[]) {
         previewPoll.setInterval(10);
         previewTimeout.setSingleShot(true);
         QObject::connect(&previewPoll, &QTimer::timeout, &previewLoop, [&] {
-            if (!controller.previewBusy()) previewLoop.quit();
+            if (!controller.previewBusy() &&
+                controller.sourceColorLutBindings() == static_cast<std::uint64_t>(clips.size())) {
+                previewLoop.quit();
+            }
         });
         QObject::connect(&previewTimeout, &QTimer::timeout, &previewLoop, &QEventLoop::quit);
         previewPoll.start();
         previewTimeout.start(15'000);
         previewLoop.exec();
-        if (controller.previewBusy()) return EXIT_FAILURE;
+        if (controller.previewBusy() ||
+            controller.sourceColorLutBindings() != static_cast<std::uint64_t>(clips.size())) {
+            qCritical().noquote() << "managed source LUT preparation failed"
+                                  << "busy=" << controller.previewBusy()
+                                  << "bindings=" << controller.sourceColorLutBindings()
+                                  << "expected=" << clips.size();
+            return EXIT_FAILURE;
+        }
         controller.seek(0);
         controller.togglePlayback();
         QEventLoop playbackLoop;
@@ -321,8 +330,7 @@ int main(int argc, char* argv[]) {
         playbackPoll.setInterval(10);
         playbackTimeout.setSingleShot(true);
         QObject::connect(&playbackPoll, &QTimer::timeout, &playbackLoop, [&] {
-            if (controller.videoFramesDelivered() > deliveredBefore &&
-                controller.floatVideoFramesProcessed() >= processedBefore + 2 &&
+            if (controller.videoFramesDelivered() > deliveredBefore + 2 &&
                 controller.playheadNs() > 100'000'000) playbackLoop.quit();
         });
         QObject::connect(&playbackTimeout, &QTimer::timeout, &playbackLoop, &QEventLoop::quit);
@@ -330,9 +338,18 @@ int main(int argc, char* argv[]) {
         playbackTimeout.start(15'000);
         playbackLoop.exec();
         const auto passed = controller.videoFramesDelivered() > deliveredBefore &&
-            controller.floatVideoFramesProcessed() >= processedBefore + 2 &&
+            controller.floatVideoFramesProcessed() == processedBefore &&
+            controller.sourceColorLutBindings() == static_cast<std::uint64_t>(clips.size()) &&
             controller.playheadNs() > 100'000'000 &&
             controller.playheadNs() < firstClipDuration && controller.playing();
+        qInfo().noquote() << "managed source LUT smoke counters"
+                          << "delivered_delta="
+                          << controller.videoFramesDelivered() - deliveredBefore
+                          << "post_composite_float_delta="
+                          << controller.floatVideoFramesProcessed() - processedBefore
+                          << "bindings=" << controller.sourceColorLutBindings()
+                          << "playhead_ns=" << controller.playheadNs()
+                          << "passed=" << passed;
         controller.togglePlayback();
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }

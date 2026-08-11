@@ -1,6 +1,10 @@
 #include "core/media_asset.hpp"
 #include "core/timeline_model.hpp"
 #include "integration/ges/ges_sequence_player.hpp"
+#include "integration/ges/gst_color_lut_filter.hpp"
+
+#include <gst/app/gstappsink.h>
+#include <gst/gst.h>
 
 #include <chrono>
 #include <filesystem>
@@ -56,9 +60,17 @@ int main(int argc, char* argv[]) {
         }
 
         TimelineModel timeline;
-        timeline.add_asset(MediaAsset{"asset-a", first, milliseconds(2000), {}, {0.5F}});
-        timeline.add_asset(MediaAsset{"asset-b", second, milliseconds(2000), {}, {0.5F}});
-        timeline.add_asset(MediaAsset{"asset-c", third, milliseconds(2300), {}, {0.5F}});
+        ffgui::SourceColorDescriptor rec709;
+        rec709.input_color_space = "Camera Rec.709";
+        timeline.add_asset(MediaAsset{
+            "asset-a", first, milliseconds(2000), {}, {0.5F}, {}, ffgui::MediaKind::video,
+            std::nullopt, rec709});
+        timeline.add_asset(MediaAsset{
+            "asset-b", second, milliseconds(2000), {}, {0.5F}, {}, ffgui::MediaKind::video,
+            std::nullopt, rec709});
+        timeline.add_asset(MediaAsset{
+            "asset-c", third, milliseconds(2300), {}, {0.5F}, {}, ffgui::MediaKind::video,
+            std::nullopt, rec709});
         auto shotA = Clip{
             "shot-a", "asset-a", milliseconds(200), milliseconds(650), {}, 2.0};
         shotA.audio = {0.8, false, milliseconds(40), milliseconds(60)};
@@ -67,6 +79,10 @@ int main(int argc, char* argv[]) {
         auto shotB = Clip{"shot-b", "asset-b", milliseconds(350), milliseconds(700)};
         shotB.transition_in = milliseconds(100);
         shotB.audio.gain = 0.7;
+        auto shotBGrade = ffgui::make_default_grade_node(
+            ffgui::GradeNodeType::primary, "shot-b-primary");
+        shotBGrade.parameters["exposure"] = 0.25;
+        shotB.grade.add(std::move(shotBGrade));
         timeline.append_clip(std::move(shotB));
         timeline.append_clip(Clip{"shot-vfr", "asset-c", milliseconds(300), milliseconds(900)});
         timeline.append_clip(Clip{"shot-c", "asset-a", milliseconds(1000), milliseconds(500)});
@@ -74,6 +90,49 @@ int main(int argc, char* argv[]) {
         std::atomic<std::uint64_t> videoFrames{0};
         std::atomic<bool> invalidCpuFrame{false};
         GesSequencePlayer player{"cpu-appsink", "fakesink"};
+        auto solidRed = std::make_shared<ffgui::ColorCube>();
+        solidRed->size = 2;
+        solidRed->rgb.resize(2 * 2 * 2 * 3);
+        for (std::size_t index = 0; index < solidRed->rgb.size(); index += 3) {
+            solidRed->rgb[index] = 1.0F;
+        }
+        ffgui::publish_gst_color_lut("smoke-red", solidRed);
+        GError* lutPipelineError = nullptr;
+        auto* lutPipeline = gst_parse_launch(
+            "videotestsrc num-buffers=1 pattern=solid-color foreground-color=0x80000000 ! "
+            "videoconvert ! "
+            "video/x-raw,format=RGBA64_LE,width=8,height=8 ! "
+            "ffguilut3d lut-id=smoke-red ! appsink name=luttestsink sync=false",
+            &lutPipelineError);
+        if (lutPipeline == nullptr) {
+            const std::string message =
+                lutPipelineError != nullptr && lutPipelineError->message != nullptr
+                ? lutPipelineError->message : "unknown parse error";
+            if (lutPipelineError != nullptr) g_error_free(lutPipelineError);
+            throw std::runtime_error("color LUT filter pipeline failed: " + message);
+        }
+        auto* lutSink = gst_bin_get_by_name(GST_BIN(lutPipeline), "luttestsink");
+        gst_element_set_state(lutPipeline, GST_STATE_PLAYING);
+        auto* lutSample = gst_app_sink_try_pull_sample(
+            GST_APP_SINK(lutSink), 5 * GST_SECOND);
+        GstMapInfo lutMap{};
+        const auto mapped = lutSample != nullptr && gst_buffer_map(
+            gst_sample_get_buffer(lutSample), &lutMap, GST_MAP_READ);
+        const auto* lutPixel = mapped
+            ? reinterpret_cast<const std::uint16_t*>(lutMap.data) : nullptr;
+        const auto validLutPixel = lutPixel != nullptr &&
+            lutPixel[0] > 65'000 && lutPixel[1] < 100 && lutPixel[2] < 100 &&
+            lutPixel[3] > 32'000 && lutPixel[3] < 33'000;
+        if (mapped) gst_buffer_unmap(gst_sample_get_buffer(lutSample), &lutMap);
+        if (lutSample != nullptr) gst_sample_unref(lutSample);
+        gst_element_set_state(lutPipeline, GST_STATE_NULL);
+        gst_object_unref(lutSink);
+        gst_object_unref(lutPipeline);
+        ffgui::remove_gst_color_lut("smoke-red");
+        if (!validLutPixel) {
+            throw std::runtime_error(
+                "color LUT filter did not transform straight-alpha RGBA64 pixels");
+        }
         player.set_video_frame_callback([&](ffgui::PreviewVideoFrame frame) {
             if (frame.cpu_pixels == nullptr || frame.width != 1280 || frame.height != 720 ||
                 frame.cpu_stride != frame.width * 4 ||
@@ -90,6 +149,9 @@ int main(int argc, char* argv[]) {
         if (player.source_automation_bindings() != 3) {
             throw std::runtime_error(
                 "GES source alpha/volume automation was not attached to every edited clip");
+        }
+        if (player.source_color_lut_bindings() != 1) {
+            throw std::runtime_error("legacy GradeGraph LUT was not attached before composition");
         }
 
         player.seek(milliseconds(1200));
@@ -135,7 +197,15 @@ int main(int argc, char* argv[]) {
             floatFrames.fetch_add(1);
         });
         player.set_float_output_enabled(true);
+        ffgui::ColorPipelineSettings managedColor;
+        managedColor.mode = ffgui::ColorPipelineMode::aces_managed;
+        managedColor.working_space = "ACEScg";
+        managedColor.output_space = "sRGB - Display";
+        player.set_color_pipeline(managedColor, managedColor.output_space);
         player.set_timeline(timeline.snapshot());
+        if (player.source_color_lut_bindings() != 4) {
+            throw std::runtime_error("managed color LUT was not attached to every source clip");
+        }
         player.seek(milliseconds(300));
         player.play();
         const auto floatDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);

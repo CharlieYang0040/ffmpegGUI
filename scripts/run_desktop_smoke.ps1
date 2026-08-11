@@ -239,6 +239,14 @@ if ($playback.ExitCode -ne 0) {
 }
 Write-Output "Preview refresh and end loop passed: playback continued from the sequence start after EOS"
 
+$managedColorPlayback = Start-Process -FilePath $application `
+    -ArgumentList @("--float-video-smoke", $clipA, $clipB, $clipVfr) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($managedColorPlayback.ExitCode -ne 0) {
+    throw "managed per-source color preview failed with code $($managedColorPlayback.ExitCode)"
+}
+Write-Output "Managed color preview passed: explicit input spaces and clip LUTs were applied before composition without post-grade duplication"
+
 $previousCpuPreview = $env:FFGUI_FORCE_CPU_PREVIEW
 try {
     Remove-Item Env:FFGUI_FORCE_CPU_PREVIEW -ErrorAction SilentlyContinue

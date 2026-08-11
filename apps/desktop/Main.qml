@@ -429,7 +429,7 @@ ApplicationWindow {
                             required property var modelData
                             property string assetId: modelData.id
                             width: ListView.view.width
-                            height: modelData.exrPartOptions.length > 0 ? 112 : 78
+                            height: modelData.exrPartOptions.length > 0 ? 140 : 106
                             radius: 7
                             color: dragHandler.active ? "#2a3545" : "#1d232b"
                             border.color: dragHandler.active ? "#6d9cff" : "#2a323d"
@@ -485,13 +485,31 @@ ApplicationWindow {
                                         color: mediaCard.modelData.missingFrameCount > 0 ? "#ff7c88" : "#8ca2bb"
                                         font.pixelSize: 10
                                     }
-                                    Label {
-                                        visible: mediaCard.modelData.colorUnresolved || mediaCard.modelData.colorSpace.length > 0
-                                        text: mediaCard.modelData.colorUnresolved
-                                              ? "⚠ 입력 색공간 확인 필요"
-                                              : mediaCard.modelData.colorSpace
-                                        color: mediaCard.modelData.colorUnresolved ? "#ffb45e" : "#8193a8"
-                                        font.pixelSize: 10
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 5
+                                        Label {
+                                            text: mediaCard.modelData.colorUnresolved ? "⚠ 입력 색" : "입력 색"
+                                            color: mediaCard.modelData.colorUnresolved ? "#ffb45e" : "#8193a8"
+                                            font.pixelSize: 10
+                                        }
+                                        ComboBox {
+                                            id: inputColorSpaceBox
+                                            Layout.fillWidth: true
+                                            implicitHeight: 25
+                                            enabled: !EditorController.importing
+                                            editable: true
+                                            model: EditorController.inputColorSpaceOptions
+                                            currentIndex: find(mediaCard.modelData.colorSpace)
+                                            editText: currentIndex < 0
+                                                ? mediaCard.modelData.colorSpace : currentText
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: "이 미디어를 해석할 OCIO 입력 색공간"
+                                            onActivated: EditorController.setAssetInputColorSpace(
+                                                mediaCard.assetId, currentText)
+                                            onAccepted: EditorController.setAssetInputColorSpace(
+                                                mediaCard.assetId, editText)
+                                        }
                                     }
                                     Loader {
                                         Layout.fillWidth: true

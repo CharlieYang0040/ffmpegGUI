@@ -87,6 +87,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(QString exportRemainingText READ exportRemainingText NOTIFY exportProgressChanged)
     Q_PROPERTY(int missingFrameCount READ missingFrameCount NOTIFY timelineChanged)
     Q_PROPERTY(int colorPipelineMode READ colorPipelineMode WRITE setColorPipelineMode NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QStringList inputColorSpaceOptions READ inputColorSpaceOptions NOTIFY colorPipelineChanged)
     Q_PROPERTY(QString customOcioPath READ customOcioPath NOTIFY colorPipelineChanged)
     Q_PROPERTY(bool hdrMonitoring READ hdrMonitoring WRITE setHdrMonitoring NOTIFY colorPipelineChanged)
     Q_PROPERTY(int hdrPeakNits READ hdrPeakNits WRITE setHdrPeakNits NOTIFY colorPipelineChanged)
@@ -207,6 +208,7 @@ public:
     [[nodiscard]] std::uint64_t floatVideoFramesProcessed() const noexcept {
         return float_video_frames_processed_;
     }
+    [[nodiscard]] std::uint64_t sourceColorLutBindings() const noexcept;
     [[nodiscard]] bool videoSurfaceExposed() const noexcept;
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);
@@ -235,6 +237,7 @@ public slots:
         const QString& part,
         const QString& view,
         const QString& layer);
+    void setAssetInputColorSpace(const QString& assetId, const QString& colorSpace);
     void splitAtPlayhead();
     void duplicateSelectedClip();
     void deleteSelectedClip();
@@ -302,6 +305,7 @@ public slots:
     void setStampOpacity(int percent);
     void setStampMode(int mode);
     [[nodiscard]] QString exportExtension() const;
+    [[nodiscard]] QStringList inputColorSpaceOptions() const;
     [[nodiscard]] QString timeText(qint64 timelinePosition) const;
     [[nodiscard]] qint64 frameNumberAt(qint64 timelinePosition) const;
     [[nodiscard]] qint64 frameCountBetween(qint64 first, qint64 second) const;

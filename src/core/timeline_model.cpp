@@ -649,6 +649,7 @@ std::vector<TimelineSpan> TimelineModel::snapshot() const {
             clip,
             source_asset->playback_path(),
             source_asset->export_path(),
+            source_asset->source_color(),
             cursor,
             end,
             !source_asset->audio_peaks().empty()});

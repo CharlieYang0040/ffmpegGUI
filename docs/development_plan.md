@@ -272,16 +272,18 @@
 - [x] Legacy/ACES Managed/Custom OCIO 프로젝트 모델과 HDR 메타데이터 설정 기반
 - [x] 클립별 순서형 GradeGraph, 노드 추가·삭제·순서·bypass·mix·기본 파라미터 UI
 - [x] 미디어 오프라인·누락·관리형 입력 색공간 미확정 출력 사전 검사
+- [x] 미디어 카드에서 OCIO 입력 색공간을 명시적으로 재지정하고 프로젝트에 보존
+- [x] 일반 영상의 Legacy GradeGraph와 관리형 컬러를 소스별 33³ RGBA64 LUT로 적용한 뒤 합성
+- [x] straight alpha를 보존하는 GStreamer LUT 필터와 전환 양쪽 소스 바인딩 회귀
 - [x] 개발 Debug EXE의 Qt/GStreamer 런타임 자동 배치와 탐색기 직접 실행
 
 ### 다음 구현 순서
 
-1. 전환 양쪽 클립의 컬러를 합성 전에 처리하는 영상 프레임 합성 경로
-2. OCIO CPU 기준·GPU shader를 공유하는 D3D11 표시 경로 연결
-3. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
-4. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
-5. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
-6. qualifier/window/tracking과 shot still/reference 비교
+1. OCIO CPU 기준·GPU shader를 공유하는 D3D11 표시 경로 연결
+2. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
+3. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
+4. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
+5. qualifier/window/tracking과 shot still/reference 비교
 
 ### 현재 완료 경계
 
@@ -297,10 +299,11 @@
   위반을 일으킨다. 대신 URI 코어 소스의 alpha와 volume에 원본 PTS 기준 제어 곡선을
   직접 연결해 일반 영상 디졸브와 gain·mute·fade 미리보기를 복구했다. VFR·2배속·오디오
   페이드가 함께 있는 4샷 연속 재생에서 3개 자동화 바인딩, 0ns 최대 오디오 gap을 확인했다.
-  Legacy 밝기·대비·채도는 각 소스의 top effect에서 디졸브 전에 처리하며 단순 조절은
-  D3D11 직접 표시를 유지한다. 다만 관리형 컬러/GradeGraph가 서로 다른 두 영상은 아직
-  GES 합성 뒤 활성 클립 컬러가 적용되므로, 전환 양쪽을 각각 색처리한 뒤 합성하는 영상
-  프레임 경로가 다음 단계다.
+  Legacy 밝기·대비·채도는 각 소스의 top effect에서 디졸브 전에 처리한다. GradeGraph 또는
+  관리형 컬러가 필요한 소스에는 공통 CPU 기준 결과를 33³ LUT로 게시하고 `RGBA64_LE`
+  top effect에서 straight alpha를 보존해 적용한다. 따라서 전환 양쪽은 각각 색처리된 뒤
+  source alpha로 합성되고, 합성 결과에 활성 클립 컬러를 다시 적용하지 않는다. 현재 필터는
+  CPU 구현이므로 다음 단계는 같은 OCIO shader/texture 계약을 D3D11 source effect로 옮기는 것이다.
 - HDR 설정은 프로젝트 계약까지 구현되었고 scRGB/PQ 스왑체인 전환은 미구현이다.
 - 자동 또는 사용자가 선택한 EXR part/view/AOV는 float 미리보기와 프록시·혼합 출력에서
   같은 픽셀을 사용한다. 선택은 기존 자산 ID와 타임라인 클립을 보존한 채 백그라운드에서
@@ -319,3 +322,6 @@
 선택지 복원을 자동 검증했다. 멀티파트 EXR의 view별 픽셀 선택과 불일치 view 차단도 통과했다.
 96프레임 EXR에서 50번 프레임만 변경했을 때 재생·출력 프록시 모두 첫 48프레임 구간을
 재사용하고 두 번째 구간만 새 주소로 생성하는 증분 캐시 회귀도 통과했다.
+색공간 메타데이터가 없는 MP4/MKV/VFR 자산 3개에 사용자가 `Camera Rec.709`를 지정한 뒤
+ACES Managed 미리보기를 재구축해 소스 LUT 3개가 합성 전에 연결되고 post-composite float
+처리가 0회인 상태로 연속 재생되는 데스크톱 회귀도 통과했다.

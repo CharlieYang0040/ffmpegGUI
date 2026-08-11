@@ -1,4 +1,9 @@
 #include "integration/ges/ges_sequence_player.hpp"
+#include "integration/ges/gst_color_lut_filter.hpp"
+
+#include "color/color_frame_processor.hpp"
+#include "color/grade_processor.hpp"
+#include "render/timeline_frame_server.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -133,6 +138,19 @@ void add_legacy_color_effect(GESUriClip* uri_clip, const ClipColor& color) {
     }
 }
 
+void add_color_lut_effect(GESUriClip* uri_clip, const std::string& lut_id) {
+    const auto description =
+        "videoconvert ! video/x-raw,format=RGBA64_LE ! ffguilut3d lut-id=" + lut_id +
+        " ! videoconvert";
+    auto* effect = ges_effect_new(description.c_str());
+    GError* error = nullptr;
+    if (effect == nullptr || !ges_clip_add_top_effect(
+            GES_CLIP(uri_clip), GES_BASE_EFFECT(effect), -1, &error)) {
+        if (effect != nullptr) gst_object_unref(effect);
+        throw glib_error("failed to attach clip color LUT effect", error);
+    }
+}
+
 std::string path_to_utf8(const std::filesystem::path& path) {
     const auto value = path.u8string();
     return {reinterpret_cast<const char*>(value.data()), value.size()};
@@ -183,6 +201,9 @@ GesSequencePlayer::GesSequencePlayer(
     : video_sink_factory_(std::move(video_sink_factory)),
       audio_sink_factory_(std::move(audio_sink_factory)) {
     gst_init(nullptr, nullptr);
+    if (!register_gst_color_lut_filter()) {
+        throw std::runtime_error("failed to register ffmpegGUI color LUT filter");
+    }
     if (!ges_init()) {
         throw std::runtime_error("failed to initialize GStreamer Editing Services");
     }
@@ -197,6 +218,7 @@ GesSequencePlayer::~GesSequencePlayer() {
     std::scoped_lock lock(mutex_);
     destroy_pipeline_locked();
     source_automation_bindings_.store(0);
+    source_color_lut_bindings_.store(0);
 }
 
 void GesSequencePlayer::set_timeline(std::vector<TimelineSpan> timeline) {
@@ -378,6 +400,14 @@ void GesSequencePlayer::set_legacy_source_color_enabled(bool enabled) {
     legacy_source_color_enabled_.store(enabled, std::memory_order_release);
 }
 
+void GesSequencePlayer::set_color_pipeline(
+    ColorPipelineSettings settings, std::string output_space) {
+    settings.validate();
+    std::scoped_lock lock(color_settings_mutex_);
+    color_pipeline_ = std::move(settings);
+    color_output_space_ = std::move(output_space);
+}
+
 TimeNs GesSequencePlayer::duration() const noexcept {
     return duration_ns_.load();
 }
@@ -521,11 +551,20 @@ void GesSequencePlayer::rebuild_pipeline_locked(
     const std::vector<TimelineSpan>& spans,
     const std::vector<CaptionCue>& captions) {
     destroy_pipeline_locked();
+    source_automation_bindings_.store(0);
+    source_color_lut_bindings_.store(0);
     if (spans.empty()) {
         duration_ns_.store(0);
         std::scoped_lock cutLock(cut_points_mutex_);
         hard_cut_points_.clear();
         return;
+    }
+    ColorPipelineSettings colorPipeline;
+    std::string colorOutputSpace;
+    {
+        std::scoped_lock colorLock(color_settings_mutex_);
+        colorPipeline = color_pipeline_;
+        colorOutputSpace = color_output_space_;
     }
 
     {
@@ -606,6 +645,21 @@ void GesSequencePlayer::rebuild_pipeline_locked(
             add_speed_effect(uri_clip, span.clip.playback_rate, span.has_audio);
             if (legacy_source_color_enabled_.load(std::memory_order_acquire)) {
                 add_legacy_color_effect(uri_clip, span.clip.color);
+            }
+            const auto managed = colorPipeline.mode != ColorPipelineMode::legacy;
+            if (managed || !span.clip.grade.nodes().empty()) {
+                const auto grade = managed ? compose_clip_grade(span.clip) : span.clip.grade;
+                const auto outputSpace = managed
+                    ? (colorOutputSpace.empty() ? std::string{"sRGB - Display"}
+                                                : colorOutputSpace)
+                    : std::string{};
+                auto cube = std::make_shared<const ColorCube>(build_color_cube(
+                    span.source_color, colorPipeline, grade, outputSpace, 33));
+                const auto lutId = "lut" + std::to_string(++lut_generation_);
+                publish_gst_color_lut(lutId, std::move(cube));
+                registered_lut_ids_.push_back(lutId);
+                add_color_lut_effect(uri_clip, lutId);
+                source_color_lut_bindings_.fetch_add(1);
             }
         }
 
@@ -800,6 +854,8 @@ void GesSequencePlayer::destroy_pipeline_locked() noexcept {
         gst_object_unref(video_sink_);
         video_sink_ = nullptr;
     }
+    for (const auto& id : registered_lut_ids_) remove_gst_color_lut(id);
+    registered_lut_ids_.clear();
     duration_ns_.store(0);
     position_ns_.store(0);
 }

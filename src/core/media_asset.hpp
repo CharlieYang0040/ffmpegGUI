@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ffgui {
@@ -37,6 +38,9 @@ public:
         return image_sequence_;
     }
     [[nodiscard]] const SourceColorDescriptor& source_color() const noexcept { return source_color_; }
+    void set_source_color(SourceColorDescriptor source_color) {
+        source_color_ = std::move(source_color);
+    }
     [[nodiscard]] TimeNs duration() const noexcept { return duration_; }
     [[nodiscard]] std::size_t frame_count() const noexcept { return frame_pts_.size(); }
     [[nodiscard]] const std::vector<TimeNs>& frame_pts() const noexcept { return frame_pts_; }

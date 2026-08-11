@@ -116,13 +116,14 @@ D3D11 장치를 쓰고 멀티스레드 보호를 켠 상태에서 셰이더 리�
 `FFGUI_FORCE_CPU_PREVIEW=1`은 드라이버·원격 데스크톱 호환성 진단을 위한 안전 경로다.
 이 모드도 실제 노출 창에서 CPU BGRA 프레임 표시를 별도로 회귀한다.
 
-GradeGraph 또는 관리형 컬러가 필요한 일반 영상·혼합 타임라인은 같은 GES 디코더 세션을
-`RGBA64_LE 640x360` appsink로 재구성한다. 디코더 콜백은 16-bit 프레임을 UI 스레드에
-쌓지 않고 최신 한 장만 유지하며, 작업 스레드가 입력 색공간 변환·클립 컬러·GradeGraph·
-표시 변환을 처리한 뒤 BGRA8 프로그램 모니터 프레임으로 전달한다. 컬러 처리가 없는
-타임라인은 기존 D3D11 texture 공유 경로를 그대로 사용한다.
-Legacy 밝기·대비·채도는 `GESClip`의 안정적인 top `videobalance` effect로 소스별 적용해
-alpha 디졸브 전에 계산한다. 이 조절만 있는 타임라인은 16-bit CPU 후처리를 켜지 않는다.
+GradeGraph 또는 관리형 컬러가 필요한 일반 영상은 입력→working space→GradeGraph→표시 변환의
+공통 CPU 기준 결과를 33³ cube로 만든다. GES의 각 URI 소스는 `RGBA64_LE` top effect에서
+그 cube를 trilinear 보간하고 straight alpha는 변경하지 않는다. 이후 source alpha 디졸브가
+수행되므로 서로 다른 두 샷의 색이 합성 전에 독립적으로 처리되며 합성 결과를 다시 그레이드하지
+않는다. 컬러 처리가 없는 타임라인은 기존 D3D11 texture 공유 경로를 그대로 사용한다.
+Legacy 밝기·대비·채도는 `GESClip`의 안정적인 top `videobalance` effect로 먼저 적용하고,
+GradeGraph가 있으면 그 뒤 LUT effect를 연결한다. CPU LUT는 정확성 기준 경로이며 실시간용
+OCIO D3D11 source shader가 다음 최적화 단계다.
 
 구조 편집은 `TimelineModel`과 Scene Graph 화면에 즉시 반영하지만 GES 파이프라인은
 각 마우스 동작마다 다시 만들지 않는다. 50ms 단일 타이머가 연속 편집을 최신 스냅샷
