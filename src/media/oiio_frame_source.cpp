@@ -101,6 +101,20 @@ FloatImageFrame read_float_image_frame(const ImageFrameRequest& request) {
     return result;
 }
 
+void write_selected_exr_frame(
+    const ImageFrameRequest& request, const std::filesystem::path& output_path) {
+    const auto frame = read_float_image_frame(request);
+    OIIO::ImageSpec spec(frame.width, frame.height, 4, OIIO::TypeDesc::HALF);
+    spec.channelnames = {"R", "G", "B", "A"};
+    spec.alpha_channel = 3;
+    if (!frame.color_space.empty()) spec.attribute("oiio:ColorSpace", frame.color_space);
+    auto output = OIIO::ImageOutput::create(output_path.string());
+    if (!output || !output->open(output_path.string(), spec) ||
+        !output->write_image(OIIO::TypeDesc::FLOAT, frame.rgba.data()) || !output->close()) {
+        throw std::runtime_error("selected EXR AOV frame could not be written");
+    }
+}
+
 ImageFrameCache::ImageFrameCache(std::size_t maximum_bytes) : maximum_bytes_(maximum_bytes) {
     if (maximum_bytes_ == 0) throw std::invalid_argument("image frame cache budget must be positive");
 }

@@ -241,6 +241,18 @@ void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
                 std::abs(remapped.rgba[1] - 0.1F) < 0.00001F &&
                 remapped.rgba[2] == 0.0F && remapped.rgba[3] == 1.0F,
             "AOV channel mapping must reorder channels and use safe RGB/alpha defaults");
+    const auto selectedPath = root / "selected.exr";
+    ffgui::write_selected_exr_frame(
+        {path, metadata.parts[0].name,
+         {"beauty.B", "beauty.R", "missing", "missingAlpha"}},
+        selectedPath);
+    const auto selected = ffgui::read_float_image_frame(
+        {selectedPath, "part0", {"R", "G", "B", "A"}});
+    require(std::abs(selected.rgba[0] - 0.3F) < 0.001F &&
+                std::abs(selected.rgba[1] - 0.1F) < 0.001F &&
+                std::abs(selected.rgba[2]) < 0.001F &&
+                std::abs(selected.rgba[3] - 1.0F) < 0.001F,
+            "selected AOV cache EXR must preserve remapped half-float RGBA pixels");
     ffgui::ImageFrameCache cache(64);
     const auto first = cache.get({path, metadata.parts[0].name,
                                   {"beauty.R", "beauty.G", "beauty.B", "beauty.A"}});

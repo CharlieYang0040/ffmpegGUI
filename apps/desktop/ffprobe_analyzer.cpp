@@ -1,6 +1,7 @@
 #include "ffprobe_analyzer.hpp"
 
 #include "core/ffprobe_parser.hpp"
+#include "media/oiio_frame_source.hpp"
 #include "media/oiio_probe.hpp"
 
 #include <QCoreApplication>
@@ -234,6 +235,12 @@ QString sequence_cache_key(const ImageSequenceDescriptor& sequence) {
     hash.addData(QByteArray::number(sequence.last_frame));
     hash.addData(QByteArray::number(sequence.frame_rate.numerator));
     hash.addData(QByteArray::number(sequence.frame_rate.denominator));
+    hash.addData(QByteArray::fromStdString(sequence.exr_part));
+    hash.addData(QByteArray::fromStdString(sequence.exr_view));
+    hash.addData(QByteArray::fromStdString(sequence.exr_layer));
+    for (const auto& channel : sequence.channel_mapping) {
+        hash.addData(QByteArray::fromStdString(channel));
+    }
     for (const auto frame : sequence.present_frames) {
         const QFileInfo info(QString::fromStdWString(sequence.frame_path(frame).wstring()));
         hash.addData(QByteArray::number(frame));
@@ -241,6 +248,34 @@ QString sequence_cache_key(const ImageSequenceDescriptor& sequence) {
         hash.addData(QByteArray::number(info.lastModified().toMSecsSinceEpoch()));
     }
     return QString::fromLatin1(hash.result().toHex());
+}
+
+QString prepare_selected_exr_frame(
+    const ImageSequenceDescriptor& sequence,
+    int frame_number,
+    const QString& cache_root) {
+    const auto directory = QDir(cache_root).filePath("selected-aov");
+    QDir().mkpath(directory);
+    const auto target = QDir(directory).filePath(
+        QStringLiteral("frame-%1.exr").arg(frame_number));
+    if (QFileInfo(target).isFile()) return target;
+    const auto partial = target + ".partial.exr";
+    QFile::remove(partial);
+    try {
+        write_selected_exr_frame(
+            {sequence.frame_path(frame_number), sequence.exr_part, sequence.channel_mapping},
+            std::filesystem::path(partial.toStdWString()));
+    } catch (...) {
+        QFile::remove(partial);
+        throw;
+    }
+    if (!QFile::rename(partial, target)) {
+        QFile::remove(partial);
+        if (!QFileInfo(target).isFile()) {
+            throw std::runtime_error("selected EXR AOV cache frame could not be committed");
+        }
+    }
+    return target;
 }
 
 QString create_missing_frame(const QString& directory, int frame, QSize size) {
@@ -317,7 +352,16 @@ AnalyzedMedia analyze_sequence(
     QDir().mkpath(cacheRoot);
     const auto proxy = QDir(cacheRoot).filePath("proxy-v4.mkv");
     const auto exportProxy = QDir(cacheRoot).filePath("export-nearest-v3.mov");
-    const auto sourceSize = probe_dimensions(ffprobe, representative);
+    auto sourceSize = probe_dimensions(ffprobe, representative);
+    if (is_exr_extension(std::filesystem::path(representative.toStdWString()))) {
+        const auto metadata = probe_image_metadata(
+            std::filesystem::path(representative.toStdWString()));
+        const auto selected = std::ranges::find(
+            metadata.parts, sequence.exr_part, &ImagePartMetadata::name);
+        if (selected != metadata.parts.end()) {
+            sourceSize = QSize(selected->width, selected->height);
+        }
+    }
     const auto targetSize = proxy_dimensions(sourceSize);
     const auto hasAlpha = std::ranges::any_of(
         sequence.available_channels,
@@ -334,12 +378,16 @@ AnalyzedMedia analyze_sequence(
             sequence.frame_rate.numerator;
         QString lastPath;
         for (int frame = sequence.first_frame; frame <= sequence.last_frame; ++frame) {
+            const auto sourceFrame = sequence.has_frame(frame)
+                ? frame : sequence.nearest_present_frame(frame);
+            const auto selectedPath = is_exr_extension(sequence.frame_path(sourceFrame))
+                ? prepare_selected_exr_frame(sequence, sourceFrame, cacheRoot)
+                : QString::fromStdWString(sequence.frame_path(sourceFrame).wstring());
             const auto framePath = sequence.has_frame(frame)
-                ? QString::fromStdWString(sequence.frame_path(frame).wstring())
+                ? selectedPath
                 : slateMissing
                     ? create_missing_frame(cacheRoot, frame, targetSize)
-                    : QString::fromStdWString(
-                        sequence.frame_path(sequence.nearest_present_frame(frame)).wstring());
+                    : selectedPath;
             lastPath = framePath;
             contents += QStringLiteral("file '%1'\nduration %2\n")
                 .arg(escaped_concat_path(std::filesystem::path(framePath.toStdWString())))

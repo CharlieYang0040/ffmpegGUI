@@ -33,6 +33,8 @@ struct ImageFrameRequest final {
 };
 
 [[nodiscard]] FloatImageFrame read_float_image_frame(const ImageFrameRequest& request);
+void write_selected_exr_frame(
+    const ImageFrameRequest& request, const std::filesystem::path& output_path);
 
 class ImageFrameCache final {
 public:

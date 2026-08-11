@@ -237,6 +237,8 @@
 - [x] 반 해상도 intra H.264 재생 프록시와 원본 해상도 10-bit 4:4:4 출력 소스 분리
 - [x] OpenImageIO 3.1/OpenEXR 멀티파트·레이어·AOV·알파 메타데이터 수집
 - [x] 선택 part/AOV RGBA를 32-bit float로 읽는 OIIO 프레임 소스와 512MB LRU 캐시
+- [x] 선택 part/AOV를 단일 half-float RGBA EXR로 준비해 프록시·혼합 출력 소스에 연결
+- [x] EXR part/view/layer/channel을 포함하는 캐시 키로 선택 변경 시 프록시 분리
 - [x] 파일 크기·수정 시각 기반 캐시 키와 자산별 증분 무효화 계약
 - [x] Deep EXR 명시적 차단과 ACEScg/sRGB 기본 입력 규칙
 - [x] OpenColorIO 2.5.2와 ACES 2.0 Studio Config 의존성 잠금
@@ -271,7 +273,7 @@
 ### 다음 구현 순서
 
 1. 전환 양쪽 클립의 컬러를 합성 전에 처리하는 영상 프레임 합성 경로
-2. OpenImageIO 선택 EXR part/view/AOV 실제 픽셀 경로와 캐시 증분 갱신 완성
+2. EXR part/view/AOV 선택 UI와 변경 프레임만 다시 만드는 증분 캐시 완성
 3. OCIO CPU 기준·GPU shader를 공유하는 D3D11 표시 경로 연결
 4. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
 5. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
@@ -297,7 +299,9 @@
   GES 합성 뒤 활성 클립 컬러가 적용되므로, 전환 양쪽을 각각 색처리한 뒤 합성하는 영상
   프레임 경로가 다음 단계다.
 - HDR 설정은 프로젝트 계약까지 구현되었고 scRGB/PQ 스왑체인 전환은 미구현이다.
-- EXR AOV 선택 정보는 저장되지만 선택 채널의 실제 렌더 소스 생성은 다음 단계다.
+- 자동 선택된 EXR part/AOV는 float 미리보기뿐 아니라 프록시·혼합 출력에도 같은 픽셀을
+  사용한다. 사용자가 part/view/AOV를 변경하는 가져오기·미디어 UI와 변경 프레임만 다시
+  생성하는 증분 작업 제어는 다음 단계다.
 
 검증 기준선: Debug 빌드, 코어 44/44와 타임라인 테스트 통과. 누락 1장을 포함한
 1001–1048 PNG 시퀀스를 별도 환경 변수 없이 Debug EXE에서 가져와 프로젝트 v3
