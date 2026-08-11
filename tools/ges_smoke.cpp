@@ -7,6 +7,8 @@
 #include <gst/gst.h>
 
 #include <chrono>
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -87,6 +89,7 @@ int main(int argc, char* argv[]) {
         timeline.append_clip(Clip{"shot-vfr", "asset-c", milliseconds(300), milliseconds(900)});
         timeline.append_clip(Clip{"shot-c", "asset-a", milliseconds(1000), milliseconds(500)});
 
+        const bool expectGpuColor = g_getenv("FFGUI_FORCE_CPU_COLOR") == nullptr;
         std::atomic<std::uint64_t> videoFrames{0};
         std::atomic<bool> invalidCpuFrame{false};
         GesSequencePlayer player{"cpu-appsink", "fakesink"};
@@ -128,10 +131,57 @@ int main(int argc, char* argv[]) {
         gst_element_set_state(lutPipeline, GST_STATE_NULL);
         gst_object_unref(lutSink);
         gst_object_unref(lutPipeline);
-        ffgui::remove_gst_color_lut("smoke-red");
         if (!validLutPixel) {
             throw std::runtime_error(
                 "color LUT filter did not transform straight-alpha RGBA64 pixels");
+        }
+        GError* gpuLutPipelineError = nullptr;
+        auto* gpuLutPipeline = gst_parse_launch(
+            "videotestsrc num-buffers=1 pattern=solid-color foreground-color=0x80000000 ! "
+            "d3d11upload ! "
+            "video/x-raw(memory:D3D11Memory),format=RGBA64_LE,width=8,height=8 ! "
+            "ffguilut3d11 lut-id=smoke-red ! d3d11download ! "
+            "video/x-raw,format=RGBA64_LE ! appsink name=gputestsink sync=false",
+            &gpuLutPipelineError);
+        if (gpuLutPipeline == nullptr) {
+            const std::string message = gpuLutPipelineError != nullptr &&
+                    gpuLutPipelineError->message != nullptr
+                ? gpuLutPipelineError->message : "unknown parse error";
+            if (gpuLutPipelineError != nullptr) g_error_free(gpuLutPipelineError);
+            throw std::runtime_error("D3D11 color LUT filter pipeline failed: " + message);
+        }
+        auto* gpuLutSink = gst_bin_get_by_name(GST_BIN(gpuLutPipeline), "gputestsink");
+        gst_element_set_state(gpuLutPipeline, GST_STATE_PLAYING);
+        auto* gpuLutSample = gst_app_sink_try_pull_sample(
+            GST_APP_SINK(gpuLutSink), 5 * GST_SECOND);
+        GstMapInfo gpuLutMap{};
+        const auto gpuMapped = gpuLutSample != nullptr && gst_buffer_map(
+            gst_sample_get_buffer(gpuLutSample), &gpuLutMap, GST_MAP_READ);
+        const auto* gpuLutPixel = gpuMapped
+            ? reinterpret_cast<const std::uint16_t*>(gpuLutMap.data) : nullptr;
+        const std::array<std::uint16_t, 4> gpuLutValues{
+            static_cast<std::uint16_t>(gpuLutPixel == nullptr ? 0 : gpuLutPixel[0]),
+            static_cast<std::uint16_t>(gpuLutPixel == nullptr ? 0 : gpuLutPixel[1]),
+            static_cast<std::uint16_t>(gpuLutPixel == nullptr ? 0 : gpuLutPixel[2]),
+            static_cast<std::uint16_t>(gpuLutPixel == nullptr ? 0 : gpuLutPixel[3])};
+        const auto validGpuLutPixel = gpuLutPixel != nullptr &&
+            gpuLutPixel[0] > 65'000 && gpuLutPixel[1] < 100 && gpuLutPixel[2] < 100 &&
+            gpuLutPixel[3] > 32'000 && gpuLutPixel[3] < 33'000;
+        if (gpuMapped) {
+            gst_buffer_unmap(gst_sample_get_buffer(gpuLutSample), &gpuLutMap);
+        }
+        if (gpuLutSample != nullptr) gst_sample_unref(gpuLutSample);
+        gst_element_set_state(gpuLutPipeline, GST_STATE_NULL);
+        gst_object_unref(gpuLutSink);
+        gst_object_unref(gpuLutPipeline);
+        ffgui::remove_gst_color_lut("smoke-red");
+        if (!validGpuLutPixel) {
+            throw std::runtime_error("D3D11 color LUT filter pixel mismatch: " +
+                (gpuLutPixel == nullptr ? std::string{"no pixel"} :
+                    std::to_string(gpuLutValues[0]) + "," +
+                    std::to_string(gpuLutValues[1]) + "," +
+                    std::to_string(gpuLutValues[2]) + "," +
+                    std::to_string(gpuLutValues[3])));
         }
         player.set_video_frame_callback([&](ffgui::PreviewVideoFrame frame) {
             if (frame.cpu_pixels == nullptr || frame.width != 1280 || frame.height != 720 ||
@@ -152,6 +202,9 @@ int main(int argc, char* argv[]) {
         }
         if (player.source_color_lut_bindings() != 1) {
             throw std::runtime_error("legacy GradeGraph LUT was not attached before composition");
+        }
+        if (player.source_gpu_color_lut_bindings() != (expectGpuColor ? 1 : 0)) {
+            throw std::runtime_error("legacy GradeGraph LUT did not use the D3D11 source shader");
         }
 
         player.seek(milliseconds(1200));
@@ -205,6 +258,9 @@ int main(int argc, char* argv[]) {
         player.set_timeline(timeline.snapshot());
         if (player.source_color_lut_bindings() != 4) {
             throw std::runtime_error("managed color LUT was not attached to every source clip");
+        }
+        if (player.source_gpu_color_lut_bindings() != (expectGpuColor ? 4 : 0)) {
+            throw std::runtime_error("managed color LUT did not use every D3D11 source shader");
         }
         player.seek(milliseconds(300));
         player.play();

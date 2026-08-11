@@ -619,6 +619,14 @@ std::uint64_t EditorController::sourceColorLutBindings() const noexcept {
 #endif
 }
 
+std::uint64_t EditorController::sourceGpuColorLutBindings() const noexcept {
+#ifdef FFGUI_HAS_GES
+    return player_ ? player_->source_gpu_color_lut_bindings() : 0;
+#else
+    return 0;
+#endif
+}
+
 bool EditorController::videoSurfaceExposed() const noexcept {
     const auto* item = qobject_cast<const VideoPreviewItem*>(video_item_);
     if (item != nullptr) {

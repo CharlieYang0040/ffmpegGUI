@@ -340,6 +340,7 @@ int main(int argc, char* argv[]) {
         const auto passed = controller.videoFramesDelivered() > deliveredBefore &&
             controller.floatVideoFramesProcessed() == processedBefore &&
             controller.sourceColorLutBindings() == static_cast<std::uint64_t>(clips.size()) &&
+            controller.sourceGpuColorLutBindings() == static_cast<std::uint64_t>(clips.size()) &&
             controller.playheadNs() > 100'000'000 &&
             controller.playheadNs() < firstClipDuration && controller.playing();
         qInfo().noquote() << "managed source LUT smoke counters"
@@ -348,6 +349,7 @@ int main(int argc, char* argv[]) {
                           << "post_composite_float_delta="
                           << controller.floatVideoFramesProcessed() - processedBefore
                           << "bindings=" << controller.sourceColorLutBindings()
+                          << "gpu_bindings=" << controller.sourceGpuColorLutBindings()
                           << "playhead_ns=" << controller.playheadNs()
                           << "passed=" << passed;
         controller.togglePlayback();

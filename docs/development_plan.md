@@ -275,11 +275,13 @@
 - [x] 미디어 카드에서 OCIO 입력 색공간을 명시적으로 재지정하고 프로젝트에 보존
 - [x] 일반 영상의 Legacy GradeGraph와 관리형 컬러를 소스별 33³ RGBA64 LUT로 적용한 뒤 합성
 - [x] straight alpha를 보존하는 GStreamer LUT 필터와 전환 양쪽 소스 바인딩 회귀
+- [x] 공통 33³ 기준 LUT를 D3D11 3D texture shader로 처리하고 CPU 자동 대체
+- [x] GPU 업로드·셰이더·다운로드 RGBA64 경로에서 straight alpha와 소스별 디졸브 검증
 - [x] 개발 Debug EXE의 Qt/GStreamer 런타임 자동 배치와 탐색기 직접 실행
 
 ### 다음 구현 순서
 
-1. OCIO CPU 기준·GPU shader를 공유하는 D3D11 표시 경로 연결
+1. 현재 D3D11 LUT 경로를 OCIO 동적 HLSL과 GPU compositor 직접 연결로 확장
 2. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
 3. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
 4. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
@@ -302,8 +304,11 @@
   Legacy 밝기·대비·채도는 각 소스의 top effect에서 디졸브 전에 처리한다. GradeGraph 또는
   관리형 컬러가 필요한 소스에는 공통 CPU 기준 결과를 33³ LUT로 게시하고 `RGBA64_LE`
   top effect에서 straight alpha를 보존해 적용한다. 따라서 전환 양쪽은 각각 색처리된 뒤
-  source alpha로 합성되고, 합성 결과에 활성 클립 컬러를 다시 적용하지 않는다. 현재 필터는
-  CPU 구현이므로 다음 단계는 같은 OCIO shader/texture 계약을 D3D11 source effect로 옮기는 것이다.
+  source alpha로 합성되고, 합성 결과에 활성 클립 컬러를 다시 적용하지 않는다. D3D11이
+  가능하면 같은 cube를 3D texture로 올려 pixel shader에서 계산하고, 사용할 수 없거나
+  `FFGUI_FORCE_CPU_COLOR=1`이면 CPU trilinear 필터로 자동 대체한다. GES effect 경계 때문에
+  현재는 source shader 앞뒤에 한 번씩 upload/download가 남아 있으며, 다음 최적화는 OCIO가
+  추출한 동적 HLSL과 D3D11 compositor를 직접 연결해 이 왕복을 없애는 것이다.
 - HDR 설정은 프로젝트 계약까지 구현되었고 scRGB/PQ 스왑체인 전환은 미구현이다.
 - 자동 또는 사용자가 선택한 EXR part/view/AOV는 float 미리보기와 프록시·혼합 출력에서
   같은 픽셀을 사용한다. 선택은 기존 자산 ID와 타임라인 클립을 보존한 채 백그라운드에서
@@ -325,3 +330,6 @@
 색공간 메타데이터가 없는 MP4/MKV/VFR 자산 3개에 사용자가 `Camera Rec.709`를 지정한 뒤
 ACES Managed 미리보기를 재구축해 소스 LUT 3개가 합성 전에 연결되고 post-composite float
 처리가 0회인 상태로 연속 재생되는 데스크톱 회귀도 통과했다.
+D3D11 3D LUT 경로는 반투명 RGBA64 테스트 픽셀과 관리형 4샷 타임라인에서 모두 통과했다.
+동일한 Debug GES 회귀의 BGRA 전달량은 CPU LUT 약 25프레임에서 GPU LUT 약 85프레임으로
+증가했으며, GPU 강제 비활성화 시 같은 결과를 내는 CPU fallback도 별도로 통과했다.

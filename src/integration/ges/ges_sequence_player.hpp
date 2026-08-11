@@ -85,6 +85,9 @@ public:
     [[nodiscard]] std::uint64_t source_color_lut_bindings() const noexcept {
         return source_color_lut_bindings_.load();
     }
+    [[nodiscard]] std::uint64_t source_gpu_color_lut_bindings() const noexcept {
+        return source_gpu_color_lut_bindings_.load();
+    }
 
 private:
     void rebuild_pipeline_locked(
@@ -114,12 +117,14 @@ private:
     std::atomic<std::uint64_t> video_frame_serial_{0};
     std::atomic<std::uint64_t> source_automation_bindings_{0};
     std::atomic<std::uint64_t> source_color_lut_bindings_{0};
+    std::atomic<std::uint64_t> source_gpu_color_lut_bindings_{0};
     std::atomic<bool> float_output_enabled_{false};
     std::atomic<bool> legacy_source_color_enabled_{true};
     mutable std::mutex color_settings_mutex_;
     ColorPipelineSettings color_pipeline_;
     std::string color_output_space_;
     std::vector<std::string> registered_lut_ids_;
+    bool d3d11_color_lut_available_{};
     std::uint64_t lut_generation_{};
     std::atomic<TimeNs> duration_ns_{0};
     std::atomic<TimeNs> position_ns_{0};

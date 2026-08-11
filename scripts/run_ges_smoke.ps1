@@ -54,4 +54,18 @@ $env:G_DEBUG = "fatal-criticals"
 New-Item -ItemType Directory -Path $env:GIO_MODULE_DIR -Force | Out-Null
 
 & $smokeExe $clipA $clipB $clipVfr
-exit $LASTEXITCODE
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$previousCpuColor = $env:FFGUI_FORCE_CPU_COLOR
+try {
+    $env:FFGUI_FORCE_CPU_COLOR = "1"
+    & $smokeExe $clipA $clipB $clipVfr
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+} finally {
+    if ($null -eq $previousCpuColor) {
+        Remove-Item Env:FFGUI_FORCE_CPU_COLOR -ErrorAction SilentlyContinue
+    } else {
+        $env:FFGUI_FORCE_CPU_COLOR = $previousCpuColor
+    }
+}
+exit 0

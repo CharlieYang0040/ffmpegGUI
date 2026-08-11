@@ -209,6 +209,7 @@ public:
         return float_video_frames_processed_;
     }
     [[nodiscard]] std::uint64_t sourceColorLutBindings() const noexcept;
+    [[nodiscard]] std::uint64_t sourceGpuColorLutBindings() const noexcept;
     [[nodiscard]] bool videoSurfaceExposed() const noexcept;
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);

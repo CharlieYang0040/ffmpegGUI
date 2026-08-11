@@ -1,5 +1,6 @@
 #include "integration/ges/ges_sequence_player.hpp"
 #include "integration/ges/gst_color_lut_filter.hpp"
+#include "integration/ges/gst_d3d11_color_lut_filter.hpp"
 
 #include "color/color_frame_processor.hpp"
 #include "color/grade_processor.hpp"
@@ -138,10 +139,14 @@ void add_legacy_color_effect(GESUriClip* uri_clip, const ClipColor& color) {
     }
 }
 
-void add_color_lut_effect(GESUriClip* uri_clip, const std::string& lut_id) {
-    const auto description =
-        "videoconvert ! video/x-raw,format=RGBA64_LE ! ffguilut3d lut-id=" + lut_id +
-        " ! videoconvert";
+void add_color_lut_effect(
+    GESUriClip* uri_clip, const std::string& lut_id, bool use_d3d11) {
+    const auto description = use_d3d11
+        ? "d3d11upload ! video/x-raw(memory:D3D11Memory),format=RGBA64_LE ! "
+          "ffguilut3d11 lut-id=" + lut_id +
+          " ! d3d11download ! video/x-raw,format=RGBA64_LE ! videoconvert"
+        : "videoconvert ! video/x-raw,format=RGBA64_LE ! ffguilut3d lut-id=" + lut_id +
+          " ! videoconvert";
     auto* effect = ges_effect_new(description.c_str());
     GError* error = nullptr;
     if (effect == nullptr || !ges_clip_add_top_effect(
@@ -204,6 +209,19 @@ GesSequencePlayer::GesSequencePlayer(
     if (!register_gst_color_lut_filter()) {
         throw std::runtime_error("failed to register ffmpegGUI color LUT filter");
     }
+    if (!register_gst_d3d11_color_lut_filter()) {
+        throw std::runtime_error("failed to register ffmpegGUI D3D11 color LUT filter");
+    }
+    d3d11_color_lut_available_ = g_getenv("FFGUI_FORCE_CPU_COLOR") == nullptr &&
+        gst_d3d11_color_lut_available();
+    if (d3d11_color_lut_available_) {
+        auto* compositor = gst_registry_find_feature(
+            gst_registry_get(), "d3d11compositor", GST_TYPE_ELEMENT_FACTORY);
+        if (compositor != nullptr) {
+            gst_plugin_feature_set_rank(compositor, GST_RANK_PRIMARY + 100);
+            gst_object_unref(compositor);
+        }
+    }
     if (!ges_init()) {
         throw std::runtime_error("failed to initialize GStreamer Editing Services");
     }
@@ -219,6 +237,7 @@ GesSequencePlayer::~GesSequencePlayer() {
     destroy_pipeline_locked();
     source_automation_bindings_.store(0);
     source_color_lut_bindings_.store(0);
+    source_gpu_color_lut_bindings_.store(0);
 }
 
 void GesSequencePlayer::set_timeline(std::vector<TimelineSpan> timeline) {
@@ -553,6 +572,7 @@ void GesSequencePlayer::rebuild_pipeline_locked(
     destroy_pipeline_locked();
     source_automation_bindings_.store(0);
     source_color_lut_bindings_.store(0);
+    source_gpu_color_lut_bindings_.store(0);
     if (spans.empty()) {
         duration_ns_.store(0);
         std::scoped_lock cutLock(cut_points_mutex_);
@@ -658,8 +678,11 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 const auto lutId = "lut" + std::to_string(++lut_generation_);
                 publish_gst_color_lut(lutId, std::move(cube));
                 registered_lut_ids_.push_back(lutId);
-                add_color_lut_effect(uri_clip, lutId);
+                add_color_lut_effect(uri_clip, lutId, d3d11_color_lut_available_);
                 source_color_lut_bindings_.fetch_add(1);
+                if (d3d11_color_lut_available_) {
+                    source_gpu_color_lut_bindings_.fetch_add(1);
+                }
             }
         }
 

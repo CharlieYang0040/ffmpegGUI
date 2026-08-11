@@ -64,6 +64,7 @@ if(FFGUI_ENABLE_GES)
         add_library(ffgui_ges STATIC
             src/integration/ges/ges_sequence_player.cpp
             src/integration/ges/gst_color_lut_filter.cpp
+            src/integration/ges/gst_d3d11_color_lut_filter.cpp
         )
         add_library(ffgui::ges ALIAS ffgui_ges)
         target_include_directories(ffgui_ges PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")

@@ -208,6 +208,10 @@ void publish_gst_color_lut(std::string id, std::shared_ptr<const ColorCube> cube
     registry.insert_or_assign(std::move(id), std::move(cube));
 }
 
+std::shared_ptr<const ColorCube> find_published_gst_color_lut(const std::string& id) {
+    return find_cube(id.c_str());
+}
+
 void remove_gst_color_lut(const std::string& id) noexcept {
     std::scoped_lock lock(registryMutex);
     registry.erase(id);
