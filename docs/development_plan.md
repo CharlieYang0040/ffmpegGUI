@@ -242,6 +242,7 @@
 - [x] 미디어 카드의 EXR part/view/AOV 선택과 기존 클립을 보존하는 비동기 자산 교체
 - [x] part별 view/layer/channel 저장·복원과 구 프로젝트 EXR 메타데이터 호환 마이그레이션
 - [x] 원본 경로·크기·수정 시각·part/view/channel별 content-addressed EXR 프레임 캐시
+- [x] 48프레임 intra 프록시 구간 캐시와 무손실 결합으로 변경 구간만 재인코딩
 - [x] 파일 크기·수정 시각 기반 캐시 키와 자산별 증분 무효화 계약
 - [x] Deep EXR 명시적 차단과 ACEScg/sRGB 기본 입력 규칙
 - [x] OpenColorIO 2.5.2와 ACES 2.0 Studio Config 의존성 잠금
@@ -276,12 +277,11 @@
 ### 다음 구현 순서
 
 1. 전환 양쪽 클립의 컬러를 합성 전에 처리하는 영상 프레임 합성 경로
-2. 변경된 시퀀스 구간만 프록시에 다시 반영하는 구간 단위 증분 프록시 완성
-3. OCIO CPU 기준·GPU shader를 공유하는 D3D11 표시 경로 연결
-4. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
-5. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
-6. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
-7. qualifier/window/tracking과 shot still/reference 비교
+2. OCIO CPU 기준·GPU shader를 공유하는 D3D11 표시 경로 연결
+3. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
+4. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
+5. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
+6. qualifier/window/tracking과 shot still/reference 비교
 
 ### 현재 완료 경계
 
@@ -305,9 +305,9 @@
 - 자동 또는 사용자가 선택한 EXR part/view/AOV는 float 미리보기와 프록시·혼합 출력에서
   같은 픽셀을 사용한다. 선택은 기존 자산 ID와 타임라인 클립을 보존한 채 백그라운드에서
   교체되며 프로젝트 재로드 후에도 part별 선택지가 복원된다. 정규화 EXR 프레임은 원본
-  파일 단위 content-addressed 캐시라 변경되지 않은 프레임을 재사용한다. 다만 하나의 원본
-  프레임이 바뀌면 현재는 해당 시퀀스의 재생·출력 프록시 파일 전체를 다시 인코딩하므로,
-  구간 단위 프록시 갱신은 남아 있다.
+  파일 단위 content-addressed 캐시라 변경되지 않은 프레임을 재사용한다. 재생·출력 프록시도
+  48프레임 intra 구간으로 주소화한다. 원본 한 프레임이 바뀌면 해당 구간만 다시 인코딩하고
+  나머지 구간은 재사용한 뒤 최종 MKV/MOV를 stream-copy로 빠르게 다시 결합한다.
 
 검증 기준선: Debug 빌드, 코어 45/45와 타임라인 테스트 통과. 누락 1장을 포함한
 1001–1048 PNG 시퀀스를 별도 환경 변수 없이 Debug EXE에서 가져와 프로젝트 v3
@@ -317,3 +317,5 @@
 출력도 5.926초 MP4, 영상·오디오, 확장 스탬프와 컬러 LUT를 포함해 통과했다.
 2프레임 EXR 시퀀스에서 part/view/AOV 비동기 재선택, 클립 ID 보존, 프로젝트 저장·재로드와
 선택지 복원을 자동 검증했다. 멀티파트 EXR의 view별 픽셀 선택과 불일치 view 차단도 통과했다.
+96프레임 EXR에서 50번 프레임만 변경했을 때 재생·출력 프록시 모두 첫 48프레임 구간을
+재사용하고 두 번째 구간만 새 주소로 생성하는 증분 캐시 회귀도 통과했다.

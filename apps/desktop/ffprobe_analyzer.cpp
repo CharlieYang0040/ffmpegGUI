@@ -387,8 +387,8 @@ AnalyzedMedia analyze_sequence(
     const auto cacheRoot = QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
         .filePath("sequence-proxies/" + key);
     QDir().mkpath(cacheRoot);
-    const auto proxy = QDir(cacheRoot).filePath("proxy-v4.mkv");
-    const auto exportProxy = QDir(cacheRoot).filePath("export-nearest-v3.mov");
+    const auto proxy = QDir(cacheRoot).filePath("proxy-v5.mkv");
+    const auto exportProxy = QDir(cacheRoot).filePath("export-nearest-v4.mov");
     auto sourceSize = probe_dimensions(ffprobe, representative);
     if (is_exr_extension(std::filesystem::path(representative.toStdWString()))) {
         const auto metadata = probe_image_metadata(
@@ -413,15 +413,17 @@ AnalyzedMedia analyze_sequence(
         [](const std::string& channel) { return channel == "A" || channel.ends_with(".A"); });
     const auto buildProxy = [&](const QString& target, const QString& manifestName, bool slateMissing) {
         if (QFileInfo(target).isFile()) return;
-        const auto manifestPath = QDir(cacheRoot).filePath(manifestName);
-        QSaveFile manifest(manifestPath);
-        if (!manifest.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            throw std::runtime_error("image-sequence manifest could not be created");
-        }
-        QByteArray contents("ffconcat version 1.0\n");
         const auto seconds = static_cast<double>(sequence.frame_rate.denominator) /
             sequence.frame_rate.numerator;
-        QString lastPath;
+        const auto renderSize = slateMissing ? targetSize : sourceSize;
+        const auto pixelFormat = slateMissing && !hasAlpha
+            ? QStringLiteral("yuv420p")
+            : hasAlpha ? QStringLiteral("yuva444p10le") : QStringLiteral("yuv444p10le");
+        const auto profile = hasAlpha ? QStringLiteral("4") : QStringLiteral("3");
+        std::vector<QString> framePaths;
+        framePaths.reserve(sequence.frame_count());
+        std::vector<QByteArray> frameKeys;
+        frameKeys.reserve(sequence.frame_count());
         for (int frame = sequence.first_frame; frame <= sequence.last_frame; ++frame) {
             const auto sourceFrame = sequence.has_frame(frame)
                 ? frame : sequence.nearest_present_frame(frame);
@@ -433,42 +435,114 @@ AnalyzedMedia analyze_sequence(
                 : slateMissing
                     ? create_missing_frame(cacheRoot, frame, targetSize)
                     : selectedPath;
-            lastPath = framePath;
-            contents += QStringLiteral("file '%1'\nduration %2\n")
-                .arg(escaped_concat_path(std::filesystem::path(framePath.toStdWString())))
-                .arg(seconds, 0, 'f', 12).toUtf8();
+            framePaths.push_back(framePath);
+            if (!sequence.has_frame(frame) && slateMissing) {
+                frameKeys.push_back(QStringLiteral("missing:%1:%2x%3")
+                    .arg(frame).arg(targetSize.width()).arg(targetSize.height()).toUtf8());
+            } else {
+                const QFileInfo info(framePath);
+                frameKeys.push_back(
+                    info.absoluteFilePath().toUtf8() + '|' + QByteArray::number(info.size()) + '|' +
+                    QByteArray::number(info.lastModified().toMSecsSinceEpoch()));
+            }
             if (frame == sequence.last_frame) break;
         }
-        contents += QStringLiteral("file '%1'\n")
-            .arg(escaped_concat_path(std::filesystem::path(lastPath.toStdWString()))).toUtf8();
+        constexpr std::size_t kChunkFrames = 48;
+        std::vector<QString> chunks;
+        for (std::size_t start = 0; start < framePaths.size(); start += kChunkFrames) {
+            const auto count = std::min(kChunkFrames, framePaths.size() - start);
+            QCryptographicHash chunkHash(QCryptographicHash::Sha256);
+            chunkHash.addData(slateMissing ? "preview" : "export");
+            chunkHash.addData(QByteArray::number(renderSize.width()));
+            chunkHash.addData(QByteArray::number(renderSize.height()));
+            chunkHash.addData(QByteArray::number(sequence.frame_rate.numerator));
+            chunkHash.addData(QByteArray::number(sequence.frame_rate.denominator));
+            chunkHash.addData(pixelFormat.toUtf8());
+            for (std::size_t offset = 0; offset < count; ++offset) {
+                chunkHash.addData(frameKeys[start + offset]);
+            }
+            const auto digest = QString::fromLatin1(chunkHash.result().toHex());
+            const auto chunkDirectory = QDir(
+                QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+                .filePath(QStringLiteral("sequence-proxy-chunks/%1").arg(digest.left(2)));
+            QDir().mkpath(chunkDirectory);
+            const auto extension = slateMissing ? QStringLiteral(".mkv") : QStringLiteral(".mov");
+            const auto chunkPath = QDir(chunkDirectory).filePath(digest + extension);
+            if (!QFileInfo(chunkPath).isFile()) {
+                const auto chunkManifestPath = QDir(chunkDirectory).filePath(digest + ".ffconcat");
+                QSaveFile chunkManifest(chunkManifestPath);
+                if (!chunkManifest.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                    throw std::runtime_error("image-sequence chunk manifest could not be created");
+                }
+                QByteArray chunkContents("ffconcat version 1.0\n");
+                for (std::size_t offset = 0; offset < count; ++offset) {
+                    const auto& framePath = framePaths[start + offset];
+                    chunkContents += QStringLiteral("file '%1'\nduration %2\n")
+                        .arg(escaped_concat_path(std::filesystem::path(framePath.toStdWString())))
+                        .arg(seconds, 0, 'f', 12).toUtf8();
+                }
+                chunkContents += QStringLiteral("file '%1'\n")
+                    .arg(escaped_concat_path(std::filesystem::path(
+                        framePaths[start + count - 1].toStdWString()))).toUtf8();
+                if (chunkManifest.write(chunkContents) != chunkContents.size() ||
+                    !chunkManifest.commit()) {
+                    throw std::runtime_error("image-sequence chunk manifest could not be committed");
+                }
+                const auto chunkPartial = chunkPath + ".partial" + extension;
+                QFile::remove(chunkPartial);
+                QStringList chunkArguments{
+                    "-v", "error", "-y", "-f", "concat", "-safe", "0",
+                    "-i", chunkManifestPath,
+                    "-frames:v", QString::number(count),
+                    "-vf", QStringLiteral(
+                        "scale=%1:%2:force_original_aspect_ratio=decrease:flags=lanczos,"
+                        "pad=%1:%2:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=%3")
+                        .arg(renderSize.width()).arg(renderSize.height()).arg(pixelFormat),
+                    "-r", QString::number(sequence.frame_rate.value(), 'f', 8), "-an"};
+                if (slateMissing && !hasAlpha) {
+                    chunkArguments << "-c:v" << "libx264" << "-preset" << "veryfast"
+                                   << "-crf" << "18" << "-g" << "1";
+                } else {
+                    chunkArguments << "-c:v" << "prores_ks" << "-profile:v" << profile
+                                   << "-pix_fmt" << pixelFormat;
+                }
+                chunkArguments << chunkPartial;
+                run_tool(ffmpeg, chunkArguments,
+                    slateMissing ? "image sequence preview proxy chunk"
+                                 : "image sequence export proxy chunk",
+                    false, 900'000);
+                if (!QFile::rename(chunkPartial, chunkPath)) {
+                    const auto committedByPeer = QFileInfo(chunkPath).isFile();
+                    QFile::remove(chunkPartial);
+                    if (!committedByPeer) {
+                        throw std::runtime_error("image-sequence proxy chunk could not be committed");
+                    }
+                }
+            }
+            chunks.push_back(chunkPath);
+        }
+        const auto manifestPath = QDir(cacheRoot).filePath(manifestName);
+        QSaveFile manifest(manifestPath);
+        if (!manifest.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            throw std::runtime_error("image-sequence proxy concat manifest could not be created");
+        }
+        QByteArray contents("ffconcat version 1.0\n");
+        for (const auto& chunk : chunks) {
+            contents += QStringLiteral("file '%1'\n")
+                .arg(escaped_concat_path(std::filesystem::path(chunk.toStdWString()))).toUtf8();
+        }
         if (manifest.write(contents) != contents.size() || !manifest.commit()) {
-            throw std::runtime_error("image-sequence manifest could not be committed");
+            throw std::runtime_error("image-sequence proxy concat manifest could not be committed");
         }
-        const auto partial = target + (slateMissing ? ".partial.mkv" : ".partial.mov");
+        const auto extension = slateMissing ? QStringLiteral(".mkv") : QStringLiteral(".mov");
+        const auto partial = target + ".partial" + extension;
         QFile::remove(partial);
-        const auto renderSize = slateMissing ? targetSize : sourceSize;
-        const auto pixelFormat = slateMissing && !hasAlpha
-            ? QStringLiteral("yuv420p")
-            : hasAlpha ? QStringLiteral("yuva444p10le") : QStringLiteral("yuv444p10le");
-        const auto profile = hasAlpha ? QStringLiteral("4") : QStringLiteral("3");
-        QStringList arguments{
-            "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", manifestPath,
-            "-frames:v", QString::number(sequence.frame_count()),
-            "-vf", QStringLiteral("scale=%1:%2:force_original_aspect_ratio=decrease:flags=lanczos,"
-                                   "pad=%1:%2:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=%3")
-                       .arg(renderSize.width()).arg(renderSize.height()).arg(pixelFormat),
-            "-r", QString::number(sequence.frame_rate.value(), 'f', 8), "-an"};
-        if (slateMissing && !hasAlpha) {
-            arguments << "-c:v" << "libx264" << "-preset" << "veryfast"
-                      << "-crf" << "18" << "-g" << "1";
-        } else {
-            arguments << "-c:v" << "prores_ks" << "-profile:v" << profile
-                      << "-pix_fmt" << pixelFormat;
-        }
-        arguments << partial;
-        run_tool(ffmpeg, arguments,
-             slateMissing ? "image sequence preview proxy" : "image sequence export proxy",
-             false, 900'000);
+        run_tool(ffmpeg,
+            {"-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", manifestPath,
+             "-map", "0:v:0", "-c", "copy", "-an", partial},
+            slateMissing ? "image sequence preview proxy assembly"
+                         : "image sequence export proxy assembly",
+            false, 900'000);
         QFile::remove(target);
         if (!QFile::rename(partial, target)) {
             throw std::runtime_error("image-sequence proxy could not be committed");
