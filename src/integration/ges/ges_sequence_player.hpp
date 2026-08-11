@@ -68,6 +68,7 @@ public:
     void set_d3d11_device(void* device);
     void set_video_frame_callback(std::function<void(PreviewVideoFrame)> callback);
     void set_float_output_enabled(bool enabled);
+    void set_legacy_source_color_enabled(bool enabled);
 
     [[nodiscard]] TimeNs duration() const noexcept;
     [[nodiscard]] TimeNs position() const noexcept;
@@ -109,6 +110,7 @@ private:
     std::atomic<std::uint64_t> video_frame_serial_{0};
     std::atomic<std::uint64_t> source_automation_bindings_{0};
     std::atomic<bool> float_output_enabled_{false};
+    std::atomic<bool> legacy_source_color_enabled_{true};
     std::atomic<TimeNs> duration_ns_{0};
     std::atomic<TimeNs> position_ns_{0};
     std::atomic<PlaybackState> state_{PlaybackState::stopped};

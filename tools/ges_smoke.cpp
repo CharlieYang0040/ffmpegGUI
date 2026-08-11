@@ -62,6 +62,7 @@ int main(int argc, char* argv[]) {
         auto shotA = Clip{
             "shot-a", "asset-a", milliseconds(200), milliseconds(650), {}, 2.0};
         shotA.audio = {0.8, false, milliseconds(40), milliseconds(60)};
+        shotA.color = {0.08, 1.1, 0.9};
         timeline.append_clip(std::move(shotA));
         auto shotB = Clip{"shot-b", "asset-b", milliseconds(350), milliseconds(700)};
         shotB.transition_in = milliseconds(100);

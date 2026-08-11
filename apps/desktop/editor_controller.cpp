@@ -1338,8 +1338,7 @@ bool EditorController::requiresFloatVideoPreview() const {
     if (!hasNonSequence) return false;
     if (color_pipeline_.mode != ffgui::ColorPipelineMode::legacy) return true;
     return std::ranges::any_of(timeline_.clips(), [](const auto& clip) {
-        return !clip.grade.nodes().empty() || clip.color.brightness != 0.0 ||
-            clip.color.contrast != 1.0 || clip.color.saturation != 1.0;
+        return !clip.grade.nodes().empty();
     });
 #else
     return false;
@@ -1369,7 +1368,8 @@ void EditorController::startFloatVideoFrame(ffgui::PreviewVideoFrame frame) {
     if (clip == timeline_.clips().end() || asset == nullptr) return;
     const auto sourceColor = asset->source_color();
     const auto settings = color_pipeline_;
-    const auto grade = ffgui::compose_clip_grade(*clip);
+    const auto grade = color_pipeline_.mode == ffgui::ColorPipelineMode::legacy
+        ? clip->grade : ffgui::compose_clip_grade(*clip);
     const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
         ? std::string{}
         : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
@@ -3648,6 +3648,8 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     stopFloatPlayback();
     preview_should_play_ = false;
     pending_float_video_frame_.reset();
+    player_->set_legacy_source_color_enabled(
+        color_pipeline_.mode == ffgui::ColorPipelineMode::legacy);
     player_->set_float_output_enabled(requiresFloatVideoPreview());
 #endif
     if (resetPlayhead) {

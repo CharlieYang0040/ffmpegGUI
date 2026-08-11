@@ -26,6 +26,8 @@
 namespace ffgui {
 namespace {
 
+std::runtime_error glib_error(const std::string& prefix, GError* error);
+
 GESTrackElement* find_core_track_element(GESClip* clip, GESTrackType type) {
     auto* elements = ges_clip_find_track_elements(clip, nullptr, type, G_TYPE_NONE);
     GESTrackElement* result = nullptr;
@@ -112,6 +114,22 @@ void add_speed_effect(GESUriClip* uri_clip, double playback_rate, bool has_audio
     attach("videorate rate=" + rate.str(), "failed to attach video playback-rate effect");
     if (has_audio) {
         attach("pitch tempo=" + rate.str(), "failed to attach audio playback-rate effect");
+    }
+}
+
+void add_legacy_color_effect(GESUriClip* uri_clip, const ClipColor& color) {
+    if (color == ClipColor{}) return;
+    std::ostringstream description;
+    description << std::fixed << std::setprecision(6)
+                << "videobalance brightness=" << color.brightness
+                << " contrast=" << color.contrast
+                << " saturation=" << color.saturation;
+    auto* effect = ges_effect_new(description.str().c_str());
+    GError* error = nullptr;
+    if (effect == nullptr || !ges_clip_add_top_effect(
+            GES_CLIP(uri_clip), GES_BASE_EFFECT(effect), -1, &error)) {
+        if (effect != nullptr) gst_object_unref(effect);
+        throw glib_error("failed to attach clip color effect", error);
     }
 }
 
@@ -356,6 +374,10 @@ void GesSequencePlayer::set_float_output_enabled(bool enabled) {
     float_output_enabled_.store(enabled, std::memory_order_release);
 }
 
+void GesSequencePlayer::set_legacy_source_color_enabled(bool enabled) {
+    legacy_source_color_enabled_.store(enabled, std::memory_order_release);
+}
+
 TimeNs GesSequencePlayer::duration() const noexcept {
     return duration_ns_.load();
 }
@@ -582,7 +604,9 @@ void GesSequencePlayer::rebuild_pipeline_locked(
             }
             uriClips.push_back(uri_clip);
             add_speed_effect(uri_clip, span.clip.playback_rate, span.has_audio);
-            // Color is evaluated by the shared float frame processor after GES decoding.
+            if (legacy_source_color_enabled_.load(std::memory_order_acquire)) {
+                add_legacy_color_effect(uri_clip, span.clip.color);
+            }
         }
 
         // Drive the core URI source properties directly. This keeps transitions and audio
