@@ -287,6 +287,8 @@
 - [x] GES frame-composition 메타를 alpha·위치·크기·z-order로 적용하는 전용 D3D11 mixer
 - [x] GPU 컬러 bin 전후의 합성 메타 보존과 NLE gap source로 디졸브·끝점 seek 연속성 보장
 - [x] D3D11 compositor 기본 사용과 `FFGUI_FORCE_SYSTEM_COMPOSITOR=1` 진단 fallback
+- [x] converter 없는 native GES effect로 source shader texture를 D3D11 compositor에 직접 전달
+- [x] D3D11 경로의 Legacy clip controls와 2배속 videorate를 GPU-memory 호환 경로로 통합
 
 ### 2026-08-12 재정비 기준점
 
@@ -304,6 +306,7 @@
 | M5 Primary·스코프 | 부분 완료 | 일부 Primary/LGG/Contrast/RGB Mixer/RGB Curve CPU 렌더, Waveform/Parade/Vectorscope/Histogram 실시간 분석 | 모든 미디어/GPU/출력 공통 노드 렌더, 스코프 기준점, false color/pixel inspector, keyframe·undo/redo |
 | M5 고급 그레이딩 | 미완료 | 노드 순서·bypass·mix·기본 저장 모델 | Log/HDR wheels, Hue 곡선군, Color Warper, LUT/Look, 공유 grade, 복사·붙여넣기·초기화 |
 | M6 LUT·Unreal 전달 | 미완료 | 공통 컬러 결과를 내부 33³ LUT로 베이크하는 기반 | 33³/65³ 외부 Cube, shaper, look/display 구분, `.ocioz`, CLF/CTF, manifest, Unreal 사전 검사·실기 검증 |
+| R1 네이티브 GPU 프레임 | 완료 | native GES asset/effect, D3D11 source download 0회, VFR·2배속·디졸브·오디오 및 fallback 회귀 | 최종 릴리스 GPU 매트릭스에서 반복 검증 |
 | 세컨더리 도구 | 미착수 | 저장·렌더 계약도 아직 확정 전 | qualifier, matte 정리, power window, mask/outside, tracking, shot still, wipe/split, shot matching |
 | 최종 품질 게이트 | 미완료 | Debug 자동 회귀와 여러 실제 미디어 smoke/soak 기준선 | 전체 입력 매트릭스, CPU/GPU 수치 비교, HDR 다중 모니터, Unreal 5.5–5.8, 깨끗한 PC 패키지 |
 
@@ -311,24 +314,23 @@
 
 - 기준 커밋은 `5d389d1`이다. 이 커밋까지 D3D11 compositor, 관리형 컬러, 디졸브,
   CPU fallback, 데스크톱 smoke와 4K 탐색 soak가 통과했다.
-- D3D11 source effect에서 compositor로 직접 texture를 전달하려던 후속 실험은 GES custom
-  `GESBaseEffect`의 `nleobject` 생성 수명주기를 만족하지 못해 기본 회귀를 깨뜨렸다. 이 코드는
-  기준선에 포함하지 않고 제거했다.
-- 따라서 현재 제품 경로는 안정적으로 GPU 컬러와 GPU 합성을 사용하지만, GES effect 경계에서
-  source별 download/upload 한 쌍이 남아 있다. 이를 제거하기 전까지 zero-copy 완료로 표시하지 않는다.
+- 첫 `GESBaseEffect` 직접 생성 실험은 asset이 없어 `nleobject`를 만들지 못했다. 최종 구현은
+  `GESEffect`의 extractable/asset 계약을 유지한 하위 타입에서 `create_element`만 재정의해
+  converter 없는 유효한 `nleoperation`을 생성한다.
+- source는 한 번 D3D11에 upload되지만 OCIO/Grade shader 이후 compositor까지 download하지 않는다.
+  2배속 `videorate`와 Legacy clip controls도 이 계약 안에서 처리한다.
 - 새 작업은 항상 Debug build, CTest, GES GPU/system/CPU 3경로, desktop smoke를 통과한 뒤
   다음 단계로 이동한다. 성능 변경은 4K seek/playback soak 수치도 함께 기록한다.
 
 ### 재정비된 구현 순서
 
-#### R1. 네이티브 GPU 프레임 경로
+#### R1. 네이티브 GPU 프레임 경로 — 완료
 
-- GES의 일반 `GESEffect`에 D3D11 메모리를 억지로 통과시키지 않는다.
-- 전용 track element 또는 source wrapper가 유효한 `nleoperation`을 생성하도록 GES 1.28의
-  extractable/asset 수명주기를 먼저 회귀 테스트로 고정한다.
-- source OCIO/Grade 결과의 D3D11 texture와 composition meta를 D3D11 compositor까지 유지한다.
-- 완료 증거는 source download 0회, D3D compositor frame 증가, 디졸브·alpha·VFR·2배속 일치,
-  system/CPU fallback 통과와 4K soak 전후 수치다.
+- [x] GES의 일반 `GESEffect` converter를 우회하는 asset-backed native effect
+- [x] source OCIO/Grade 결과의 D3D11 texture와 composition meta를 compositor까지 유지
+- [x] D3D11 source download 0회와 D3D compositor frame 증가 검증
+- [x] 디졸브·straight alpha·VFR·2배속·오디오 연속성 회귀
+- [x] system compositor와 CPU color fallback 및 전체 desktop smoke 통과
 
 #### R2. 컬러 노드 실행 계약 완성
 
@@ -394,8 +396,9 @@
    기준 결과를 CPU trilinear 필터로 자동 대체한다. 전용 D3D11 mixer는 GES composition meta를
    sink pad에 적용하고 GPU 색처리 bin이 해당 meta를 PTS별로 복원하므로 4샷·100ms 디졸브·VFR·
    2배속·오디오 연속 재생이 함께 통과한다. NLE gap source도 포함해 끝점의 빈 mixing operation
-   오류를 막았다. 다만 GES effect system-memory 경계 때문에 source shader 안의 upload/download는
-   아직 한 번 남아 있으며, 다음 최적화는 그 출력 texture를 compositor에 직접 전달하는 것이다.
+   오류를 막았다. asset-backed native effect는 일반 `GESEffect`가 넣던 출력 `videoconvert`를
+   제거하고 source shader의 D3D11 texture를 compositor에 직접 전달한다. 관리형 4샷 회귀에서
+   source download 0회, VFR·2배속·디졸브·오디오 gap 0ns를 확인했다.
 - HDR 설정은 프로젝트 계약까지 구현되었고 scRGB/PQ 스왑체인 전환은 미구현이다.
 - 자동 또는 사용자가 선택한 EXR part/view/AOV는 float 미리보기와 프록시·혼합 출력에서
   같은 픽셀을 사용한다. 선택은 기존 자산 ID와 타임라인 클립을 보존한 채 백그라운드에서

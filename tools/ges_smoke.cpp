@@ -353,6 +353,7 @@ int main(int argc, char* argv[]) {
         managedColor.mode = ffgui::ColorPipelineMode::aces_managed;
         managedColor.working_space = "ACEScg";
         managedColor.output_space = "sRGB - Display";
+        player.set_legacy_source_color_enabled(false);
         player.set_color_pipeline(managedColor, managedColor.output_space);
         player.set_timeline(timeline.snapshot());
         if (player.source_color_lut_bindings() != 4) {
@@ -382,6 +383,7 @@ int main(int argc, char* argv[]) {
             std::atomic<std::uint64_t> directFrames{};
             std::atomic<bool> invalidDirectFrame{false};
             GesSequencePlayer directPlayer{"d3d11-appsink", "fakesink"};
+            directPlayer.set_legacy_source_color_enabled(false);
             directPlayer.set_color_pipeline(managedColor, managedColor.output_space);
             directPlayer.set_video_frame_callback([&](ffgui::PreviewVideoFrame frame) {
                 if (frame.texture == nullptr || frame.device == nullptr ||
@@ -407,7 +409,7 @@ int main(int argc, char* argv[]) {
             const auto directAudio = directPlayer.audio_continuity_metrics();
             if (invalidDirectFrame.load() || directFrames.load() < 20 ||
                 directPlayer.d3d_compositor_instances() == 0 ||
-                directPlayer.d3d_download_instances() != 2 ||
+                directPlayer.d3d_download_instances() != 0 ||
                 directPlayer.system_compositor_instances() != 0 ||
                 directCompositionFrames == 0 ||
                 directCompositionMetaFrames == 0 ||
@@ -423,6 +425,33 @@ int main(int argc, char* argv[]) {
                     std::to_string(directBlendedFrames) + ", meta=" +
                     std::to_string(directCompositionMetaFrames) + ", audio_gap=" +
                     std::to_string(directAudio.maximum_positive_gap));
+            }
+
+            std::atomic<std::uint64_t> legacyDirectFrames{};
+            GesSequencePlayer legacyDirectPlayer{"d3d11-appsink", "fakesink"};
+            legacyDirectPlayer.set_video_frame_callback(
+                [&](ffgui::PreviewVideoFrame frame) {
+                    if (frame.texture != nullptr && frame.device != nullptr) {
+                        legacyDirectFrames.fetch_add(1);
+                    }
+                });
+            legacyDirectPlayer.set_timeline(timeline.snapshot());
+            if (!legacyDirectPlayer.direct_d3d_compositor_enabled() ||
+                legacyDirectPlayer.source_color_lut_bindings() != 2 ||
+                legacyDirectPlayer.source_gpu_color_lut_bindings() != 2) {
+                throw std::runtime_error(
+                    "legacy clip controls were not folded into native D3D source LUTs");
+            }
+            legacyDirectPlayer.seek(milliseconds(300));
+            legacyDirectPlayer.play();
+            wait_for_position(
+                legacyDirectPlayer, milliseconds(650), std::chrono::seconds(8));
+            legacyDirectPlayer.stop();
+            if (legacyDirectFrames.load() < 5 ||
+                legacyDirectPlayer.d3d_download_instances() != 0 ||
+                legacyDirectPlayer.system_compositor_instances() != 0) {
+                throw std::runtime_error(
+                    "legacy native D3D preview fell back to a system-memory color effect");
             }
         }
 

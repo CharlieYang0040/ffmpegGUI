@@ -124,17 +124,27 @@ alpha는 shader 밖에서 보존한다. 이후 source alpha 디졸브가 수행�
 합성 전에 독립적으로 처리되며 합성 결과를 다시 그레이드하지 않는다. GPU 생성이나 협상이
 불가능하면 입력·GradeGraph·출력 전체를 평가한 33³ CPU 기준 경로를 사용한다. Legacy GradeGraph도
 같은 cube 경로를 사용하고, 컬러 처리가 없는 타임라인은 기존 D3D11 texture 공유 경로를 유지한다.
-Legacy 밝기·대비·채도는 `GESClip`의 안정적인 top `videobalance` effect로 먼저 적용하고,
-GradeGraph가 있으면 그 뒤 LUT effect를 연결한다. 현재 GES top-effect와 mixer 사이에는
-system-memory 협상 경계가 있어 GPU source effect 앞뒤에 upload/download가 한 번씩 남는다.
+시스템 합성 경로의 Legacy 밝기·대비·채도는 `GESClip`의 안정적인 top `videobalance` effect로
+적용한다. D3D11 합성 경로에서는 같은 조절을 `compose_clip_grade()`에 합쳐 source GPU LUT에서
+처리하므로 CPU 전용 effect로 되돌아가지 않는다.
 영상 트랙은 GES의 고정 system compositor 대신 전용 `FfguiD3DVideoTrack`과
 `d3d11compositor`를 기본 사용한다. 전용 mixer는 각 입력 버퍼의 GES frame-composition
 메타데이터를 D3D11 sink pad의 alpha·위치·크기·z-order에 적용한다. GPU 색처리 도중 손실될 수
-있는 이 메타데이터는 `ffguid3dcolor` bin이 입력 PTS별로 보존했다가 download 뒤 복원하므로
-서로 다른 그레이드의 두 샷도 디졸브 값이 유지된다. 컷 사이의 짧은 공백에는 black gap source를
-공급해 NLE mixing operation이 자식 없이 seek되는 오류도 막는다. 문제가 있는 드라이버에서는
-`FFGUI_FORCE_SYSTEM_COMPOSITOR=1`로 기존 합성기를 강제할 수 있다. 다음 최적화는 GES effect의
-system-memory 경계를 없애 source shader의 D3D11 texture를 compositor에 직접 전달하는 것이다.
+있는 이 메타데이터는 `ffguid3dcolor` bin이 입력 PTS별로 보존했다가 shader 출력에 복원하므로
+서로 다른 그레이드의 두 샷도 디졸브 값이 유지된다.
+
+일반 `GESEffect`는 영상 effect 앞뒤에 `videoconvert`를 자동 삽입해 system-memory 협상을
+유발한다. D3D11 경로는 이를 사용하지 않고 `GESEffect`의 extractable/asset 수명주기를 따르는
+`FfguiDirectD3DEffect`가 converter 없는 `nleoperation`을 만든다. 색처리 bin은 최초 source
+upload와 shader만 포함하고 그 출력 texture를 compositor에 직접 전달한다. 2배속의 `videorate`도
+`video/x-raw(ANY)`를 지원하는 같은 native effect로 연결한다. 결과적으로 source color effect의
+`d3d11download` 인스턴스는 0개다. 시스템 compositor 또는 CPU color를 강제하면 기존
+`GESEffect`와 download 경로로 자동 복귀한다.
+
+컷 사이의 짧은 공백에는 D3D11 black gap source를 공급해 NLE mixing operation이 자식 없이
+seek되는 오류를 막는다. 문구와 스탬프는 현재 Qt overlay에서 미리보고 FFmpeg 공통 출력 그래프에서
+렌더하므로 GES title source를 D3D 트랙에 혼합하지 않는다. 문제가 있는 드라이버에서는
+`FFGUI_FORCE_SYSTEM_COMPOSITOR=1`로 기존 합성기를 강제할 수 있다.
 
 구조 편집은 `TimelineModel`과 Scene Graph 화면에 즉시 반영하지만 GES 파이프라인은
 각 마우스 동작마다 다시 만들지 않는다. 50ms 단일 타이머가 연속 편집을 최신 스냅샷

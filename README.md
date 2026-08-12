@@ -65,7 +65,8 @@ QML 모듈과 필요한 GStreamer 런타임을 함께 포함합니다.
 `run_4k_seek_benchmark.ps1`은 실제 3840x2160 H.264/HEVC 개발용 영상을 만들고
 D3D11 하드웨어 디코더의 임의 탐색 후 첫 GPU 프레임 도착 시간을 검사합니다.
 지원 GPU에서는 GES 합성도 D3D11 compositor를 기본 사용하며, 클립별 alpha·위치·크기 메타를
-보존해 컬러 처리된 디졸브를 합성합니다. 드라이버 진단이 필요하면
+보존해 컬러 처리된 디졸브를 합성합니다. 관리형 컬러와 GradeGraph의 source shader 출력은
+중간 CPU download 없이 D3D11 texture 상태로 compositor에 전달됩니다. 드라이버 진단이 필요하면
 `FFGUI_FORCE_SYSTEM_COMPOSITOR=1`로 기존 시스템 메모리 합성기를 강제할 수 있습니다.
 `run_playback_soak.ps1`은 같은 영상이 섞인 타임라인에서 PTS 기반 seek와
 pause/play/stop, 파이프라인 재구축을 반복하며 지연과 private memory 증가를 검사합니다.

@@ -346,7 +346,7 @@ int main(int argc, char* argv[]) {
             (!expectDirectD3d ||
                  (controller.directD3dCompositorEnabled() &&
                  controller.d3dCompositorInstances() > 0 &&
-                 controller.d3dDownloadInstances() > 0 &&
+                 controller.d3dDownloadInstances() == 0 &&
                  controller.systemCompositorInstances() == 0)) &&
             controller.playheadNs() > 100'000'000 &&
             controller.playheadNs() < firstClipDuration && controller.playing();

@@ -173,6 +173,65 @@ void ffgui_d3d_mixer_class_init(FfguiD3DMixerClass* klass) {
 
 void ffgui_d3d_mixer_init(FfguiD3DMixer*) {}
 
+std::runtime_error glib_error(const std::string& prefix, GError* error);
+
+typedef struct _FfguiDirectD3DEffect FfguiDirectD3DEffect;
+typedef struct _FfguiDirectD3DEffectClass FfguiDirectD3DEffectClass;
+
+struct _FfguiDirectD3DEffect {
+    GESEffect parent_instance;
+};
+
+struct _FfguiDirectD3DEffectClass {
+    GESEffectClass parent_class;
+};
+
+G_DEFINE_TYPE(FfguiDirectD3DEffect, ffgui_direct_d3d_effect, GES_TYPE_EFFECT)
+
+GstElement* ffgui_direct_d3d_effect_create_element(GESTrackElement* element) {
+    gchar* description = nullptr;
+    g_object_get(element, "bin-description", &description, nullptr);
+    if (description == nullptr) return nullptr;
+    GError* error = nullptr;
+    auto* result = gst_parse_bin_from_description_full(
+        description, TRUE, nullptr,
+        static_cast<GstParseFlags>(GST_PARSE_FLAG_PLACE_IN_BIN | GST_PARSE_FLAG_FATAL_ERRORS),
+        &error);
+    g_free(description);
+    if (error != nullptr) {
+        GST_ERROR_OBJECT(element, "Could not create native D3D effect: %s", error->message);
+        g_error_free(error);
+        if (result != nullptr) gst_object_unref(result);
+        return nullptr;
+    }
+    return result;
+}
+
+void ffgui_direct_d3d_effect_class_init(FfguiDirectD3DEffectClass* klass) {
+    GES_TRACK_ELEMENT_CLASS(klass)->create_element =
+        ffgui_direct_d3d_effect_create_element;
+}
+
+void ffgui_direct_d3d_effect_init(FfguiDirectD3DEffect*) {}
+
+GESBaseEffect* create_direct_d3d_effect(const std::string& description) {
+    const auto assetId = "video " + description;
+    GError* error = nullptr;
+    auto* asset = ges_asset_request(
+        ffgui_direct_d3d_effect_get_type(), assetId.c_str(), &error);
+    if (asset == nullptr || error != nullptr) {
+        if (asset != nullptr) gst_object_unref(asset);
+        throw glib_error("failed to request native D3D effect asset", error);
+    }
+    auto* effect = GES_BASE_EFFECT(ges_asset_extract(asset, &error));
+    gst_object_unref(asset);
+    if (effect == nullptr || error != nullptr) {
+        if (effect != nullptr) gst_object_unref(effect);
+        throw glib_error("failed to extract native D3D effect", error);
+    }
+    return effect;
+}
+
 typedef struct _FfguiD3DVideoTrack FfguiD3DVideoTrack;
 typedef struct _FfguiD3DVideoTrackClass FfguiD3DVideoTrackClass;
 
@@ -200,19 +259,27 @@ GstElement* create_d3d_video_gap(GESTrack*) {
     auto* bin = gst_bin_new(nullptr);
     auto* source = gst_element_factory_make("videotestsrc", nullptr);
     auto* rate = gst_element_factory_make("videorate", nullptr);
-    if (bin == nullptr || source == nullptr || rate == nullptr) {
+    auto* upload = gst_element_factory_make("d3d11upload", nullptr);
+    auto* capsFilter = gst_element_factory_make("capsfilter", nullptr);
+    if (bin == nullptr || source == nullptr || rate == nullptr ||
+        upload == nullptr || capsFilter == nullptr) {
         if (source != nullptr) gst_object_unref(source);
         if (rate != nullptr) gst_object_unref(rate);
+        if (upload != nullptr) gst_object_unref(upload);
+        if (capsFilter != nullptr) gst_object_unref(capsFilter);
         if (bin != nullptr) gst_object_unref(bin);
         return nullptr;
     }
     g_object_set(source, "pattern", 2, nullptr);
-    gst_bin_add_many(GST_BIN(bin), source, rate, nullptr);
-    if (!gst_element_link(source, rate)) {
+    auto* caps = gst_caps_from_string("video/x-raw(memory:D3D11Memory)");
+    g_object_set(capsFilter, "caps", caps, nullptr);
+    gst_caps_unref(caps);
+    gst_bin_add_many(GST_BIN(bin), source, rate, upload, capsFilter, nullptr);
+    if (!gst_element_link_many(source, rate, upload, capsFilter, nullptr)) {
         gst_object_unref(bin);
         return nullptr;
     }
-    auto* sourcePad = gst_element_get_static_pad(rate, "src");
+    auto* sourcePad = gst_element_get_static_pad(capsFilter, "src");
     auto* ghost = gst_ghost_pad_new("src", sourcePad);
     gst_object_unref(sourcePad);
     if (ghost == nullptr || !gst_element_add_pad(bin, ghost)) {
@@ -222,8 +289,6 @@ GstElement* create_d3d_video_gap(GESTrack*) {
     }
     return bin;
 }
-
-std::runtime_error glib_error(const std::string& prefix, GError* error);
 
 GESTrackElement* find_core_track_element(GESClip* clip, GESTrackType type) {
     auto* elements = ges_clip_find_track_elements(clip, nullptr, type, G_TYPE_NONE);
@@ -296,7 +361,9 @@ std::vector<std::pair<TimeNs, double>> audio_envelope(
     return result;
 }
 
-void add_speed_effect(GESUriClip* uri_clip, double playback_rate, bool has_audio) {
+void add_speed_effect(
+    GESUriClip* uri_clip, double playback_rate, bool has_audio,
+    bool direct_d3d_compositor) {
     if (std::abs(playback_rate - 1.0) < 0.0000005) return;
     const auto attach = [uri_clip](const std::string& description, const char* failure) {
         auto* effect = ges_effect_new(description.c_str());
@@ -308,7 +375,16 @@ void add_speed_effect(GESUriClip* uri_clip, double playback_rate, bool has_audio
     };
     std::ostringstream rate;
     rate << std::fixed << std::setprecision(6) << playback_rate;
-    attach("videorate rate=" + rate.str(), "failed to attach video playback-rate effect");
+    if (direct_d3d_compositor) {
+        auto* effect = create_direct_d3d_effect("videorate rate=" + rate.str());
+        if (effect == nullptr ||
+            !ges_container_add(GES_CONTAINER(uri_clip), GES_TIMELINE_ELEMENT(effect))) {
+            if (effect != nullptr) gst_object_unref(effect);
+            throw std::runtime_error("failed to attach native video playback-rate effect");
+        }
+    } else {
+        attach("videorate rate=" + rate.str(), "failed to attach video playback-rate effect");
+    }
     if (has_audio) {
         attach("pitch tempo=" + rate.str(), "failed to attach audio playback-rate effect");
     }
@@ -331,27 +407,34 @@ void add_legacy_color_effect(GESUriClip* uri_clip, const ClipColor& color) {
 }
 
 void add_color_lut_effect(
-    GESUriClip* uri_clip, const std::string& lut_id, bool use_d3d11) {
+    GESUriClip* uri_clip, const std::string& lut_id, bool use_d3d11,
+    bool direct_d3d_compositor) {
     const auto description = use_d3d11
-        ? "ffguid3dcolor lut-id=" + lut_id
+        ? "ffguid3dcolor lut-id=" + lut_id +
+            (direct_d3d_compositor ? " direct-output=true" : "")
         : "videoconvert ! video/x-raw,format=RGBA64_LE ! ffguilut3d lut-id=" + lut_id +
           " ! videoconvert";
-    auto* effect = ges_effect_new(description.c_str());
+    auto* effect = direct_d3d_compositor
+        ? create_direct_d3d_effect(description)
+        : GES_BASE_EFFECT(ges_effect_new(description.c_str()));
     GError* error = nullptr;
     if (effect == nullptr || !ges_clip_add_top_effect(
-            GES_CLIP(uri_clip), GES_BASE_EFFECT(effect), -1, &error)) {
+            GES_CLIP(uri_clip), effect, -1, &error)) {
         if (effect != nullptr) gst_object_unref(effect);
         throw glib_error("failed to attach clip color LUT effect", error);
     }
 }
 
-void add_ocio_shader_effect(GESUriClip* uri_clip, const std::string& shader_id) {
-    const auto description =
-        "ffguid3dcolor shader-id=" + shader_id;
-    auto* effect = ges_effect_new(description.c_str());
+void add_ocio_shader_effect(
+    GESUriClip* uri_clip, const std::string& shader_id, bool direct_d3d_compositor) {
+    const auto description = "ffguid3dcolor shader-id=" + shader_id +
+        (direct_d3d_compositor ? " direct-output=true" : "");
+    auto* effect = direct_d3d_compositor
+        ? create_direct_d3d_effect(description)
+        : GES_BASE_EFFECT(ges_effect_new(description.c_str()));
     GError* error = nullptr;
     if (effect == nullptr || !ges_clip_add_top_effect(
-            GES_CLIP(uri_clip), GES_BASE_EFFECT(effect), -1, &error)) {
+            GES_CLIP(uri_clip), effect, -1, &error)) {
         if (effect != nullptr) gst_object_unref(effect);
         throw glib_error("failed to attach exact OCIO source shader", error);
     }
@@ -451,7 +534,7 @@ GESTimeline* create_preview_timeline(bool direct_d3d_compositor) {
 
     auto* timeline = ges_timeline_new();
     auto* audioTrack = ges_audio_track_new();
-    auto* trackCaps = gst_caps_new_empty_simple("video/x-raw");
+    auto* trackCaps = gst_caps_from_string("video/x-raw(ANY)");
     auto* videoTrack = trackCaps != nullptr
         ? GES_TRACK(g_object_new(
             ffgui_d3d_video_track_get_type(),
@@ -1014,13 +1097,20 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 throw std::runtime_error("failed to add GES clip to its layer");
             }
             uriClips.push_back(uri_clip);
-            add_speed_effect(uri_clip, span.clip.playback_rate, span.has_audio);
-            if (legacy_source_color_enabled_.load(std::memory_order_acquire)) {
+            add_speed_effect(
+                uri_clip, span.clip.playback_rate, span.has_audio,
+                direct_d3d_compositor_enabled_);
+            const auto legacySourceColor =
+                legacy_source_color_enabled_.load(std::memory_order_acquire);
+            if (legacySourceColor && !direct_d3d_compositor_enabled_) {
                 add_legacy_color_effect(uri_clip, span.clip.color);
             }
             const auto managed = colorPipeline.mode != ColorPipelineMode::legacy;
-            if (managed || !span.clip.grade.nodes().empty()) {
-                const auto grade = managed ? compose_clip_grade(span.clip) : span.clip.grade;
+            const auto directLegacyColor = direct_d3d_compositor_enabled_ &&
+                legacySourceColor && span.clip.color != ClipColor{};
+            if (managed || !span.clip.grade.nodes().empty() || directLegacyColor) {
+                const auto grade = (managed || direct_d3d_compositor_enabled_)
+                    ? compose_clip_grade(span.clip) : span.clip.grade;
                 const auto outputSpace = managed
                     ? (colorOutputSpace.empty() ? std::string{"sRGB - Display"}
                                                 : colorOutputSpace)
@@ -1033,7 +1123,8 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                     const auto shaderId = "ocio" + std::to_string(++lut_generation_);
                     publish_gst_d3d11_ocio_shader(shaderId, std::move(shader));
                     registered_ocio_shader_ids_.push_back(shaderId);
-                    add_ocio_shader_effect(uri_clip, shaderId);
+                    add_ocio_shader_effect(
+                        uri_clip, shaderId, direct_d3d_compositor_enabled_);
                     source_gpu_ocio_shader_bindings_.fetch_add(1);
                 } else {
                     auto cube = std::make_shared<const ColorCube>(build_color_cube(
@@ -1042,7 +1133,8 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                     publish_gst_color_lut(lutId, std::move(cube));
                     registered_lut_ids_.push_back(lutId);
                     add_color_lut_effect(
-                        uri_clip, lutId, d3d11_color_lut_available_);
+                        uri_clip, lutId, d3d11_color_lut_available_,
+                        direct_d3d_compositor_enabled_);
                 }
                 source_color_lut_bindings_.fetch_add(1);
                 if (d3d11_color_lut_available_) {

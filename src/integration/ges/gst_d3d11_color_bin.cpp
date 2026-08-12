@@ -25,6 +25,7 @@ struct GstFfguiD3DColorBin final {
     GstBin parent;
     gchar* lut_id{};
     gchar* shader_id{};
+    gboolean direct_output{};
     CompositionCache* cache{};
 };
 
@@ -34,7 +35,7 @@ struct GstFfguiD3DColorBinClass final {
 
 G_DEFINE_TYPE(GstFfguiD3DColorBin, gst_ffgui_d3d_color_bin, GST_TYPE_BIN)
 
-enum { property_zero, property_lut_id, property_shader_id };
+enum { property_zero, property_lut_id, property_shader_id, property_direct_output };
 
 GstClockTime buffer_key(const GstBuffer* buffer) {
     return GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) : GST_BUFFER_DTS(buffer);
@@ -87,6 +88,10 @@ GstPadProbeReturn restore_composition(
 void set_property(
     GObject* object, guint property, const GValue* value, GParamSpec* specification) {
     auto* self = reinterpret_cast<GstFfguiD3DColorBin*>(object);
+    if (property == property_direct_output) {
+        self->direct_output = g_value_get_boolean(value);
+        return;
+    }
     gchar** target = property == property_lut_id ? &self->lut_id
         : property == property_shader_id ? &self->shader_id : nullptr;
     if (target == nullptr) {
@@ -100,6 +105,10 @@ void set_property(
 void get_property(
     GObject* object, guint property, GValue* value, GParamSpec* specification) {
     const auto* self = reinterpret_cast<const GstFfguiD3DColorBin*>(object);
+    if (property == property_direct_output) {
+        g_value_set_boolean(value, self->direct_output);
+        return;
+    }
     const gchar* result = property == property_lut_id ? self->lut_id
         : property == property_shader_id ? self->shader_id : nullptr;
     if (property != property_lut_id && property != property_shader_id) {
@@ -124,11 +133,15 @@ void constructed(GObject* object) {
     auto* upload = gst_element_factory_make("d3d11upload", nullptr);
     auto* inputCaps = gst_element_factory_make("capsfilter", nullptr);
     auto* lut = gst_element_factory_make("ffguilut3d11", nullptr);
-    auto* download = gst_element_factory_make("d3d11download", nullptr);
-    auto* outputCaps = gst_element_factory_make("capsfilter", nullptr);
-    auto* convert = gst_element_factory_make("videoconvert", nullptr);
-    if (upload == nullptr || inputCaps == nullptr || lut == nullptr || download == nullptr ||
-        outputCaps == nullptr || convert == nullptr) {
+    auto* download = self->direct_output ? nullptr
+        : gst_element_factory_make("d3d11download", nullptr);
+    auto* outputCaps = self->direct_output ? nullptr
+        : gst_element_factory_make("capsfilter", nullptr);
+    auto* convert = self->direct_output ? nullptr
+        : gst_element_factory_make("videoconvert", nullptr);
+    if (upload == nullptr || inputCaps == nullptr || lut == nullptr ||
+        (!self->direct_output &&
+         (download == nullptr || outputCaps == nullptr || convert == nullptr))) {
         gst_clear_object(&upload);
         gst_clear_object(&inputCaps);
         gst_clear_object(&lut);
@@ -139,17 +152,27 @@ void constructed(GObject* object) {
     }
     auto* gpuCaps = gst_caps_from_string(
         "video/x-raw(memory:D3D11Memory),format=RGBA64_LE");
-    auto* cpuCaps = gst_caps_from_string("video/x-raw,format=RGBA64_LE");
     g_object_set(inputCaps, "caps", gpuCaps, nullptr);
-    g_object_set(outputCaps, "caps", cpuCaps, nullptr);
     gst_caps_unref(gpuCaps);
-    gst_caps_unref(cpuCaps);
+    if (outputCaps != nullptr) {
+        auto* cpuCaps = gst_caps_from_string("video/x-raw,format=RGBA64_LE");
+        g_object_set(outputCaps, "caps", cpuCaps, nullptr);
+        gst_caps_unref(cpuCaps);
+    }
     g_object_set(lut, "lut-id", self->lut_id, "shader-id", self->shader_id, nullptr);
-    gst_bin_add_many(GST_BIN(self), upload, inputCaps, lut, download, outputCaps, convert, nullptr);
-    if (!gst_element_link_many(upload, inputCaps, lut, download, outputCaps, convert, nullptr)) return;
+    if (self->direct_output) {
+        gst_bin_add_many(GST_BIN(self), upload, inputCaps, lut, nullptr);
+        if (!gst_element_link_many(upload, inputCaps, lut, nullptr)) return;
+    } else {
+        gst_bin_add_many(
+            GST_BIN(self), upload, inputCaps, lut, download, outputCaps, convert, nullptr);
+        if (!gst_element_link_many(
+                upload, inputCaps, lut, download, outputCaps, convert, nullptr)) return;
+    }
 
     auto* sinkTarget = gst_element_get_static_pad(upload, "sink");
-    auto* sourceTarget = gst_element_get_static_pad(convert, "src");
+    auto* sourceTarget = gst_element_get_static_pad(
+        self->direct_output ? lut : convert, "src");
     auto* sink = gst_ghost_pad_new("sink", sinkTarget);
     auto* source = gst_ghost_pad_new("src", sourceTarget);
     gst_object_unref(sinkTarget);
@@ -185,12 +208,19 @@ void gst_ffgui_d3d_color_bin_class_init(GstFfguiD3DColorBinClass* klass) {
             "shader-id", "Shader identifier", "Published managed OCIO shader identifier", nullptr,
             static_cast<GParamFlags>(G_PARAM_READWRITE | G_PARAM_CONSTRUCT |
                                      G_PARAM_STATIC_STRINGS)));
+    g_object_class_install_property(
+        objectClass, property_direct_output,
+        g_param_spec_boolean(
+            "direct-output", "Direct D3D output",
+            "Keep processed frames in D3D11 memory for the native compositor", FALSE,
+            static_cast<GParamFlags>(G_PARAM_READWRITE | G_PARAM_CONSTRUCT |
+                                     G_PARAM_STATIC_STRINGS)));
 
     auto* elementClass = GST_ELEMENT_CLASS(klass);
     gst_element_class_set_static_metadata(
         elementClass, "ffmpegGUI D3D11 color bin", "Filter/Effect/Video",
         "Preserves GES composition metadata across D3D11 color processing", "ffmpegGUI");
-    auto* caps = gst_caps_from_string("video/x-raw");
+    auto* caps = gst_caps_from_string("video/x-raw(ANY)");
     gst_element_class_add_pad_template(
         elementClass, gst_pad_template_new("sink", GST_PAD_SINK, GST_PAD_ALWAYS, caps));
     gst_element_class_add_pad_template(
