@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -46,6 +47,12 @@ struct CurvePoint final {
     bool operator==(const CurvePoint&) const = default;
 };
 
+struct GradeParameterKeyframe final {
+    std::int64_t source_time{};
+    double value{};
+    bool operator==(const GradeParameterKeyframe&) const = default;
+};
+
 struct GradeNode final {
     std::string id;
     std::string name;
@@ -54,7 +61,9 @@ struct GradeNode final {
     double mix{1.0};
     std::unordered_map<std::string, double> parameters;
     std::unordered_map<std::string, std::vector<CurvePoint>> curves;
+    std::unordered_map<std::string, std::vector<GradeParameterKeyframe>> parameter_keyframes;
     std::string external_path;
+    std::string shared_id;
 
     bool operator==(const GradeNode&) const = default;
     [[nodiscard]] bool lut_representable() const noexcept;

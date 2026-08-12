@@ -128,6 +128,7 @@ public:
         double playback_rate);
     void set_clips_color(const std::vector<std::string>& clip_ids, ClipColor color);
     void set_clip_grade_graph(const std::string& clip_id, GradeGraph graph);
+    void set_shared_grade_node(const std::string& shared_id, const GradeNode& replacement);
     void set_clip_dissolve(const std::string& clip_id, TimeNs duration);
     void add_caption(CaptionCue caption);
     void add_captions(std::vector<CaptionCue> captions);

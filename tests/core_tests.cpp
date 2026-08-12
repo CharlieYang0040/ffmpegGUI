@@ -358,6 +358,66 @@ void test_external_lut_node_uses_ocio_and_preserves_mix_and_alpha() {
     std::filesystem::remove_all(root);
 }
 
+void test_grade_parameter_keyframes_evaluate_in_source_time() {
+    auto node = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "animated");
+    node.parameter_keyframes["exposure"] = {
+        {seconds(2), 0.0}, {seconds(4), 2.0}};
+    ffgui::GradeGraph graph;
+    graph.add(node);
+    require(std::abs(ffgui::evaluate_grade_parameter(
+                         node, "exposure", -1.0, seconds(3)) - 1.0) < 0.000001,
+            "grade parameters must interpolate linearly in original source time");
+    float before[]{0.25F, 0.25F, 0.25F, 0.4F};
+    float middle[]{0.25F, 0.25F, 0.25F, 0.4F};
+    float after[]{0.25F, 0.25F, 0.25F, 0.4F};
+    ffgui::apply_grade_graph_rgba32f(before, 1, graph, seconds(1));
+    ffgui::apply_grade_graph_rgba32f(middle, 1, graph, seconds(3));
+    ffgui::apply_grade_graph_rgba32f(after, 1, graph, seconds(5));
+    require(std::abs(before[0] - 0.25F) < 0.00001F &&
+                std::abs(middle[0] - 0.5F) < 0.00001F &&
+                std::abs(after[0] - 1.0F) < 0.00001F &&
+                std::abs(after[3] - 0.4F) < 0.000001F,
+            "source-time keyframes must drive the common float renderer and preserve alpha");
+    auto invalid = node;
+    invalid.parameter_keyframes["exposure"] = {{seconds(2), 0.0}, {seconds(2), 1.0}};
+    require_throws<std::invalid_argument>([&] { invalid.validate(); },
+        "duplicate keyframe times must be rejected");
+}
+
+void test_shared_grade_node_updates_all_clips_as_one_undoable_edit() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"a", "asset-a", 0, seconds(2)});
+    timeline.append_clip(Clip{"b", "asset-b", 0, seconds(2)});
+    auto first = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "node-a");
+    first.shared_id = "shared-look";
+    ffgui::GradeGraph firstGraph;
+    firstGraph.add(first);
+    timeline.set_clip_grade_graph("a", firstGraph);
+    auto second = first;
+    second.id = "node-b";
+    second.parameter_keyframes["exposure"] = {{seconds(1), 0.0}, {seconds(3), 2.0}};
+    ffgui::GradeGraph secondGraph;
+    secondGraph.add(second);
+    timeline.set_clip_grade_graph("b", secondGraph);
+    const auto revisionBefore = timeline.revision();
+    first.parameters["exposure"] = 1.5;
+    timeline.set_shared_grade_node("shared-look", first);
+    require(timeline.revision() == revisionBefore + 1 &&
+                timeline.clips()[0].grade.nodes().front().parameters.at("exposure") == 1.5 &&
+                timeline.clips()[1].grade.nodes().front().parameters.at("exposure") == 1.5 &&
+                timeline.clips()[1].grade.nodes().front().id == "node-b" &&
+                timeline.clips()[1].grade.nodes().front().parameter_keyframes.at("exposure").size() == 2,
+            "a shared grade edit must synchronize values while preserving instance ids and animation");
+    timeline.undo();
+    require(timeline.clips()[0].grade.nodes().front().parameters.at("exposure") == 0.0 &&
+                timeline.clips()[1].grade.nodes().front().parameters.at("exposure") == 0.0,
+            "one undo must restore every clip connected to a shared grade node");
+    timeline.redo();
+    require(timeline.clips()[0].grade.nodes().front().parameters.at("exposure") == 1.5 &&
+                timeline.clips()[1].grade.nodes().front().parameters.at("exposure") == 1.5,
+            "one redo must reapply the complete shared grade edit");
+}
+
 void test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope() {
     const std::array<std::uint8_t, 16> pixels{
         0, 0, 255, 255, 0, 255, 0, 255,
@@ -1444,6 +1504,20 @@ void test_render_preflight_blocks_offline_and_unresolved_managed_media() {
                     return issue.code == "offline-grade-lut";
                 }),
             "an offline external LUT must block export during preflight");
+    TimelineModel animatedVideo;
+    animatedVideo.add_asset(MediaAsset{"animated", path, seconds(2)});
+    auto animatedClip = Clip{"animated-clip", "animated", 0, seconds(2)};
+    auto animatedNode = ffgui::make_default_grade_node(
+        ffgui::GradeNodeType::primary, "animated-primary");
+    animatedNode.parameter_keyframes["exposure"] = {{0, 0.0}, {seconds(1), 1.0}};
+    animatedClip.grade.add(std::move(animatedNode));
+    animatedVideo.append_clip(std::move(animatedClip));
+    report = ffgui::build_render_preflight(animatedVideo, {});
+    require(!report.can_render() &&
+                std::ranges::any_of(report.issues, [](const auto& issue) {
+                    return issue.code == "animated-grade-frame-server-required";
+                }),
+            "ordinary video keyframes must not silently export through a static LUT");
     std::filesystem::remove(path);
 }
 
@@ -1459,6 +1533,8 @@ int main() {
         {"float_grade_pipeline_preserves_alpha_and_node_mix", test_float_grade_pipeline_preserves_alpha_and_node_mix},
         {"advanced_grade_nodes_share_the_float_reference_contract", test_advanced_grade_nodes_share_the_float_reference_contract},
         {"external_lut_node_uses_ocio_and_preserves_mix_and_alpha", test_external_lut_node_uses_ocio_and_preserves_mix_and_alpha},
+        {"grade_parameter_keyframes_evaluate_in_source_time", test_grade_parameter_keyframes_evaluate_in_source_time},
+        {"shared_grade_node_updates_all_clips_as_one_undoable_edit", test_shared_grade_node_updates_all_clips_as_one_undoable_edit},
         {"scope_analyzer_builds_histogram_waveform_parade_and_vectorscope", test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope},
         {"oiio_probe_reports_exr_layers_alpha_and_color_space", test_oiio_probe_reports_exr_layers_alpha_and_color_space},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},

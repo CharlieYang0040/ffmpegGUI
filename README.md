@@ -7,8 +7,10 @@ Windows용 네이티브 마그네틱 컷 편집기입니다. 기존 Python `ffmp
 
 2026-08-12 기준으로 타임라인·출력·미디어 수집·프록시·관리형 컬러의 기반과 D3D11
 미리보기 경로를 한 차례 마감했습니다. 고급 GradeGraph는 Primary, Log Wheels,
-RGB/Hue Curves, HDR Zones, Color Warper와 Cube/3DL/CLF/CTF LUT/Look까지 동작하지만
-keyframe, shared grade, HDR 표시·출력, Unreal 전달과 세컨더리 컬러 도구는 아직 개발 중입니다.
+RGB/Hue Curves, HDR Zones, Color Warper와 Cube/3DL/CLF/CTF LUT/Look까지 동작합니다.
+공유 그레이드와 원본 시간 기준 파라미터 키프레임 저장·보간도 연결했으며, 키프레임의 실제
+미리보기·출력은 현재 이미지 시퀀스에 한해 지원합니다. 일반 영상의 시간 가변 컬러,
+HDR 표시·출력, Unreal 전달과 세컨더리 컬러 도구는 아직 개발 중입니다.
 완료 증거와 정확한 재개 순서는 [개발 계획](docs/development_plan.md)의
 `2026-08-12 단계 마감 기준점`을 기준으로 합니다. 현재 상태를 정식 완성판이나 릴리스
 준비 완료로 해석하지 않습니다.
@@ -59,11 +61,11 @@ Debug 빌드는 Qt와 필요한 GStreamer 런타임을 실행 폴더에 자동 �
 않습니다. 실행 가능한 배포본은 다음 명령으로 생성합니다.
 
 ```powershell
-.\scripts\package_release.ps1 -Version 0.1.0
-.\scripts\test_release_package.ps1 -Version 0.1.0
+.\scripts\package_release.ps1 -Version 0.1.1
+.\scripts\test_release_package.ps1 -Version 0.1.1
 ```
 
-배포용 EXE는 `out/release-v0.1.0/ffmpegGUI-next-v0.1.0-win-x64`에 있으며 Qt DLL,
+배포용 EXE는 `out/release-v0.1.1/ffmpegGUI-next-v0.1.1-win-x64`에 있으며 Qt DLL,
 QML 모듈과 필요한 GStreamer 런타임을 함께 포함합니다.
 
 `run_ges_smoke.ps1`은 CFR MP4, CFR MKV, VFR MKV를 생성해 트림된 4개 샷을 하나의

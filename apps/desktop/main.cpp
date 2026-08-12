@@ -606,6 +606,51 @@ int main(int argc, char* argv[]) {
                 QDir::toNativeSeparators(lutPath)) {
             return EXIT_FAILURE;
         }
+        controller.makeGradeNodeShared(gradeId);
+        editedGradeNodes = controller.selectedGradeNodes();
+        if (!editedGradeNodes.front().toMap().value("shared").toBool()) {
+            qCritical() << "grade smoke: source node did not become shared";
+            return EXIT_FAILURE;
+        }
+        controller.copyGradeNode(gradeId);
+        const auto sharedTargetClip = controller.clips().at(1).toMap();
+        const auto sharedTargetClipId = sharedTargetClip.value("id").toString();
+        controller.selectClip(sharedTargetClipId);
+        controller.pasteGradeNode();
+        auto sharedTargetNodes = controller.selectedGradeNodes();
+        if (sharedTargetNodes.size() != 1 ||
+            !sharedTargetNodes.front().toMap().value("shared").toBool()) {
+            qCritical() << "grade smoke: target shared paste failed" << sharedTargetNodes;
+            return EXIT_FAILURE;
+        }
+        const auto sharedTargetNodeId = sharedTargetNodes.front().toMap().value("id").toString();
+        controller.setGradeNodeName(sharedTargetNodeId, QStringLiteral("Shared Hero"));
+        controller.setGradeParameter(sharedTargetNodeId, QStringLiteral("exposure"), 0.75);
+        controller.undo();
+        controller.redo();
+        controller.selectClip(sharedTargetClipId);
+        controller.seek(sharedTargetClip.value("timelineInNs").toLongLong() + 100'000'000);
+        controller.toggleGradeParameterKeyframe(
+            sharedTargetNodeId, QStringLiteral("exposure"));
+        controller.seek(sharedTargetClip.value("timelineInNs").toLongLong() + 500'000'000);
+        controller.setGradeParameter(
+            sharedTargetNodeId, QStringLiteral("exposure"), 1.5);
+        sharedTargetNodes = controller.selectedGradeNodes();
+        if (!sharedTargetNodes.front().toMap().value("keyframedParameters").toStringList()
+                 .contains(QStringLiteral("exposure"))) {
+            qCritical() << "grade smoke: keyframe creation failed" << sharedTargetNodes;
+            return EXIT_FAILURE;
+        }
+        controller.selectClip(audioClipId);
+        editedGradeNodes = controller.selectedGradeNodes();
+        if (editedGradeNodes.front().toMap().value("name").toString() !=
+                QStringLiteral("Shared Hero") ||
+            std::abs(editedGradeNodes.front().toMap().value("parameters").toMap()
+                         .value("exposure").toDouble() - 0.75) > 0.0001 ||
+            !editedGradeNodes.front().toMap().value("keyframedParameters").toStringList().isEmpty()) {
+            qCritical() << "grade smoke: shared source synchronization failed" << editedGradeNodes;
+            return EXIT_FAILURE;
+        }
         if (importedAssets.front().toMap().value("kind").toString() == "imageSequence") {
             const auto submittedBefore = controller.scrubFramesSubmitted();
             controller.scrub(0, true);
@@ -667,6 +712,9 @@ int main(int argc, char* argv[]) {
         const auto loadedGrade = loadedGradeNodes.isEmpty()
             ? QVariantMap{} : loadedGradeNodes.front().toMap();
         const auto loadedGradeParameters = loadedGrade.value("parameters").toMap();
+        controller.selectClip(sharedTargetClipId);
+        const auto loadedSharedTargetNodes = controller.selectedGradeNodes();
+        controller.selectClip(audioClipId);
         return controller.durationNs() == expectedDuration && expectedDuration > 0 &&
                controller.clips().size() == expectedClipCount &&
                loadedAudio.value("audioGain").toDouble() == 1.25 &&
@@ -695,12 +743,17 @@ int main(int argc, char* argv[]) {
                controller.gifColors() == 2 && controller.gifDither() == 1 &&
                !controller.gifLoop() &&
                loadedGradeNodes.size() == 3 && loadedGrade.value("mixPercent").toInt() == 80 &&
-               loadedGrade.value("name").toString() == QStringLiteral("Hero Look") &&
-               std::abs(loadedGradeParameters.value("exposure").toDouble() - 1.25) < 0.0001 &&
+               loadedGrade.value("name").toString() == QStringLiteral("Shared Hero") &&
+               loadedGrade.value("shared").toBool() &&
+               std::abs(loadedGradeParameters.value("exposure").toDouble() - 0.75) < 0.0001 &&
                loadedGradeNodes.back().toMap().value("type").toInt() ==
                    static_cast<int>(ffgui::GradeNodeType::lut) &&
                loadedGradeNodes.back().toMap().value("externalPath").toString() ==
                    QDir::toNativeSeparators(lutPath) &&
+               loadedSharedTargetNodes.size() == 1 &&
+               loadedSharedTargetNodes.front().toMap().value("shared").toBool() &&
+               loadedSharedTargetNodes.front().toMap().value("keyframedParameters")
+                   .toStringList().contains(QStringLiteral("exposure")) &&
                expectedClipCount == importedClipCount + 4
             ? EXIT_SUCCESS
             : EXIT_FAILURE;

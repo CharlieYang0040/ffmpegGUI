@@ -68,7 +68,8 @@ RenderedTimelineFrame TimelineFrameServer::render(
             sequence.channel_mapping, sequence.exr_view});
         auto combinedGrade = compose_clip_grade(span.clip);
         auto processed = process_color_frame(
-            *source, asset->source_color(), color_pipeline, combinedGrade, output_space);
+            *source, asset->source_color(), color_pipeline, combinedGrade, output_space,
+            sourceTime);
         return RenderedTimelineFrame{
             std::move(source), std::move(processed), span.clip.id, asset->id(), requested,
             resolved, requested != resolved};

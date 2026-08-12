@@ -538,6 +538,39 @@ void TimelineModel::set_clip_grade_graph(const std::string& clip_id, GradeGraph 
     clips_[index].grade = std::move(graph);
 }
 
+void TimelineModel::set_shared_grade_node(
+    const std::string& shared_id, const GradeNode& replacement) {
+    if (shared_id.empty() || replacement.shared_id != shared_id) {
+        throw std::invalid_argument("shared grade node identity is invalid");
+    }
+    replacement.validate();
+    bool found = false;
+    bool changed = false;
+    for (const auto& clip : clips_) {
+        for (const auto& node : clip.grade.nodes()) {
+            if (node.shared_id != shared_id) continue;
+            found = true;
+            auto expected = replacement;
+            expected.id = node.id;
+            expected.parameter_keyframes = node.parameter_keyframes;
+            changed = changed || node != expected;
+        }
+    }
+    if (!found) throw std::out_of_range("shared grade node was not found");
+    if (!changed) return;
+    record_edit();
+    for (auto& clip : clips_) {
+        for (const auto& node : clip.grade.nodes()) {
+            if (node.shared_id != shared_id) continue;
+            auto* target = clip.grade.node(node.id);
+            auto synchronized = replacement;
+            synchronized.id = node.id;
+            synchronized.parameter_keyframes = node.parameter_keyframes;
+            *target = std::move(synchronized);
+        }
+    }
+}
+
 void TimelineModel::set_clip_dissolve(const std::string& clip_id, TimeNs transition_duration) {
     const auto index = index_of(clip_id);
     if (index == 0) {

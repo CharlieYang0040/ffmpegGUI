@@ -94,7 +94,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(int hdrPeakNits READ hdrPeakNits WRITE setHdrPeakNits NOTIFY colorPipelineChanged)
     Q_PROPERTY(int sdrWhiteNits READ sdrWhiteNits WRITE setSdrWhiteNits NOTIFY colorPipelineChanged)
     Q_PROPERTY(QString colorPipelineSummary READ colorPipelineSummary NOTIFY colorPipelineChanged)
-    Q_PROPERTY(QVariantList selectedGradeNodes READ selectedGradeNodes NOTIFY selectedClipChanged)
+    Q_PROPERTY(QVariantList selectedGradeNodes READ selectedGradeNodes NOTIFY gradeUiChanged)
     Q_PROPERTY(bool gradeClipboardAvailable READ gradeClipboardAvailable NOTIFY gradeClipboardChanged)
     Q_PROPERTY(bool scopesVisible READ scopesVisible WRITE setScopesVisible NOTIFY scopeSettingsChanged)
     Q_PROPERTY(int scopeMode READ scopeMode WRITE setScopeMode NOTIFY scopeSettingsChanged)
@@ -303,10 +303,13 @@ public slots:
     void copyGradeNode(const QString& nodeId);
     void pasteGradeNode();
     void resetGradeNode(const QString& nodeId);
+    void makeGradeNodeShared(const QString& nodeId);
+    void unlinkGradeNode(const QString& nodeId);
     void setGradeNodeEnabled(const QString& nodeId, bool enabled);
     void setGradeNodeName(const QString& nodeId, const QString& name);
     void setGradeNodeMix(const QString& nodeId, int percent);
     void setGradeParameter(const QString& nodeId, const QString& parameter, double value);
+    void toggleGradeParameterKeyframe(const QString& nodeId, const QString& parameter);
     void setGradeCurveMidpoint(
         const QString& nodeId, const QString& curveName, int adjustmentPercent);
     void setScopesVisible(bool visible);
@@ -362,6 +365,7 @@ signals:
     void scopeSettingsChanged();
     void scopeFrameChanged();
     void gradeClipboardChanged();
+    void gradeUiChanged();
     void gifEstimateChanged();
     void exportFinished(bool success, QUrl outputUrl);
 
@@ -374,6 +378,9 @@ private:
     };
 
     void publishTimeline(bool resetPlayhead = false);
+    void commitGradeNodeEdit(
+        const std::string& clip_id, ffgui::GradeGraph graph, const std::string& node_id);
+    [[nodiscard]] std::optional<ffgui::TimeNs> selectedClipSourceTime() const;
     void setStatus(QString status);
     void queuePreviewOperation(bool restorePosition);
     void startPreviewOperation();
@@ -398,6 +405,8 @@ private:
     [[nodiscard]] QString nextOutputPath() const;
     [[nodiscard]] bool ensureOutputDirectory();
     [[nodiscard]] std::string makeUniqueClipId(const std::string& prefix);
+    [[nodiscard]] std::string makeUniqueGradeNodeId();
+    [[nodiscard]] std::string makeUniqueSharedGradeId();
     void setSingleSelection(QString clipId);
 #ifdef FFGUI_HAS_GES
     struct PreviewOperationResult final {
@@ -454,6 +463,8 @@ private:
     std::uint64_t generated_caption_id_{};
     std::uint64_t generated_grade_node_id_{};
     std::optional<ffgui::GradeNode> grade_node_clipboard_;
+    QString grade_clipboard_source_clip_id_;
+    std::uint64_t generated_shared_grade_id_{};
     QString selected_caption_id_;
     bool stamp_enabled_{};
     QString stamp_worker_;

@@ -6,6 +6,7 @@
 #include "color/ocio_engine.hpp"
 
 #include <string>
+#include <cstdint>
 #include <vector>
 
 namespace ffgui {
@@ -20,7 +21,8 @@ struct ColorCube final {
     const SourceColorDescriptor& source_color,
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
-    const std::string& output_space);
+    const std::string& output_space,
+    std::int64_t source_time = 0);
 
 // Bake the exact CPU color path used by preview and float export into a .cube payload.
 // The resulting LUT can be attached to ordinary video/image inputs before timeline
@@ -30,14 +32,16 @@ struct ColorCube final {
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
     const std::string& output_space,
-    int cube_size = 33);
+    int cube_size = 33,
+    std::int64_t source_time = 0);
 
 [[nodiscard]] ColorCube build_color_cube(
     const SourceColorDescriptor& source_color,
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
     const std::string& output_space,
-    int cube_size = 33);
+    int cube_size = 33,
+    std::int64_t source_time = 0);
 
 // Builds the exact OCIO input/output Direct3D shader around the current creative
 // grade. The creative stage remains a working-space cube until individual grade
@@ -47,6 +51,7 @@ struct ColorCube final {
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
     const std::string& output_space,
-    int grade_cube_size = 33);
+    int grade_cube_size = 33,
+    std::int64_t source_time = 0);
 
 }  // namespace ffgui

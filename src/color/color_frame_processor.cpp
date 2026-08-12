@@ -16,7 +16,8 @@ FloatImageFrame process_color_frame(
     const SourceColorDescriptor& source_color,
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
-    const std::string& output_space) {
+    const std::string& output_space,
+    std::int64_t source_time) {
     if (source.rgba.size() != static_cast<std::size_t>(source.width) * source.height * 4) {
         throw std::invalid_argument("source float frame storage is invalid");
     }
@@ -39,12 +40,12 @@ FloatImageFrame process_color_frame(
         OcioEngine ocio(settings);
         ocio.transform_rgba32f(result.rgba.data(), source.width, source.height,
                                inputSpace, settings.working_space);
-        apply_grade_graph_rgba32f(result.rgba.data(), pixels, grade);
+        apply_grade_graph_rgba32f(result.rgba.data(), pixels, grade, source_time);
         ocio.transform_rgba32f(result.rgba.data(), source.width, source.height,
                                settings.working_space, output_space);
         result.color_space = output_space;
     } else {
-        apply_grade_graph_rgba32f(result.rgba.data(), pixels, grade);
+        apply_grade_graph_rgba32f(result.rgba.data(), pixels, grade, source_time);
     }
     if (source.premultiplied) {
         for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
@@ -60,7 +61,8 @@ ColorCube build_color_cube(
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
     const std::string& output_space,
-    int cube_size) {
+    int cube_size,
+    std::int64_t source_time) {
     if (cube_size < 2 || cube_size > 129) {
         throw std::invalid_argument("color cube size must be between 2 and 129");
     }
@@ -87,7 +89,7 @@ ColorCube build_color_cube(
         }
     }
     const auto processed = process_color_frame(
-        lattice, source_color, settings, grade, output_space);
+        lattice, source_color, settings, grade, output_space, source_time);
 
     ColorCube result;
     result.size = cube_size;
@@ -105,7 +107,8 @@ OcioGpuShader build_managed_gpu_shader(
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
     const std::string& output_space,
-    int grade_cube_size) {
+    int grade_cube_size,
+    std::int64_t source_time) {
     if (settings.mode == ColorPipelineMode::legacy ||
         source_color.input_color_space.empty() || settings.working_space.empty() ||
         output_space.empty()) {
@@ -129,7 +132,7 @@ OcioGpuShader build_managed_gpu_shader(
                            std::make_move_iterator(output.textures.end()));
     const auto graded = !grade.nodes().empty();
     if (graded) {
-        const auto cube = build_color_cube({}, {}, grade, {}, grade_cube_size);
+        const auto cube = build_color_cube({}, {}, grade, {}, grade_cube_size, source_time);
         OcioGpuTexture texture;
         texture.name = "ffgui_grade_lut";
         texture.sampler = "ffgui_grade_sampler";
@@ -165,9 +168,10 @@ std::string bake_color_cube(
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
     const std::string& output_space,
-    int cube_size) {
+    int cube_size,
+    std::int64_t source_time) {
     const auto values = build_color_cube(
-        source_color, settings, grade, output_space, cube_size);
+        source_color, settings, grade, output_space, cube_size, source_time);
     std::ostringstream cube;
     cube << "TITLE \"ffmpegGUI clip color\"\n"
          << "LUT_3D_SIZE " << cube_size << "\n"

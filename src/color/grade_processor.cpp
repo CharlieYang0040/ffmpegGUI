@@ -61,9 +61,29 @@ OCIO::ConstCPUProcessorRcPtr grade_lut_processor(const std::string& path) {
     }
 }
 
-double parameter(const GradeNode& node, const char* name, double fallback) {
+double parameter(
+    const GradeNode& node, const char* name, double fallback, std::int64_t sourceTime) {
+    if (const auto keyed = node.parameter_keyframes.find(name);
+        keyed != node.parameter_keyframes.end() && !keyed->second.empty()) {
+        const auto& values = keyed->second;
+        if (sourceTime <= values.front().source_time) return values.front().value;
+        if (sourceTime >= values.back().source_time) return values.back().value;
+        const auto upper = std::upper_bound(values.begin(), values.end(), sourceTime,
+            [](std::int64_t time, const GradeParameterKeyframe& keyframe) {
+                return time < keyframe.source_time;
+            });
+        const auto& right = *upper;
+        const auto& left = *(upper - 1);
+        const auto amount = static_cast<double>(sourceTime - left.source_time) /
+            static_cast<double>(right.source_time - left.source_time);
+        return std::lerp(left.value, right.value, amount);
+    }
     const auto found = node.parameters.find(name);
     return found == node.parameters.end() ? fallback : found->second;
+}
+
+double parameter(const GradeNode& node, const char* name, double fallback) {
+    return parameter(node, name, fallback, 0);
 }
 
 float curve_value(const std::vector<CurvePoint>& points, float value) {
@@ -369,11 +389,22 @@ void apply_color_warper(float* rgb, const GradeNode& node) {
 
 }  // namespace
 
-void apply_grade_graph_rgba32f(float* pixels, std::size_t pixel_count, const GradeGraph& graph) {
+void apply_grade_graph_rgba32f(
+    float* pixels, std::size_t pixel_count, const GradeGraph& graph,
+    std::int64_t source_time) {
     if (pixels == nullptr && pixel_count != 0) throw std::invalid_argument("grade pixels are null");
     const auto unsupported = graph.render_unsupported_nodes();
     if (!unsupported.empty()) throw std::invalid_argument("grade graph contains an unsupported render node");
-    for (const auto& node : graph.nodes()) {
+    for (const auto& storedNode : graph.nodes()) {
+        auto evaluatedNode = storedNode;
+        for (const auto& [name, keyframes] : storedNode.parameter_keyframes) {
+            if (!keyframes.empty()) {
+                evaluatedNode.parameters[name] = parameter(
+                    storedNode, name.c_str(), evaluatedNode.parameters.at(name), source_time);
+            }
+        }
+        evaluatedNode.parameter_keyframes.clear();
+        const auto& node = evaluatedNode;
         if (!node.enabled || node.mix <= 0.0) continue;
         const auto primary = node.type == GradeNodeType::primary
             ? std::optional<PrimaryState>{compile_primary(node)} : std::nullopt;
@@ -404,6 +435,12 @@ void apply_grade_graph_rgba32f(float* pixels, std::size_t pixel_count, const Gra
             rgba[3] = alpha;
         }
     }
+}
+
+double evaluate_grade_parameter(
+    const GradeNode& node, const std::string& name, double fallback,
+    std::int64_t source_time) {
+    return parameter(node, name.c_str(), fallback, source_time);
 }
 
 void validate_grade_lut_file(const std::string& path) {

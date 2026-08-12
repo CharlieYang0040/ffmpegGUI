@@ -52,6 +52,19 @@ void GradeNode::validate() const {
             throw std::invalid_argument("grade node curve is invalid");
         }
     }
+    for (const auto& [parameterName, keyframes] : parameter_keyframes) {
+        if (parameterName.empty() || !parameters.contains(parameterName) ||
+            !std::ranges::is_sorted(keyframes, {}, &GradeParameterKeyframe::source_time) ||
+            std::adjacent_find(keyframes.begin(), keyframes.end(),
+                [](const auto& left, const auto& right) {
+                    return left.source_time >= right.source_time;
+                }) != keyframes.end() ||
+            std::ranges::any_of(keyframes, [](const auto& keyframe) {
+                return keyframe.source_time < 0 || !std::isfinite(keyframe.value);
+            })) {
+            throw std::invalid_argument("grade parameter keyframes are invalid");
+        }
+    }
     if (type == GradeNodeType::lut && external_path.empty()) {
         throw std::invalid_argument("LUT node requires a file path");
     }

@@ -305,8 +305,8 @@
 | M3 프록시·캐시 | 부분 완료 | content-addressed EXR 캐시, 48프레임 증분 프록시, 최신 스크럽 요청 병합 | 사용자 캐시 위치·예상 용량·삭제/재생성 UI, 알파 보존 10-bit 중간 코덱 정책, 4K 100ms 목표 측정 |
 | M4 ACES/OCIO | 부분 완료 | Legacy 기본값, OCIO 2.5.2/ACES 2.0, CPU 기준 float 변환, D3D11 OCIO shader와 LUT, 입력 공간 재지정 | 모니터 Display/View 선택, 변환 우회, gamut warning, ACES 적용 전후 비교와 기술 노드 UX |
 | M4 HDR10 | 미완료 | 프로젝트 HDR 설정과 메타데이터 저장 계약 | scRGB/PQ swapchain, 모니터 이동 재검사, SDR white 보정, HDR fallback, HDR10 파일 메타데이터 검증 |
-| M5 Primary·스코프 | 부분 완료 | Primary 전체 파라미터, RGB Mixer/Curve 공통 렌더와 Waveform/Parade/Vectorscope/Histogram | 스코프 기준점, false color/pixel inspector, parameter keyframe |
-| M5 고급 그레이딩 | 부분 완료 | Log Wheels, RGB/Hue 곡선군, HDR Zones, Color Warper, 외부 LUT/Look의 CPU 기준·GPU LUT·UI 연결과 이름·복사·초기화 | 공유 grade, keyframe |
+| M5 Primary·스코프 | 부분 완료 | Primary 전체 파라미터, RGB Mixer/Curve 공통 렌더, 원본 시간 keyframe 모델과 이미지 시퀀스 렌더, Waveform/Parade/Vectorscope/Histogram | 일반 영상 시간 가변 렌더, 스코프 기준점, false color/pixel inspector |
+| M5 고급 그레이딩 | 부분 완료 | Log Wheels, RGB/Hue 곡선군, HDR Zones, Color Warper, 외부 LUT/Look, 공유 grade의 저장·UI·원자적 undo/redo | 시간 가변 일반 영상의 CPU/GPU 일치 검증 |
 | M6 LUT·Unreal 전달 | 미완료 | 공통 컬러 결과를 내부 33³ LUT로 베이크하는 기반 | 33³/65³ 외부 Cube, shaper, look/display 구분, `.ocioz`, CLF/CTF, manifest, Unreal 사전 검사·실기 검증 |
 | R1 네이티브 GPU 프레임 | 완료 | native GES asset/effect, D3D11 source download 0회, VFR·2배속·디졸브·오디오 및 fallback 회귀 | 최종 릴리스 GPU 매트릭스에서 반복 검증 |
 | 세컨더리 도구 | 미착수 | 저장·렌더 계약도 아직 확정 전 | qualifier, matte 정리, power window, mask/outside, tracking, shot still, wipe/split, shot matching |
@@ -320,18 +320,18 @@
 - **이번 단계에서 닫은 핵심:** 관리형 컬러를 클립별로 디졸브 전에 적용하면서도 source에서
   compositor까지 D3D11 texture를 유지한다. Primary, Log, RGB/Hue Curves, HDR Zones,
   Color Warper는 공통 float 기준 렌더와 일반 영상용 GPU LUT 경로를 공유한다.
-- **아직 완성 제품으로 볼 수 없는 이유:** 파라미터 keyframe·shared grade,
+- **아직 완성 제품으로 볼 수 없는 이유:** 일반 영상의 시간 가변 grade,
   Display/View 검수 도구, Windows HDR, Unreal 전달 패키지, qualifier·mask·tracking이 남아 있다.
   대규모 입력·깨끗한 PC·여러 GPU·실제 Unreal 버전의 최종 품질 감사도 수행 전이다.
-- **재개 지점:** 아래 R2의 파라미터 keyframe과 shared grade부터 시작한다. R2 완료 전에는 HDR나
+- **재개 지점:** 아래 R2의 일반 영상 시간 가변 grade 렌더부터 시작한다. R2 완료 전에는 HDR나
   세컨더리로 건너뛰지 않으며, 각 단계는 미리보기·출력·저장·undo/redo 회귀가 모두 연결된
   경우에만 완료로 바꾼다.
 
 #### 안정 기준선
 
-- 단계 마감 기준 커밋은 `681c4e8`이다. 이 커밋까지 native D3D11 source color,
-  관리형 컬러·디졸브, 고급 GradeGraph, CPU fallback, 데스크톱 smoke와 4K 탐색 soak가
-  통과했다. 문서 마감 커밋은 이 기준 위에 문서만 변경한다.
+- `next-v0.1.1` 마감은 native D3D11 source color, 관리형 컬러·디졸브, 고급 GradeGraph,
+  외부 Look, 공유 grade와 이미지 시퀀스 keyframe까지 포함한다. Debug CTest, GES의 GPU/system/
+  CPU 경로, 전체 desktop smoke와 독립 배포본 검증을 릴리스 게이트로 사용한다.
 - 첫 `GESBaseEffect` 직접 생성 실험은 asset이 없어 `nleobject`를 만들지 못했다. 최종 구현은
   `GESEffect`의 extractable/asset 계약을 유지한 하위 타입에서 `create_element`만 재정의해
   converter 없는 유효한 `nleoperation`을 생성한다.
@@ -350,7 +350,7 @@
 - [x] 디졸브·straight alpha·VFR·2배속·오디오 연속성 회귀
 - [x] system compositor와 CPU color fallback 및 전체 desktop smoke 통과
 
-#### R2. 컬러 노드 실행 계약 완성 — 진행 중
+#### R2. 컬러 노드 실행 계약 완성 — 부분 완료로 마감
 
 - [x] `GradeGraph`의 공간 비의존 노드가 하나의 순서형 float 계약으로 CPU 기준 렌더를 갖는다.
 - [x] 같은 파라미터를 OCIO/D3D11 동적 shader 또는 LUT 자원으로 게시해 일반 영상, 이미지
@@ -359,14 +359,19 @@
 - [x] Cube/3DL/CLF/CTF LUT/Look 파일 로더, 파일 검증, float 렌더,
   GPU LUT와 프로젝트 저장을 한 묶음으로 연결한다.
 - [x] 노드 초기화·복사·붙여넣기를 기존 타임라인 command와 undo/redo에 통합한다.
-- [ ] **다음 재개 작업:** 파라미터 keyframe과 shared grade를 같은 저장 버전으로 묶는다.
+- [x] 프로젝트 형식 v4에 공유 ID와 원본 시간 기준 파라미터 keyframe을 함께 저장한다.
+- [x] 공유 노드의 정적 값을 연결된 모든 클립에 한 번의 편집 명령으로 전파하고, 각 샷의
+  keyframe은 독립적으로 유지한다.
+- [x] 원본 시간 보간을 공통 float 처리기와 이미지 시퀀스 미리보기·최종 출력에 연결한다.
+- [x] 일반 영상 keyframe을 정적 LUT로 잘못 출력하지 않도록 UI에서 생성을 숨기고 사전 검사에서 차단한다.
+- [ ] **다음 재개 작업:** 일반 영상의 source PTS마다 grade를 평가하는 시간 가변 GPU/최종 프레임 서버를 연결한다.
 - [ ] 각 노드의 bypass/mix/order/keyframe CPU·GPU golden patch 비교를 통과시킨다.
 
 외부 Look은 OpenColorIO `FileTransform`으로 한 번 검증·컴파일해 파일 경로, 수정 시간과 크기로
 캐시한다. 작업 색공간의 창작 노드로 적용한 뒤 공통 33³ GPU texture에도 포함하며, 기술적
 입력·표시·출력 변환은 프로젝트 컬러 설정으로 분리한다. 파일이 없어지거나 손상되면 출력
-사전 검사에서 차단한다. R2는 시간 좌표가 필요한 keyframe과 shared grade가 남아 있어 완료가
-아니며, 두 항목과 CPU·GPU golden patch 비교를 끝낸 뒤 R3로 이동한다.
+사전 검사에서 차단한다. 공유 grade와 이미지 시퀀스 keyframe은 이번 마감 범위에서 완료했다.
+일반 영상의 시간 가변 source 렌더와 CPU·GPU golden patch 비교를 끝낸 뒤에만 R3로 이동한다.
 
 #### R3. 검수용 표시와 스코프
 

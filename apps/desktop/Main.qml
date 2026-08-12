@@ -1202,6 +1202,13 @@ ApplicationWindow {
                                             font.bold: true
                                             TapHandler { onTapped: root.expandedGradeNode = root.expandedGradeNode === gradeNode.modelData.id ? "" : gradeNode.modelData.id }
                                         }
+                                        Label {
+                                            visible: gradeNode.modelData.shared
+                                            text: "공유"
+                                            color: "#8fc5a6"
+                                            font.pixelSize: 10
+                                            font.bold: true
+                                        }
                                         AppButton { text: "↑"; compact: true; onClicked: EditorController.moveGradeNode(gradeNode.modelData.id, -1) }
                                         AppButton { text: "↓"; compact: true; onClicked: EditorController.moveGradeNode(gradeNode.modelData.id, 1) }
                                         AppButton { text: "×"; compact: true; danger: true; onClicked: EditorController.removeGradeNode(gradeNode.modelData.id) }
@@ -1221,12 +1228,65 @@ ApplicationWindow {
                                             onEditingFinished: EditorController.setGradeNodeName(
                                                 gradeNode.modelData.id, text)
                                         }
+                                        RowLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            Label {
+                                                Layout.fillWidth: true
+                                                text: gradeNode.modelData.shared
+                                                      ? "연결된 클립에 함께 적용"
+                                                      : "이 클립에만 적용"
+                                                color: gradeNode.modelData.shared ? "#8fc5a6" : "#7f8c9c"
+                                                font.pixelSize: 10
+                                            }
+                                            AppButton {
+                                                text: gradeNode.modelData.shared ? "연결 해제" : "공유로 전환"
+                                                compact: true
+                                                onClicked: {
+                                                    if (gradeNode.modelData.shared)
+                                                        EditorController.unlinkGradeNode(gradeNode.modelData.id)
+                                                    else
+                                                        EditorController.makeGradeNodeShared(gradeNode.modelData.id)
+                                                }
+                                            }
+                                        }
                                         Label { text: "혼합"; color: "#9aa7b7" }
                                         SpinBox {
                                             Layout.fillWidth: true; from: 0; to: 100
                                             value: gradeNode.modelData.mixPercent
                                             textFromValue: function(value) { return value + "%" }
                                             onValueModified: EditorController.setGradeNodeMix(gradeNode.modelData.id, value)
+                                        }
+                                        RowLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.keyframeSupported &&
+                                                     gradeNode.modelData.parameterNames.length > 0
+                                            Label { text: "키프레임"; color: "#9aa7b7" }
+                                            ComboBox {
+                                                id: keyframeParameterPicker
+                                                Layout.fillWidth: true
+                                                model: gradeNode.modelData.parameterNames
+                                            }
+                                            AppButton {
+                                                readonly property bool keyed:
+                                                    gradeNode.modelData.keyframedParameters.indexOf(
+                                                        keyframeParameterPicker.currentText) >= 0
+                                                readonly property bool atCurrent:
+                                                    gradeNode.modelData.keyframesAtPlayhead.indexOf(
+                                                        keyframeParameterPicker.currentText) >= 0
+                                                text: atCurrent ? "◆" : "◇"
+                                                compact: true
+                                                onClicked: EditorController.toggleGradeParameterKeyframe(
+                                                    gradeNode.modelData.id,
+                                                    keyframeParameterPicker.currentText)
+                                                ToolTip.visible: hovered
+                                                ToolTip.text: atCurrent
+                                                    ? "현재 원본 프레임의 키프레임 제거"
+                                                    : keyed
+                                                      ? "현재 원본 프레임에 키프레임 추가"
+                                                      : "이 파라미터의 첫 키프레임 추가"
+                                            }
                                         }
                                         Label {
                                             visible: gradeNode.modelData.type === 7
