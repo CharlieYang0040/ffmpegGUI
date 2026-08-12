@@ -292,7 +292,7 @@
 - [x] Primary 전체 창작 파라미터, Log Wheels, RGB/Hue Curves, HDR Zones, Color Warper 공통 float 렌더
 - [x] 고급 노드의 일반 영상 GPU LUT·이미지 시퀀스 CPU 기준 경로와 편집 UI 연결
 
-### 2026-08-12 재정비 기준점
+### 2026-08-12 단계 마감 기준점
 
 이 표는 UI가 존재하는지보다 실제 미리보기·출력·저장·회귀 검증이 연결되었는지를 기준으로
 판정한다. `부분 완료`는 모델이나 일부 렌더 경로만 존재해 원래 완료 조건을 아직 만족하지
@@ -312,10 +312,26 @@
 | 세컨더리 도구 | 미착수 | 저장·렌더 계약도 아직 확정 전 | qualifier, matte 정리, power window, mask/outside, tracking, shot still, wipe/split, shot matching |
 | 최종 품질 게이트 | 미완료 | Debug 자동 회귀와 여러 실제 미디어 smoke/soak 기준선 | 전체 입력 매트릭스, CPU/GPU 수치 비교, HDR 다중 모니터, Unreal 5.5–5.8, 깨끗한 PC 패키지 |
 
+#### 한눈에 보는 현재 상태
+
+- **지금 사용할 수 있는 기반:** 마그네틱 타임라인 편집, 전체 타임라인 재생·탐색, VFR/GIF/스틸/
+  이미지 시퀀스/EXR 수집, 프로젝트별 자동 버전 출력, 프록시·썸네일, 문구·스탬프, 기본 컬러와
+  고급 GradeGraph, 스코프, D3D11 미리보기와 CPU 대체 경로가 하나의 프로젝트 모델에 연결되어 있다.
+- **이번 단계에서 닫은 핵심:** 관리형 컬러를 클립별로 디졸브 전에 적용하면서도 source에서
+  compositor까지 D3D11 texture를 유지한다. Primary, Log, RGB/Hue Curves, HDR Zones,
+  Color Warper는 공통 float 기준 렌더와 일반 영상용 GPU LUT 경로를 공유한다.
+- **아직 완성 제품으로 볼 수 없는 이유:** 외부 LUT/Look, 파라미터 keyframe·shared grade,
+  Display/View 검수 도구, Windows HDR, Unreal 전달 패키지, qualifier·mask·tracking이 남아 있다.
+  대규모 입력·깨끗한 PC·여러 GPU·실제 Unreal 버전의 최종 품질 감사도 수행 전이다.
+- **재개 지점:** 아래 R2의 외부 LUT/Look 파일 로더부터 시작한다. R2 완료 전에는 HDR나
+  세컨더리로 건너뛰지 않으며, 각 단계는 미리보기·출력·저장·undo/redo 회귀가 모두 연결된
+  경우에만 완료로 바꾼다.
+
 #### 안정 기준선
 
-- 기준 커밋은 `5d389d1`이다. 이 커밋까지 D3D11 compositor, 관리형 컬러, 디졸브,
-  CPU fallback, 데스크톱 smoke와 4K 탐색 soak가 통과했다.
+- 단계 마감 기준 커밋은 `681c4e8`이다. 이 커밋까지 native D3D11 source color,
+  관리형 컬러·디졸브, 고급 GradeGraph, CPU fallback, 데스크톱 smoke와 4K 탐색 soak가
+  통과했다. 문서 마감 커밋은 이 기준 위에 문서만 변경한다.
 - 첫 `GESBaseEffect` 직접 생성 실험은 asset이 없어 `nleobject`를 만들지 못했다. 최종 구현은
   `GESEffect`의 extractable/asset 계약을 유지한 하위 타입에서 `create_element`만 재정의해
   converter 없는 유효한 `nleoperation`을 생성한다.
@@ -334,15 +350,21 @@
 - [x] 디졸브·straight alpha·VFR·2배속·오디오 연속성 회귀
 - [x] system compositor와 CPU color fallback 및 전체 desktop smoke 통과
 
-#### R2. 컬러 노드 실행 계약 완성 — 진행 중
+#### R2. 컬러 노드 실행 계약 완성 — 부분 완료 후 일시 마감
 
 - [x] `GradeGraph`의 공간 비의존 노드가 하나의 순서형 float 계약으로 CPU 기준 렌더를 갖는다.
 - [x] 같은 파라미터를 OCIO/D3D11 동적 shader 또는 LUT 자원으로 게시해 일반 영상, 이미지
   시퀀스, 미리보기, 최종 출력 사이의 결과를 맞춘다.
 - [x] Primary/Log/HDR wheels, RGB/Hue 곡선군, Warper를 공통 렌더와 UI에 연결했다.
-- LUT/Look 파일 로더와 기술 변환 분리 UI를 연결한다.
-- 파라미터 keyframe, 노드 편집 command, 전체 undo/redo, shared grade를 같은 저장 버전으로 묶는다.
-- 각 노드는 bypass/mix/order/keyframe의 CPU·GPU golden patch 비교를 통과해야 완료다.
+- [ ] **다음 재개 작업:** Cube/3DL/CLF/CTF LUT/Look 파일 로더, 파일 검증, float 렌더,
+  GPU LUT와 프로젝트 저장을 한 묶음으로 연결한다.
+- [ ] 노드 초기화·복사·붙여넣기를 기존 타임라인 command와 undo/redo에 통합한다.
+- [ ] 파라미터 keyframe과 shared grade를 같은 저장 버전으로 묶는다.
+- [ ] 각 노드의 bypass/mix/order/keyframe CPU·GPU golden patch 비교를 통과시킨다.
+
+R2는 기반 노드 렌더가 실제 동작하지만 위 네 항목이 남아 있으므로 완료가 아니다. 재개할 때는
+LUT 파일 처리와 노드 편집 명령을 먼저 끝내고, 시간 좌표가 필요한 keyframe을 별도 변경으로
+구현한 뒤 R3로 이동한다.
 
 #### R3. 검수용 표시와 스코프
 
@@ -410,6 +432,11 @@
   파일 단위 content-addressed 캐시라 변경되지 않은 프레임을 재사용한다. 재생·출력 프록시도
   48프레임 intra 구간으로 주소화한다. 원본 한 프레임이 바뀌면 해당 구간만 다시 인코딩하고
   나머지 구간은 재사용한 뒤 최종 MKV/MOV를 stream-copy로 빠르게 다시 결합한다.
+
+2026-08-12 단계 마감 재검증은 Debug 전체 빌드, CTest 코어·타임라인 2/2,
+GES GPU/system compositor/CPU color 3경로와 전체 desktop smoke를 연속 실행해 모두 통과했다.
+GES 회귀는 VFR·2배속·source-alpha 디졸브가 포함된 4샷을 2.325초 동안 재생했고 최대 오디오
+gap은 0ns였다. 아래는 이 재검증 이전부터 누적해 유지하는 상세 기준선이다.
 
 검증 기준선: Debug 빌드, 코어 47/47와 타임라인 테스트 통과. 누락 1장을 포함한
 1001–1048 PNG 시퀀스를 별도 환경 변수 없이 Debug EXE에서 가져와 프로젝트 v3
