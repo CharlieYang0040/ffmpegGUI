@@ -1,5 +1,6 @@
 #include "integration/ges/ges_sequence_player.hpp"
 #include "integration/ges/gst_color_lut_filter.hpp"
+#include "integration/ges/gst_d3d11_color_bin.hpp"
 #include "integration/ges/gst_d3d11_color_lut_filter.hpp"
 
 #include "color/color_frame_processor.hpp"
@@ -12,6 +13,7 @@
 #define GST_USE_UNSTABLE_API
 
 #include <ges/ges.h>
+#include <ges/ges-frame-composition-meta.h>
 #include <gst/gst.h>
 #include <gst/video/videooverlay.h>
 #include <gst/video/video.h>
@@ -31,6 +33,195 @@
 
 namespace ffgui {
 namespace {
+
+typedef struct _FfguiD3DMixer FfguiD3DMixer;
+typedef struct _FfguiD3DMixerClass FfguiD3DMixerClass;
+
+struct _FfguiD3DMixer {
+    GstBin parent_instance;
+    GstElement* compositor{};
+    gint composition_frames{};
+    gint composition_meta_frames{};
+    gint blended_frames{};
+};
+
+struct _FfguiD3DMixerClass {
+    GstBinClass parent_class;
+};
+
+G_DEFINE_TYPE(FfguiD3DMixer, ffgui_d3d_mixer, GST_TYPE_BIN)
+
+GstStaticPadTemplate ffgui_d3d_mixer_src_template = GST_STATIC_PAD_TEMPLATE(
+    "src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw(ANY)"));
+GstStaticPadTemplate ffgui_d3d_mixer_sink_template = GST_STATIC_PAD_TEMPLATE(
+    "sink_%u", GST_PAD_SINK, GST_PAD_REQUEST, GST_STATIC_CAPS("video/x-raw(ANY)"));
+
+void apply_frame_composition_meta(
+    FfguiD3DMixer* mixer, GstPad* pad, GstBuffer* buffer) {
+    g_atomic_int_inc(&mixer->composition_frames);
+    auto* meta = buffer != nullptr
+        ? reinterpret_cast<GESFrameCompositionMeta*>(
+            gst_buffer_get_meta(buffer, GES_TYPE_META_FRAME_COMPOSITION))
+        : nullptr;
+    if (meta != nullptr) {
+        g_atomic_int_inc(&mixer->composition_meta_frames);
+        if (meta->alpha > 0.001 && meta->alpha < 0.999) {
+            g_atomic_int_inc(&mixer->blended_frames);
+        }
+        g_object_set(
+            pad,
+            "alpha", std::clamp(meta->alpha, 0.0, 1.0),
+            "zorder", meta->zorder,
+            "xpos", static_cast<int>(std::lround(meta->posx)),
+            "ypos", static_cast<int>(std::lround(meta->posy)),
+            "operator", meta->_operator,
+            nullptr);
+        if (meta->width >= 0.0) {
+            g_object_set(pad, "width", static_cast<int>(std::lround(meta->width)), nullptr);
+        }
+        if (meta->height >= 0.0) {
+            g_object_set(pad, "height", static_cast<int>(std::lround(meta->height)), nullptr);
+        }
+    }
+}
+
+GstPadProbeReturn ffgui_d3d_mixer_buffer_probe(
+    GstPad* pad, GstPadProbeInfo* info, gpointer user_data) {
+    if ((GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
+        apply_frame_composition_meta(
+            reinterpret_cast<FfguiD3DMixer*>(user_data), pad,
+            GST_PAD_PROBE_INFO_BUFFER(info));
+    }
+    return GST_PAD_PROBE_OK;
+}
+
+void release_d3d_mixer_probe(gpointer user_data) {
+    gst_object_unref(user_data);
+}
+
+GstPad* ffgui_d3d_mixer_request_pad(
+    GstElement* element, GstPadTemplate*, const gchar* name, const GstCaps*) {
+    auto* self = reinterpret_cast<FfguiD3DMixer*>(element);
+    auto* mixerPad = gst_element_request_pad_simple(self->compositor, "sink_%u");
+    if (mixerPad == nullptr) return nullptr;
+    gst_pad_add_probe(
+        mixerPad, GST_PAD_PROBE_TYPE_BUFFER, ffgui_d3d_mixer_buffer_probe,
+        gst_object_ref(self), release_d3d_mixer_probe);
+    auto* ghost = gst_ghost_pad_new(name, mixerPad);
+    if (ghost == nullptr) {
+        gst_element_release_request_pad(self->compositor, mixerPad);
+        gst_object_unref(mixerPad);
+        return nullptr;
+    }
+    gst_pad_set_active(ghost, TRUE);
+    if (!gst_element_add_pad(element, ghost)) {
+        gst_pad_set_active(ghost, FALSE);
+        gst_object_unref(ghost);
+        gst_element_release_request_pad(self->compositor, mixerPad);
+        gst_object_unref(mixerPad);
+        return nullptr;
+    }
+    gst_object_unref(mixerPad);
+    return ghost;
+}
+
+void ffgui_d3d_mixer_release_pad(GstElement* element, GstPad* pad) {
+    auto* self = reinterpret_cast<FfguiD3DMixer*>(element);
+    auto* target = GST_IS_GHOST_PAD(pad)
+        ? gst_ghost_pad_get_target(GST_GHOST_PAD(pad)) : nullptr;
+    gst_pad_set_active(pad, FALSE);
+    gst_element_remove_pad(element, pad);
+    if (target != nullptr) {
+        gst_element_release_request_pad(self->compositor, target);
+        gst_object_unref(target);
+    }
+}
+
+void ffgui_d3d_mixer_constructed(GObject* object) {
+    G_OBJECT_CLASS(ffgui_d3d_mixer_parent_class)->constructed(object);
+    auto* self = reinterpret_cast<FfguiD3DMixer*>(object);
+    self->compositor = gst_element_factory_make("d3d11compositor", nullptr);
+    if (self->compositor == nullptr) return;
+    g_object_set(
+        self->compositor,
+        "background", 1,
+        "ignore-inactive-pads", TRUE,
+        nullptr);
+    gst_bin_add(GST_BIN(self), self->compositor);
+    auto* source = gst_element_get_static_pad(self->compositor, "src");
+    auto* ghost = source != nullptr ? gst_ghost_pad_new("src", source) : nullptr;
+    if (source != nullptr) gst_object_unref(source);
+    if (ghost != nullptr) {
+        gst_pad_set_active(ghost, TRUE);
+        gst_element_add_pad(GST_ELEMENT(self), ghost);
+    }
+}
+
+void ffgui_d3d_mixer_class_init(FfguiD3DMixerClass* klass) {
+    auto* objectClass = G_OBJECT_CLASS(klass);
+    auto* elementClass = GST_ELEMENT_CLASS(klass);
+    objectClass->constructed = ffgui_d3d_mixer_constructed;
+    elementClass->request_new_pad = ffgui_d3d_mixer_request_pad;
+    elementClass->release_pad = ffgui_d3d_mixer_release_pad;
+    gst_element_class_add_static_pad_template(elementClass, &ffgui_d3d_mixer_src_template);
+    gst_element_class_add_static_pad_template(elementClass, &ffgui_d3d_mixer_sink_template);
+    gst_element_class_set_static_metadata(
+        elementClass, "ffmpegGUI D3D11 GES mixer", "Filter/Editor/Video",
+        "Applies GES frame composition metadata to a D3D11 compositor",
+        "ffmpegGUI contributors");
+}
+
+void ffgui_d3d_mixer_init(FfguiD3DMixer*) {}
+
+typedef struct _FfguiD3DVideoTrack FfguiD3DVideoTrack;
+typedef struct _FfguiD3DVideoTrackClass FfguiD3DVideoTrackClass;
+
+struct _FfguiD3DVideoTrack {
+    GESVideoTrack parent_instance;
+};
+
+struct _FfguiD3DVideoTrackClass {
+    GESVideoTrackClass parent_class;
+};
+
+G_DEFINE_TYPE(FfguiD3DVideoTrack, ffgui_d3d_video_track, GES_TYPE_VIDEO_TRACK)
+
+GstElement* ffgui_d3d_video_track_create_mixer(GESTrack*) {
+    return GST_ELEMENT(g_object_new(ffgui_d3d_mixer_get_type(), nullptr));
+}
+
+void ffgui_d3d_video_track_class_init(FfguiD3DVideoTrackClass* klass) {
+    GES_TRACK_CLASS(klass)->get_mixing_element = ffgui_d3d_video_track_create_mixer;
+}
+
+void ffgui_d3d_video_track_init(FfguiD3DVideoTrack*) {}
+
+GstElement* create_d3d_video_gap(GESTrack*) {
+    auto* bin = gst_bin_new(nullptr);
+    auto* source = gst_element_factory_make("videotestsrc", nullptr);
+    auto* rate = gst_element_factory_make("videorate", nullptr);
+    if (bin == nullptr || source == nullptr || rate == nullptr) {
+        if (source != nullptr) gst_object_unref(source);
+        if (rate != nullptr) gst_object_unref(rate);
+        if (bin != nullptr) gst_object_unref(bin);
+        return nullptr;
+    }
+    g_object_set(source, "pattern", 2, nullptr);
+    gst_bin_add_many(GST_BIN(bin), source, rate, nullptr);
+    if (!gst_element_link(source, rate)) {
+        gst_object_unref(bin);
+        return nullptr;
+    }
+    auto* sourcePad = gst_element_get_static_pad(rate, "src");
+    auto* ghost = gst_ghost_pad_new("src", sourcePad);
+    gst_object_unref(sourcePad);
+    if (ghost == nullptr || !gst_element_add_pad(bin, ghost)) {
+        if (ghost != nullptr) gst_object_unref(ghost);
+        gst_object_unref(bin);
+        return nullptr;
+    }
+    return bin;
+}
 
 std::runtime_error glib_error(const std::string& prefix, GError* error);
 
@@ -142,9 +333,7 @@ void add_legacy_color_effect(GESUriClip* uri_clip, const ClipColor& color) {
 void add_color_lut_effect(
     GESUriClip* uri_clip, const std::string& lut_id, bool use_d3d11) {
     const auto description = use_d3d11
-        ? "d3d11upload ! video/x-raw(memory:D3D11Memory),format=RGBA64_LE ! "
-          "ffguilut3d11 lut-id=" + lut_id +
-          " ! d3d11download ! video/x-raw,format=RGBA64_LE ! videoconvert"
+        ? "ffguid3dcolor lut-id=" + lut_id
         : "videoconvert ! video/x-raw,format=RGBA64_LE ! ffguilut3d lut-id=" + lut_id +
           " ! videoconvert";
     auto* effect = ges_effect_new(description.c_str());
@@ -158,9 +347,7 @@ void add_color_lut_effect(
 
 void add_ocio_shader_effect(GESUriClip* uri_clip, const std::string& shader_id) {
     const auto description =
-        "d3d11upload ! video/x-raw(memory:D3D11Memory),format=RGBA64_LE ! "
-        "ffguilut3d11 shader-id=" + shader_id +
-        " ! d3d11download ! video/x-raw,format=RGBA64_LE ! videoconvert";
+        "ffguid3dcolor shader-id=" + shader_id;
     auto* effect = ges_effect_new(description.c_str());
     GError* error = nullptr;
     if (effect == nullptr || !ges_clip_add_top_effect(
@@ -212,6 +399,93 @@ std::string take_bus_error(GstElement* element) {
     return detail;
 }
 
+struct PreviewGraphStats final {
+    std::uint64_t d3d_compositors{};
+    std::uint64_t d3d_downloads{};
+    std::uint64_t system_compositors{};
+    std::uint64_t composition_frames{};
+    std::uint64_t composition_meta_frames{};
+    std::uint64_t blended_frames{};
+};
+
+PreviewGraphStats inspect_preview_graph(GstElement* root) {
+    PreviewGraphStats stats;
+    if (root == nullptr || !GST_IS_BIN(root)) return stats;
+    auto* iterator = gst_bin_iterate_recurse(GST_BIN(root));
+    GValue value = G_VALUE_INIT;
+    while (true) {
+        const auto result = gst_iterator_next(iterator, &value);
+        if (result == GST_ITERATOR_OK) {
+            auto* element = GST_ELEMENT(g_value_get_object(&value));
+            auto* factory = element != nullptr ? gst_element_get_factory(element) : nullptr;
+            const auto* name = factory != nullptr
+                ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)) : nullptr;
+            if (g_strcmp0(name, "d3d11compositor") == 0) ++stats.d3d_compositors;
+            else if (g_strcmp0(name, "d3d11download") == 0) ++stats.d3d_downloads;
+            else if (g_strcmp0(name, "compositor") == 0) ++stats.system_compositors;
+            if (G_TYPE_CHECK_INSTANCE_TYPE(element, ffgui_d3d_mixer_get_type())) {
+                auto* mixer = reinterpret_cast<FfguiD3DMixer*>(element);
+                stats.composition_frames += static_cast<std::uint64_t>(
+                    std::max(0, g_atomic_int_get(&mixer->composition_frames)));
+                stats.composition_meta_frames += static_cast<std::uint64_t>(
+                    std::max(0, g_atomic_int_get(&mixer->composition_meta_frames)));
+                stats.blended_frames += static_cast<std::uint64_t>(
+                    std::max(0, g_atomic_int_get(&mixer->blended_frames)));
+            }
+            g_value_reset(&value);
+            continue;
+        }
+        if (result == GST_ITERATOR_RESYNC) {
+            gst_iterator_resync(iterator);
+            continue;
+        }
+        break;
+    }
+    if (G_VALUE_TYPE(&value) != 0) g_value_unset(&value);
+    gst_iterator_free(iterator);
+    return stats;
+}
+
+GESTimeline* create_preview_timeline(bool direct_d3d_compositor) {
+    if (!direct_d3d_compositor) return ges_timeline_new_audio_video();
+
+    auto* timeline = ges_timeline_new();
+    auto* audioTrack = ges_audio_track_new();
+    auto* trackCaps = gst_caps_new_empty_simple("video/x-raw");
+    auto* videoTrack = trackCaps != nullptr
+        ? GES_TRACK(g_object_new(
+            ffgui_d3d_video_track_get_type(),
+            "track-type", GES_TRACK_TYPE_VIDEO,
+            "caps", trackCaps,
+            nullptr))
+        : nullptr;
+    if (trackCaps != nullptr) gst_caps_unref(trackCaps);
+    if (videoTrack != nullptr) {
+        ges_track_set_create_element_for_gap_func(videoTrack, create_d3d_video_gap);
+    }
+    if (timeline == nullptr || audioTrack == nullptr || videoTrack == nullptr) {
+        if (videoTrack != nullptr) gst_object_unref(videoTrack);
+        if (audioTrack != nullptr) gst_object_unref(audioTrack);
+        if (timeline != nullptr) gst_object_unref(timeline);
+        return nullptr;
+    }
+
+    auto* caps = gst_caps_from_string(
+        "video/x-raw(memory:D3D11Memory),format=RGBA64_LE");
+    if (caps != nullptr) ges_track_set_restriction_caps(videoTrack, caps);
+    const bool audioAdded = caps != nullptr &&
+        ges_timeline_add_track(timeline, GES_TRACK(audioTrack));
+    const bool videoAdded = audioAdded && ges_timeline_add_track(timeline, videoTrack);
+    if (caps != nullptr) gst_caps_unref(caps);
+    if (!videoAdded) {
+        if (!audioAdded) gst_object_unref(audioTrack);
+        gst_object_unref(videoTrack);
+        gst_object_unref(timeline);
+        return nullptr;
+    }
+    return timeline;
+}
+
 }  // namespace
 
 GesSequencePlayer::GesSequencePlayer(
@@ -226,13 +500,19 @@ GesSequencePlayer::GesSequencePlayer(
     if (!register_gst_d3d11_color_lut_filter()) {
         throw std::runtime_error("failed to register ffmpegGUI D3D11 color LUT filter");
     }
+    if (!register_gst_d3d11_color_bin()) {
+        throw std::runtime_error("failed to register ffmpegGUI D3D11 color bin");
+    }
     d3d11_color_lut_available_ = g_getenv("FFGUI_FORCE_CPU_COLOR") == nullptr &&
         gst_d3d11_color_lut_available();
-    // Source effects currently download RGBA64 back to system memory before the GES
-    // mixer. Forcing d3d11compositor at this boundary makes two simultaneously active
-    // source graphs contend with GES' smart mixer during a dissolve. Keep the stable
-    // system-memory compositor until the source shader and compositor share one native
-    // D3D11 graph with no download boundary.
+    direct_d3d_compositor_enabled_ = d3d11_color_lut_available_ &&
+        video_sink_factory_ == "d3d11-appsink" &&
+        g_getenv("FFGUI_FORCE_SYSTEM_COMPOSITOR") == nullptr;
+    if (direct_d3d_compositor_enabled_) {
+        auto* compositor = gst_element_factory_find("d3d11compositor");
+        if (compositor == nullptr) direct_d3d_compositor_enabled_ = false;
+        else gst_object_unref(compositor);
+    }
     if (!ges_init()) {
         throw std::runtime_error("failed to initialize GStreamer Editing Services");
     }
@@ -250,6 +530,30 @@ GesSequencePlayer::~GesSequencePlayer() {
     source_color_lut_bindings_.store(0);
     source_gpu_color_lut_bindings_.store(0);
     source_gpu_ocio_shader_bindings_.store(0);
+    d3d_compositor_instances_.store(0);
+    d3d_download_instances_.store(0);
+    system_compositor_instances_.store(0);
+    d3d_composition_frames_.store(0);
+    d3d_composition_meta_frames_.store(0);
+    d3d_blended_frames_.store(0);
+}
+
+std::uint64_t GesSequencePlayer::d3d_composition_frames() const noexcept {
+    std::scoped_lock lock(mutex_);
+    if (pipeline_ == nullptr) return d3d_composition_frames_.load();
+    return inspect_preview_graph(GST_ELEMENT(pipeline_)).composition_frames;
+}
+
+std::uint64_t GesSequencePlayer::d3d_composition_meta_frames() const noexcept {
+    std::scoped_lock lock(mutex_);
+    if (pipeline_ == nullptr) return d3d_composition_meta_frames_.load();
+    return inspect_preview_graph(GST_ELEMENT(pipeline_)).composition_meta_frames;
+}
+
+std::uint64_t GesSequencePlayer::d3d_blended_frames() const noexcept {
+    std::scoped_lock lock(mutex_);
+    if (pipeline_ == nullptr) return d3d_blended_frames_.load();
+    return inspect_preview_graph(GST_ELEMENT(pipeline_)).blended_frames;
 }
 
 void GesSequencePlayer::set_timeline(std::vector<TimelineSpan> timeline) {
@@ -289,6 +593,8 @@ void GesSequencePlayer::seek(TimeNs timeline_position) {
         const bool pausePending = pending == GST_STATE_PAUSED;
         if (prepareResult == GST_STATE_CHANGE_FAILURE ||
             (current != GST_STATE_PAUSED && !pausePending)) {
+            GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS(
+                GST_BIN(pipeline), GST_DEBUG_GRAPH_SHOW_ALL, "ffgui-preview-prepare-failed");
             std::ostringstream detail;
             detail << "GES preview could not enter paused state before seek"
                    << " (current=" << gst_element_state_get_name(current)
@@ -332,6 +638,13 @@ void GesSequencePlayer::seek(TimeNs timeline_position) {
         }
         gst_message_unref(message);
     }
+    const auto graph = inspect_preview_graph(pipeline);
+    d3d_compositor_instances_.store(graph.d3d_compositors);
+    d3d_download_instances_.store(graph.d3d_downloads);
+    system_compositor_instances_.store(graph.system_compositors);
+    d3d_composition_frames_.store(graph.composition_frames);
+    d3d_composition_meta_frames_.store(graph.composition_meta_frames);
+    d3d_blended_frames_.store(graph.blended_frames);
     gst_object_unref(bus);
     lock.unlock();
     position_ns_.store(target);
@@ -606,6 +919,12 @@ void GesSequencePlayer::rebuild_pipeline_locked(
     source_color_lut_bindings_.store(0);
     source_gpu_color_lut_bindings_.store(0);
     source_gpu_ocio_shader_bindings_.store(0);
+    d3d_compositor_instances_.store(0);
+    d3d_download_instances_.store(0);
+    system_compositor_instances_.store(0);
+    d3d_composition_frames_.store(0);
+    d3d_composition_meta_frames_.store(0);
+    d3d_blended_frames_.store(0);
     if (spans.empty()) {
         duration_ns_.store(0);
         std::scoped_lock cutLock(cut_points_mutex_);
@@ -630,7 +949,7 @@ void GesSequencePlayer::rebuild_pipeline_locked(
         }
     }
 
-    auto* new_timeline = ges_timeline_new_audio_video();
+    auto* new_timeline = create_preview_timeline(direct_d3d_compositor_enabled_);
     auto* layer = ges_layer_new();
     if (new_timeline == nullptr || layer == nullptr) {
         if (new_timeline != nullptr) {
@@ -722,7 +1041,8 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                     const auto lutId = "lut" + std::to_string(++lut_generation_);
                     publish_gst_color_lut(lutId, std::move(cube));
                     registered_lut_ids_.push_back(lutId);
-                    add_color_lut_effect(uri_clip, lutId, d3d11_color_lut_available_);
+                    add_color_lut_effect(
+                        uri_clip, lutId, d3d11_color_lut_available_);
                 }
                 source_color_lut_bindings_.fetch_add(1);
                 if (d3d11_color_lut_available_) {
@@ -782,15 +1102,17 @@ void GesSequencePlayer::rebuild_pipeline_locked(
         }
         gst_object_ref_sink(new_pipeline);
         const auto d3d11DeviceHandle = d3d11_device_handle_.load(std::memory_order_acquire);
-        if (d3d11DeviceHandle != nullptr) {
-            auto* wrappedDevice = gst_d3d11_device_new_wrapped(
-                static_cast<ID3D11Device*>(d3d11DeviceHandle));
-            if (wrappedDevice != nullptr) {
-                auto* context = gst_d3d11_context_new(wrappedDevice);
-                gst_element_set_context(GST_ELEMENT(new_pipeline), context);
-                gst_context_unref(context);
-                gst_object_unref(wrappedDevice);
-            }
+        auto* rawPreviewDevice = d3d11DeviceHandle != nullptr
+            ? gst_d3d11_device_new_wrapped(static_cast<ID3D11Device*>(d3d11DeviceHandle))
+            : (direct_d3d_compositor_enabled_ ? gst_d3d11_device_new(0, 0) : nullptr);
+        auto previewDevice = std::shared_ptr<GstD3D11Device>(
+            rawPreviewDevice, [](GstD3D11Device* value) {
+                if (value != nullptr) gst_object_unref(value);
+            });
+        if (previewDevice != nullptr) {
+            auto* context = gst_d3d11_context_new(previewDevice.get());
+            gst_element_set_context(GST_ELEMENT(new_pipeline), context);
+            gst_context_unref(context);
         }
         if (!ges_pipeline_set_timeline(new_pipeline, new_timeline) ||
             !ges_pipeline_set_mode(new_pipeline, GES_PIPELINE_MODE_PREVIEW)) {
@@ -851,15 +1173,10 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 throw std::runtime_error("missing video sink: " + video_sink_factory_);
             }
             gst_object_ref_sink(sink);
-            if (d3d11DeviceHandle != nullptr) {
-                auto* wrappedDevice = gst_d3d11_device_new_wrapped(
-                    static_cast<ID3D11Device*>(d3d11DeviceHandle));
-                if (wrappedDevice != nullptr) {
-                    auto* context = gst_d3d11_context_new(wrappedDevice);
-                    gst_element_set_context(sink, context);
-                    gst_context_unref(context);
-                    gst_object_unref(wrappedDevice);
-                }
+            if (previewDevice != nullptr) {
+                auto* context = gst_d3d11_context_new(previewDevice.get());
+                gst_element_set_context(sink, context);
+                gst_context_unref(context);
             }
             if (floatAppSink || cpuAppSink || d3d11AppSink) {
                 if (appSink == nullptr) {

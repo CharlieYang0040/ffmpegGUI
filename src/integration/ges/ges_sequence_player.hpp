@@ -96,6 +96,21 @@ public:
     [[nodiscard]] std::uint64_t source_gpu_ocio_shader_bindings() const noexcept {
         return source_gpu_ocio_shader_bindings_.load();
     }
+    [[nodiscard]] bool direct_d3d_compositor_enabled() const noexcept {
+        return direct_d3d_compositor_enabled_;
+    }
+    [[nodiscard]] std::uint64_t d3d_compositor_instances() const noexcept {
+        return d3d_compositor_instances_.load();
+    }
+    [[nodiscard]] std::uint64_t d3d_download_instances() const noexcept {
+        return d3d_download_instances_.load();
+    }
+    [[nodiscard]] std::uint64_t system_compositor_instances() const noexcept {
+        return system_compositor_instances_.load();
+    }
+    [[nodiscard]] std::uint64_t d3d_composition_frames() const noexcept;
+    [[nodiscard]] std::uint64_t d3d_composition_meta_frames() const noexcept;
+    [[nodiscard]] std::uint64_t d3d_blended_frames() const noexcept;
 
 private:
     void rebuild_pipeline_locked(
@@ -130,6 +145,12 @@ private:
     std::atomic<std::uint64_t> source_color_lut_bindings_{0};
     std::atomic<std::uint64_t> source_gpu_color_lut_bindings_{0};
     std::atomic<std::uint64_t> source_gpu_ocio_shader_bindings_{0};
+    std::atomic<std::uint64_t> d3d_compositor_instances_{0};
+    std::atomic<std::uint64_t> d3d_download_instances_{0};
+    std::atomic<std::uint64_t> system_compositor_instances_{0};
+    std::atomic<std::uint64_t> d3d_composition_frames_{0};
+    std::atomic<std::uint64_t> d3d_composition_meta_frames_{0};
+    std::atomic<std::uint64_t> d3d_blended_frames_{0};
     std::atomic<bool> float_output_enabled_{false};
     std::atomic<bool> legacy_source_color_enabled_{true};
     mutable std::mutex color_settings_mutex_;
@@ -138,6 +159,7 @@ private:
     std::vector<std::string> registered_lut_ids_;
     std::vector<std::string> registered_ocio_shader_ids_;
     bool d3d11_color_lut_available_{};
+    bool direct_d3d_compositor_enabled_{};
     std::uint64_t lut_generation_{};
     std::atomic<TimeNs> duration_ns_{0};
     std::atomic<TimeNs> position_ns_{0};

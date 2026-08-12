@@ -217,6 +217,10 @@ public:
     }
     [[nodiscard]] std::uint64_t sourceColorLutBindings() const noexcept;
     [[nodiscard]] std::uint64_t sourceGpuColorLutBindings() const noexcept;
+    [[nodiscard]] bool directD3dCompositorEnabled() const noexcept;
+    [[nodiscard]] std::uint64_t d3dCompositorInstances() const noexcept;
+    [[nodiscard]] std::uint64_t d3dDownloadInstances() const noexcept;
+    [[nodiscard]] std::uint64_t systemCompositorInstances() const noexcept;
     [[nodiscard]] bool videoSurfaceExposed() const noexcept;
     static EditorController* create(QQmlEngine* engine, QJSEngine* scriptEngine);
     static void setSingletonInstance(EditorController* instance);

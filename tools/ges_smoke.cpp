@@ -378,6 +378,54 @@ int main(int argc, char* argv[]) {
                 std::to_string(floatFrames.load()));
         }
 
+        if (expectGpuColor && g_getenv("FFGUI_FORCE_SYSTEM_COMPOSITOR") == nullptr) {
+            std::atomic<std::uint64_t> directFrames{};
+            std::atomic<bool> invalidDirectFrame{false};
+            GesSequencePlayer directPlayer{"d3d11-appsink", "fakesink"};
+            directPlayer.set_color_pipeline(managedColor, managedColor.output_space);
+            directPlayer.set_video_frame_callback([&](ffgui::PreviewVideoFrame frame) {
+                if (frame.texture == nullptr || frame.device == nullptr ||
+                    frame.width == 0 || frame.height == 0 || frame.cpu_pixels != nullptr) {
+                    invalidDirectFrame.store(true);
+                }
+                directFrames.fetch_add(1);
+            });
+            directPlayer.set_timeline(timeline.snapshot());
+            if (!directPlayer.direct_d3d_compositor_enabled() ||
+                directPlayer.source_gpu_ocio_shader_bindings() != 4) {
+                throw std::runtime_error(
+                    "direct D3D11 compositor did not bind every managed source shader");
+            }
+            directPlayer.seek(milliseconds(300));
+            directPlayer.reset_audio_continuity_metrics();
+            directPlayer.play();
+            wait_for_position(directPlayer, milliseconds(2225), std::chrono::seconds(12));
+            const auto directCompositionFrames = directPlayer.d3d_composition_frames();
+            const auto directCompositionMetaFrames = directPlayer.d3d_composition_meta_frames();
+            const auto directBlendedFrames = directPlayer.d3d_blended_frames();
+            directPlayer.stop();
+            const auto directAudio = directPlayer.audio_continuity_metrics();
+            if (invalidDirectFrame.load() || directFrames.load() < 20 ||
+                directPlayer.d3d_compositor_instances() == 0 ||
+                directPlayer.d3d_download_instances() != 2 ||
+                directPlayer.system_compositor_instances() != 0 ||
+                directCompositionFrames == 0 ||
+                directCompositionMetaFrames == 0 ||
+                directBlendedFrames == 0 ||
+                directAudio.buffer_count < 20 ||
+                directAudio.maximum_positive_gap > milliseconds(2)) {
+                throw std::runtime_error(
+                    "direct D3D11 source/compositor graph failed continuous playback: frames=" +
+                    std::to_string(directFrames.load()) + ", compositor=" +
+                    std::to_string(directPlayer.d3d_compositor_instances()) + ", downloads=" +
+                    std::to_string(directPlayer.d3d_download_instances()) + ", composition=" +
+                    std::to_string(directCompositionFrames) + ", blended=" +
+                    std::to_string(directBlendedFrames) + ", meta=" +
+                    std::to_string(directCompositionMetaFrames) + ", audio_gap=" +
+                    std::to_string(directAudio.maximum_positive_gap));
+            }
+        }
+
         std::cout << "GES continuous playback passed: 4 shots with source-alpha dissolve, "
                      "audio gain/fades, VFR and 2x speed, "
                   << player.duration() / 1'000'000 << " ms; "

@@ -699,6 +699,38 @@ std::uint64_t EditorController::sourceGpuColorLutBindings() const noexcept {
 #endif
 }
 
+bool EditorController::directD3dCompositorEnabled() const noexcept {
+#ifdef FFGUI_HAS_GES
+    return player_ && player_->direct_d3d_compositor_enabled();
+#else
+    return false;
+#endif
+}
+
+std::uint64_t EditorController::d3dCompositorInstances() const noexcept {
+#ifdef FFGUI_HAS_GES
+    return player_ ? player_->d3d_compositor_instances() : 0;
+#else
+    return 0;
+#endif
+}
+
+std::uint64_t EditorController::d3dDownloadInstances() const noexcept {
+#ifdef FFGUI_HAS_GES
+    return player_ ? player_->d3d_download_instances() : 0;
+#else
+    return 0;
+#endif
+}
+
+std::uint64_t EditorController::systemCompositorInstances() const noexcept {
+#ifdef FFGUI_HAS_GES
+    return player_ ? player_->system_compositor_instances() : 0;
+#else
+    return 0;
+#endif
+}
+
 bool EditorController::videoSurfaceExposed() const noexcept {
     const auto* item = qobject_cast<const VideoPreviewItem*>(video_item_);
     if (item != nullptr) {

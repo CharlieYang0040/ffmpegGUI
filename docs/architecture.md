@@ -127,9 +127,14 @@ alpha는 shader 밖에서 보존한다. 이후 source alpha 디졸브가 수행�
 Legacy 밝기·대비·채도는 `GESClip`의 안정적인 top `videobalance` effect로 먼저 적용하고,
 GradeGraph가 있으면 그 뒤 LUT effect를 연결한다. 현재 GES top-effect와 mixer 사이에는
 system-memory 협상 경계가 있어 GPU source effect 앞뒤에 upload/download가 한 번씩 남는다.
-이 경계에서 `d3d11compositor`를 강제로 선택하면 디졸브의 두 source graph가 GES smart mixer와
-경합하므로, 직접 연결이 끝날 때까지 안정적인 system-memory compositor를 사용한다. 다음 최적화는
-source shader와 D3D11 compositor를 하나의 native graph로 연결해 이 왕복을 제거하는 것이다.
+영상 트랙은 GES의 고정 system compositor 대신 전용 `FfguiD3DVideoTrack`과
+`d3d11compositor`를 기본 사용한다. 전용 mixer는 각 입력 버퍼의 GES frame-composition
+메타데이터를 D3D11 sink pad의 alpha·위치·크기·z-order에 적용한다. GPU 색처리 도중 손실될 수
+있는 이 메타데이터는 `ffguid3dcolor` bin이 입력 PTS별로 보존했다가 download 뒤 복원하므로
+서로 다른 그레이드의 두 샷도 디졸브 값이 유지된다. 컷 사이의 짧은 공백에는 black gap source를
+공급해 NLE mixing operation이 자식 없이 seek되는 오류도 막는다. 문제가 있는 드라이버에서는
+`FFGUI_FORCE_SYSTEM_COMPOSITOR=1`로 기존 합성기를 강제할 수 있다. 다음 최적화는 GES effect의
+system-memory 경계를 없애 source shader의 D3D11 texture를 compositor에 직접 전달하는 것이다.
 
 구조 편집은 `TimelineModel`과 Scene Graph 화면에 즉시 반영하지만 GES 파이프라인은
 각 마우스 동작마다 다시 만들지 않는다. 50ms 단일 타이머가 연속 편집을 최신 스냅샷

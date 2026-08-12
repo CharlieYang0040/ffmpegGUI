@@ -284,10 +284,13 @@
 - [x] GPU 동일 샘플 비동기 readback·CPU/float 픽셀 재사용과 최신 요청 병합으로 스코프가 재생 그래프를 방해하지 않는 10fps 분석
 - [x] 편집 중 이전 seek 실패가 최신 재생 요청을 지우지 않는 세대 기반 재시도
 - [x] 개발 Debug EXE의 Qt/GStreamer 런타임 자동 배치와 탐색기 직접 실행
+- [x] GES frame-composition 메타를 alpha·위치·크기·z-order로 적용하는 전용 D3D11 mixer
+- [x] GPU 컬러 bin 전후의 합성 메타 보존과 NLE gap source로 디졸브·끝점 seek 연속성 보장
+- [x] D3D11 compositor 기본 사용과 `FFGUI_FORCE_SYSTEM_COMPOSITOR=1` 진단 fallback
 
 ### 다음 구현 순서
 
-1. 현재 source shader 앞뒤의 upload/download를 제거하고 D3D11 compositor에 직접 연결
+1. GES effect system-memory 경계를 제거해 source shader 출력을 현재 D3D11 compositor에 직접 연결
 2. 스코프 기준점 전환과 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
 3. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
 4. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
@@ -313,9 +316,11 @@
   source alpha로 합성되고, 합성 결과에 활성 클립 컬러를 다시 적용하지 않는다. D3D11이
    가능하면 OCIO가 추출한 입력·출력 HLSL과 LUT texture를 직접 실행하고 창작용 GradeGraph만
    working-space 33³ texture로 적용한다. 사용할 수 없거나 `FFGUI_FORCE_CPU_COLOR=1`이면 전체
-   기준 결과를 CPU trilinear 필터로 자동 대체한다. GES effect 경계 때문에 현재는 source shader
-   앞뒤에 한 번씩 upload/download가 남아 있으며, 다음 최적화는 D3D11 compositor를 같은 native
-   graph에 연결해 이 왕복을 없애는 것이다.
+   기준 결과를 CPU trilinear 필터로 자동 대체한다. 전용 D3D11 mixer는 GES composition meta를
+   sink pad에 적용하고 GPU 색처리 bin이 해당 meta를 PTS별로 복원하므로 4샷·100ms 디졸브·VFR·
+   2배속·오디오 연속 재생이 함께 통과한다. NLE gap source도 포함해 끝점의 빈 mixing operation
+   오류를 막았다. 다만 GES effect system-memory 경계 때문에 source shader 안의 upload/download는
+   아직 한 번 남아 있으며, 다음 최적화는 그 출력 texture를 compositor에 직접 전달하는 것이다.
 - HDR 설정은 프로젝트 계약까지 구현되었고 scRGB/PQ 스왑체인 전환은 미구현이다.
 - 자동 또는 사용자가 선택한 EXR part/view/AOV는 float 미리보기와 프록시·혼합 출력에서
   같은 픽셀을 사용한다. 선택은 기존 자산 ID와 타임라인 클립을 보존한 채 백그라운드에서
@@ -343,3 +348,5 @@ D3D11 3D LUT 경로는 반투명 RGBA64 테스트 픽셀과 관리형 4샷 타�
 프로그램 모니터 스코프를 켠 D3D11 데스크톱 회귀에서는 5초 동안 GPU 프레임 117개를
 컨트롤러에 전달하면서 38개를 분석했고 Qt Scene Graph 표시까지 통과했다. 스코프를 닫은
 기본 재생, 스코프를 연 D3D11 표시와 CPU BGRA fallback을 포함한 전체 데스크톱 회귀도 통과했다.
+전용 D3D11 mixer를 기본으로 전환한 뒤 GPU/CPU GES 회귀, 관리형 컬러 데스크톱 회귀,
+프로젝트·EXR·MP4/GIF/HEVC/stream-copy 출력, D3D11/CPU Qt 표시와 10초 4K 탐색 반복도 통과했다.

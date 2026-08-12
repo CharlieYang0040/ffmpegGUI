@@ -283,6 +283,7 @@ int main(int argc, char* argv[]) {
             ? EXIT_SUCCESS : EXIT_FAILURE;
     }
     if (floatVideoSmoke) {
+        const bool expectDirectD3d = controller.directD3dCompositorEnabled();
         const auto clips = controller.clips();
         const auto assets = controller.mediaAssets();
         for (const auto& asset : assets) {
@@ -342,6 +343,11 @@ int main(int argc, char* argv[]) {
             controller.floatVideoFramesProcessed() == processedBefore &&
             controller.sourceColorLutBindings() == static_cast<std::uint64_t>(clips.size()) &&
             controller.sourceGpuColorLutBindings() == static_cast<std::uint64_t>(clips.size()) &&
+            (!expectDirectD3d ||
+                 (controller.directD3dCompositorEnabled() &&
+                 controller.d3dCompositorInstances() > 0 &&
+                 controller.d3dDownloadInstances() > 0 &&
+                 controller.systemCompositorInstances() == 0)) &&
             controller.playheadNs() > 100'000'000 &&
             controller.playheadNs() < firstClipDuration && controller.playing();
         qInfo().noquote() << "managed source LUT smoke counters"
@@ -351,6 +357,10 @@ int main(int argc, char* argv[]) {
                           << controller.floatVideoFramesProcessed() - processedBefore
                           << "bindings=" << controller.sourceColorLutBindings()
                           << "gpu_bindings=" << controller.sourceGpuColorLutBindings()
+                          << "direct_d3d=" << controller.directD3dCompositorEnabled()
+                          << "d3d_compositors=" << controller.d3dCompositorInstances()
+                          << "d3d_downloads=" << controller.d3dDownloadInstances()
+                          << "system_compositors=" << controller.systemCompositorInstances()
                           << "playhead_ns=" << controller.playheadNs()
                           << "passed=" << passed;
         controller.togglePlayback();
