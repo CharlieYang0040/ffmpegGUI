@@ -1,7 +1,9 @@
 #include "core/color_pipeline.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <filesystem>
 #include <ranges>
 #include <stdexcept>
 
@@ -26,7 +28,7 @@ bool GradeNode::render_supported() const noexcept {
     return type == GradeNodeType::primary || type == GradeNodeType::log_wheels ||
            type == GradeNodeType::rgb_mixer || type == GradeNodeType::rgb_curves ||
            type == GradeNodeType::hue_curves || type == GradeNodeType::hdr_zones ||
-           type == GradeNodeType::color_warper;
+           type == GradeNodeType::color_warper || type == GradeNodeType::lut;
 }
 
 void GradeNode::validate() const {
@@ -52,6 +54,16 @@ void GradeNode::validate() const {
     }
     if (type == GradeNodeType::lut && external_path.empty()) {
         throw std::invalid_argument("LUT node requires a file path");
+    }
+    if (type == GradeNodeType::lut) {
+        auto extension = std::filesystem::path{
+            std::u8string(external_path.begin(), external_path.end())}.extension().string();
+        std::ranges::transform(extension, extension.begin(),
+            [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+        if (extension != ".cube" && extension != ".3dl" &&
+            extension != ".clf" && extension != ".ctf") {
+            throw std::invalid_argument("LUT node supports Cube, 3DL, CLF and CTF files");
+        }
     }
 }
 

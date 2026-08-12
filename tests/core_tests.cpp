@@ -308,6 +308,56 @@ void test_advanced_grade_nodes_share_the_float_reference_contract() {
             "Color Warper hue grid must apply local saturation scaling");
 }
 
+void test_external_lut_node_uses_ocio_and_preserves_mix_and_alpha() {
+    const auto root = std::filesystem::temp_directory_path() / "ffgui-grade-lut-test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    const auto path = root / "invert.cube";
+    {
+        std::ofstream stream(path, std::ios::binary);
+        stream << "TITLE \"ffgui invert\"\n"
+                  "LUT_3D_SIZE 2\n"
+                  "DOMAIN_MIN 0 0 0\n"
+                  "DOMAIN_MAX 1 1 1\n";
+        for (int blue = 0; blue < 2; ++blue) {
+            for (int green = 0; green < 2; ++green) {
+                for (int red = 0; red < 2; ++red) {
+                    stream << 1 - red << ' ' << 1 - green << ' ' << 1 - blue << '\n';
+                }
+            }
+        }
+    }
+    ffgui::validate_grade_lut_file(path.string());
+    auto node = ffgui::make_default_grade_node(ffgui::GradeNodeType::lut, "lut");
+    node.external_path = path.string();
+    node.mix = 0.5;
+    ffgui::GradeGraph graph;
+    graph.add(node);
+    require(graph.render_unsupported_nodes().empty(),
+            "a valid external LUT node must be supported by the common renderer");
+    float pixel[]{0.2F, 0.4F, 0.6F, 0.37F};
+    ffgui::apply_grade_graph_rgba32f(pixel, 1, graph);
+    require(std::abs(pixel[0] - 0.5F) < 0.0001F &&
+                std::abs(pixel[1] - 0.5F) < 0.0001F &&
+                std::abs(pixel[2] - 0.5F) < 0.0001F &&
+                std::abs(pixel[3] - 0.37F) < 0.000001F,
+            "OCIO LUT evaluation must honor node mix without changing alpha");
+    const auto published = ffgui::build_color_cube({}, {}, graph, {}, 2);
+    require(published.size == 2 && published.rgb.size() == 24 &&
+                std::ranges::all_of(published.rgb, [](float value) {
+                    return std::abs(value - 0.5F) < 0.0001F;
+                }),
+            "external looks must be baked into the same 3D texture published to GPU previews");
+    require_throws<std::runtime_error>([&] {
+        ffgui::validate_grade_lut_file((root / "missing.cube").string());
+    }, "an offline LUT must fail validation instead of being silently ignored");
+    auto unsupported = ffgui::make_default_grade_node(ffgui::GradeNodeType::lut, "bad");
+    unsupported.external_path = (root / "look.png").string();
+    require_throws<std::invalid_argument>([&] { unsupported.validate(); },
+        "grade LUT nodes must reject files outside the declared CG interchange formats");
+    std::filesystem::remove_all(root);
+}
+
 void test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope() {
     const std::array<std::uint8_t, 16> pixels{
         0, 0, 255, 255, 0, 255, 0, 255,
@@ -1383,6 +1433,17 @@ void test_render_preflight_blocks_offline_and_unresolved_managed_media() {
     gradedSequence.append_clip(std::move(sequenceClip));
     require(ffgui::build_render_preflight(gradedSequence, {}).can_render(),
             "image sequence grades must pass after float export wiring");
+    auto missingLut = ffgui::make_default_grade_node(ffgui::GradeNodeType::lut, "offline-lut");
+    missingLut.external_path = (path.parent_path() / "offline.cube").string();
+    auto missingLutGraph = gradedTimeline.clips().front().grade;
+    missingLutGraph.add(std::move(missingLut));
+    gradedTimeline.set_clip_grade_graph("graded", std::move(missingLutGraph));
+    report = ffgui::build_render_preflight(gradedTimeline, {});
+    require(!report.can_render() &&
+                std::ranges::any_of(report.issues, [](const auto& issue) {
+                    return issue.code == "offline-grade-lut";
+                }),
+            "an offline external LUT must block export during preflight");
     std::filesystem::remove(path);
 }
 
@@ -1397,6 +1458,7 @@ int main() {
         {"ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube", test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube},
         {"float_grade_pipeline_preserves_alpha_and_node_mix", test_float_grade_pipeline_preserves_alpha_and_node_mix},
         {"advanced_grade_nodes_share_the_float_reference_contract", test_advanced_grade_nodes_share_the_float_reference_contract},
+        {"external_lut_node_uses_ocio_and_preserves_mix_and_alpha", test_external_lut_node_uses_ocio_and_preserves_mix_and_alpha},
         {"scope_analyzer_builds_histogram_waveform_parade_and_vectorscope", test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope},
         {"oiio_probe_reports_exr_layers_alpha_and_color_space", test_oiio_probe_reports_exr_layers_alpha_and_color_space},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},

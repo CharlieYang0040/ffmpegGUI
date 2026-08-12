@@ -306,7 +306,7 @@
 | M4 ACES/OCIO | 부분 완료 | Legacy 기본값, OCIO 2.5.2/ACES 2.0, CPU 기준 float 변환, D3D11 OCIO shader와 LUT, 입력 공간 재지정 | 모니터 Display/View 선택, 변환 우회, gamut warning, ACES 적용 전후 비교와 기술 노드 UX |
 | M4 HDR10 | 미완료 | 프로젝트 HDR 설정과 메타데이터 저장 계약 | scRGB/PQ swapchain, 모니터 이동 재검사, SDR white 보정, HDR fallback, HDR10 파일 메타데이터 검증 |
 | M5 Primary·스코프 | 부분 완료 | Primary 전체 파라미터, RGB Mixer/Curve 공통 렌더와 Waveform/Parade/Vectorscope/Histogram | 스코프 기준점, false color/pixel inspector, parameter keyframe |
-| M5 고급 그레이딩 | 부분 완료 | Log Wheels, RGB/Hue 곡선군, HDR Zones, Color Warper의 CPU 기준·GPU LUT·UI 연결 | LUT/Look, 공유 grade, 복사·붙여넣기·초기화, keyframe |
+| M5 고급 그레이딩 | 부분 완료 | Log Wheels, RGB/Hue 곡선군, HDR Zones, Color Warper, 외부 LUT/Look의 CPU 기준·GPU LUT·UI 연결과 이름·복사·초기화 | 공유 grade, keyframe |
 | M6 LUT·Unreal 전달 | 미완료 | 공통 컬러 결과를 내부 33³ LUT로 베이크하는 기반 | 33³/65³ 외부 Cube, shaper, look/display 구분, `.ocioz`, CLF/CTF, manifest, Unreal 사전 검사·실기 검증 |
 | R1 네이티브 GPU 프레임 | 완료 | native GES asset/effect, D3D11 source download 0회, VFR·2배속·디졸브·오디오 및 fallback 회귀 | 최종 릴리스 GPU 매트릭스에서 반복 검증 |
 | 세컨더리 도구 | 미착수 | 저장·렌더 계약도 아직 확정 전 | qualifier, matte 정리, power window, mask/outside, tracking, shot still, wipe/split, shot matching |
@@ -320,10 +320,10 @@
 - **이번 단계에서 닫은 핵심:** 관리형 컬러를 클립별로 디졸브 전에 적용하면서도 source에서
   compositor까지 D3D11 texture를 유지한다. Primary, Log, RGB/Hue Curves, HDR Zones,
   Color Warper는 공통 float 기준 렌더와 일반 영상용 GPU LUT 경로를 공유한다.
-- **아직 완성 제품으로 볼 수 없는 이유:** 외부 LUT/Look, 파라미터 keyframe·shared grade,
+- **아직 완성 제품으로 볼 수 없는 이유:** 파라미터 keyframe·shared grade,
   Display/View 검수 도구, Windows HDR, Unreal 전달 패키지, qualifier·mask·tracking이 남아 있다.
   대규모 입력·깨끗한 PC·여러 GPU·실제 Unreal 버전의 최종 품질 감사도 수행 전이다.
-- **재개 지점:** 아래 R2의 외부 LUT/Look 파일 로더부터 시작한다. R2 완료 전에는 HDR나
+- **재개 지점:** 아래 R2의 파라미터 keyframe과 shared grade부터 시작한다. R2 완료 전에는 HDR나
   세컨더리로 건너뛰지 않으며, 각 단계는 미리보기·출력·저장·undo/redo 회귀가 모두 연결된
   경우에만 완료로 바꾼다.
 
@@ -350,24 +350,29 @@
 - [x] 디졸브·straight alpha·VFR·2배속·오디오 연속성 회귀
 - [x] system compositor와 CPU color fallback 및 전체 desktop smoke 통과
 
-#### R2. 컬러 노드 실행 계약 완성 — 부분 완료 후 일시 마감
+#### R2. 컬러 노드 실행 계약 완성 — 진행 중
 
 - [x] `GradeGraph`의 공간 비의존 노드가 하나의 순서형 float 계약으로 CPU 기준 렌더를 갖는다.
 - [x] 같은 파라미터를 OCIO/D3D11 동적 shader 또는 LUT 자원으로 게시해 일반 영상, 이미지
   시퀀스, 미리보기, 최종 출력 사이의 결과를 맞춘다.
 - [x] Primary/Log/HDR wheels, RGB/Hue 곡선군, Warper를 공통 렌더와 UI에 연결했다.
-- [ ] **다음 재개 작업:** Cube/3DL/CLF/CTF LUT/Look 파일 로더, 파일 검증, float 렌더,
+- [x] Cube/3DL/CLF/CTF LUT/Look 파일 로더, 파일 검증, float 렌더,
   GPU LUT와 프로젝트 저장을 한 묶음으로 연결한다.
-- [ ] 노드 초기화·복사·붙여넣기를 기존 타임라인 command와 undo/redo에 통합한다.
-- [ ] 파라미터 keyframe과 shared grade를 같은 저장 버전으로 묶는다.
+- [x] 노드 초기화·복사·붙여넣기를 기존 타임라인 command와 undo/redo에 통합한다.
+- [ ] **다음 재개 작업:** 파라미터 keyframe과 shared grade를 같은 저장 버전으로 묶는다.
 - [ ] 각 노드의 bypass/mix/order/keyframe CPU·GPU golden patch 비교를 통과시킨다.
 
-R2는 기반 노드 렌더가 실제 동작하지만 위 네 항목이 남아 있으므로 완료가 아니다. 재개할 때는
-LUT 파일 처리와 노드 편집 명령을 먼저 끝내고, 시간 좌표가 필요한 keyframe을 별도 변경으로
-구현한 뒤 R3로 이동한다.
+외부 Look은 OpenColorIO `FileTransform`으로 한 번 검증·컴파일해 파일 경로, 수정 시간과 크기로
+캐시한다. 작업 색공간의 창작 노드로 적용한 뒤 공통 33³ GPU texture에도 포함하며, 기술적
+입력·표시·출력 변환은 프로젝트 컬러 설정으로 분리한다. 파일이 없어지거나 손상되면 출력
+사전 검사에서 차단한다. R2는 시간 좌표가 필요한 keyframe과 shared grade가 남아 있어 완료가
+아니며, 두 항목과 CPU·GPU golden patch 비교를 끝낸 뒤 R3로 이동한다.
 
 #### R3. 검수용 표시와 스코프
 
+- D3D11 장치 제거를 감지해 현재 GPU 자원을 폐기하고 CPU preview로 복구하며, 사용자에게
+  복구 상태를 표시한다. 연속 GPU 회귀 중 `DXGI_ERROR_DEVICE_REMOVED`가 한 차례 관측됐고
+  동일 표시 회귀 5회 연속 및 전체 desktop smoke 재실행은 통과했지만 런타임 복구는 아직 없다.
 - 스코프 입력을 `그레이드 전`, `그레이드 후`, `디스플레이 변환 후`로 명시적으로 선택한다.
 - gamut warning, false color, pixel inspector를 추가하고 SDR/HDR 단위를 분리한다.
 - OCIO Display/View, 모니터 ICC, 표시 변환 bypass와 적용 전후 비교를 프로그램 모니터에 연결한다.
@@ -438,7 +443,7 @@ GES GPU/system compositor/CPU color 3경로와 전체 desktop smoke를 연속 �
 GES 회귀는 VFR·2배속·source-alpha 디졸브가 포함된 4샷을 2.325초 동안 재생했고 최대 오디오
 gap은 0ns였다. 아래는 이 재검증 이전부터 누적해 유지하는 상세 기준선이다.
 
-검증 기준선: Debug 빌드, 코어 47/47와 타임라인 테스트 통과. 누락 1장을 포함한
+검증 기준선: Debug 빌드, 코어 48/48와 타임라인 테스트 통과. 누락 1장을 포함한
 1001–1048 PNG 시퀀스를 별도 환경 변수 없이 Debug EXE에서 가져와 프로젝트 v3
 저장·재로드했으며 `proxy-v4.mkv`와 `export-nearest-v3.mov` 생성을 확인했다.
 일반 영상 3개 출력은 5.968초 MP4, 1280×848 확장 스탬프, 영상·오디오 스트림과

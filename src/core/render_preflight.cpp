@@ -1,4 +1,5 @@
 #include "core/render_preflight.hpp"
+#include "color/grade_processor.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -37,6 +38,16 @@ RenderPreflightReport build_render_preflight(
             report.issues.push_back({PreflightSeverity::blocker, "grade-node-not-renderable",
                 "Clip grade contains nodes that the render pipeline cannot evaluate",
                 clip.asset_id, {}});
+        }
+        for (const auto& node : clip.grade.nodes()) {
+            if (!node.enabled || node.type != GradeNodeType::lut) continue;
+            try {
+                validate_grade_lut_file(node.external_path);
+            } catch (const std::exception& error) {
+                report.issues.push_back({PreflightSeverity::blocker, "offline-grade-lut",
+                    std::string{"External LUT / Look cannot be loaded: "} + error.what(),
+                    clip.asset_id, {}});
+            }
         }
         if (!inspected.insert(clip.asset_id).second) continue;
         if (!std::filesystem::is_regular_file(asset->export_path())) {

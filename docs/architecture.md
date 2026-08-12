@@ -151,7 +151,12 @@ Primary exposure/LGG/temperature/tint/contrast/pivot/saturation/hue/color boost,
 RGB Mixer, master·채널별 RGB Curves, Hue vs Hue/Sat/Lum과 Lum/Sat 교차 곡선, scene-linear
 HDR zone exposure, Hue-Sat/Luma Color Warper가 이 경로를 사용한다. 이미지 시퀀스는 float
 프레임에 직접 적용하고 일반 영상은 같은 함수를 33³ working-space cube로 평가해 D3D11
-source shader에 게시한다. qualifier와 power window는 공간 마스크 계약이 생기기 전까지
+source shader에 게시한다. 외부 Cube/3DL/CLF/CTF Look도 OCIO `FileTransform`으로 검증·컴파일해
+같은 노드 순서에서 실행한다. 프로세서는 정규화 경로·수정 시간·파일 크기로 캐시하며 파일이
+바뀌면 다시 컴파일한다. 파일 경로는 UTF-8로 프로젝트에 저장하고, 누락·손상된 Look은 렌더
+사전 검사에서 `offline-grade-lut` blocker로 보고한다. 노드 복사·붙여넣기와 초기화는 모두
+`TimelineModel::set_clip_grade_graph()` 한 단계 편집이므로 기존 undo/redo와 리비전 계약을 따른다.
+qualifier와 power window는 공간 마스크 계약이 생기기 전까지
 명시적으로 render unsupported 상태를 유지한다.
 
 구조 편집은 `TimelineModel`과 Scene Graph 화면에 즉시 반영하지만 GES 파이프라인은

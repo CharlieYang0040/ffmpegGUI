@@ -1,13 +1,65 @@
 #include "color/grade_processor.hpp"
 
+#include <OpenColorIO/OpenColorIO.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <filesystem>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <unordered_map>
+
+namespace OCIO = OCIO_NAMESPACE;
 
 namespace ffgui {
 namespace {
+
+struct CachedLut final {
+    std::filesystem::file_time_type modified;
+    std::uintmax_t size{};
+    OCIO::ConstCPUProcessorRcPtr processor;
+};
+
+OCIO::ConstCPUProcessorRcPtr grade_lut_processor(const std::string& path) {
+    if (path.empty()) throw std::invalid_argument("LUT file path is empty");
+    const std::filesystem::path inputPath{std::u8string(path.begin(), path.end())};
+    std::error_code error;
+    auto resolved = std::filesystem::weakly_canonical(inputPath, error);
+    if (error) resolved = std::filesystem::absolute(inputPath, error);
+    if (error || !std::filesystem::is_regular_file(resolved, error) || error) {
+        throw std::runtime_error("LUT file is missing or unreadable: " + path);
+    }
+    const auto modified = std::filesystem::last_write_time(resolved, error);
+    if (error) throw std::runtime_error("LUT modification time could not be read: " + path);
+    const auto size = std::filesystem::file_size(resolved, error);
+    if (error || size == 0) throw std::runtime_error("LUT file is empty or unreadable: " + path);
+    const auto key = resolved.generic_u8string();
+    const std::string cacheKey(key.begin(), key.end());
+
+    static std::mutex cacheMutex;
+    static std::unordered_map<std::string, CachedLut> cache;
+    std::scoped_lock lock(cacheMutex);
+    if (const auto found = cache.find(cacheKey); found != cache.end() &&
+        found->second.modified == modified && found->second.size == size) {
+        return found->second.processor;
+    }
+    try {
+        const auto transform = OCIO::FileTransform::Create();
+        transform->setSrc(cacheKey.c_str());
+        transform->setInterpolation(OCIO::INTERP_BEST);
+        transform->validate();
+        const auto config = OCIO::Config::CreateRaw();
+        const auto processor = config->getProcessor(transform)->getDefaultCPUProcessor();
+        if (!processor) throw std::runtime_error("OpenColorIO returned no LUT processor");
+        cache[cacheKey] = CachedLut{modified, size, processor};
+        return processor;
+    } catch (const OCIO::Exception& exception) {
+        throw std::runtime_error(
+            std::string{"OpenColorIO LUT load failed: "} + exception.what());
+    }
+}
 
 double parameter(const GradeNode& node, const char* name, double fallback) {
     const auto found = node.parameters.find(name);
@@ -329,9 +381,12 @@ void apply_grade_graph_rgba32f(float* pixels, std::size_t pixel_count, const Gra
             ? std::optional<LogState>{compile_log(node)} : std::nullopt;
         const auto mixer = node.type == GradeNodeType::rgb_mixer
             ? std::optional<RgbMatrix>{compile_rgb_mixer(node)} : std::nullopt;
+        const auto lut = node.type == GradeNodeType::lut
+            ? grade_lut_processor(node.external_path) : OCIO::ConstCPUProcessorRcPtr{};
         for (std::size_t pixel = 0; pixel < pixel_count; ++pixel) {
             auto* rgba = pixels + pixel * 4;
             const std::array<float, 3> original{rgba[0], rgba[1], rgba[2]};
+            const auto alpha = rgba[3];
             if (primary.has_value()) {
                 apply_primary(rgba, *primary);
                 apply_primary_creative(rgba, node);
@@ -342,11 +397,17 @@ void apply_grade_graph_rgba32f(float* pixels, std::size_t pixel_count, const Gra
             else if (node.type == GradeNodeType::hue_curves) apply_hue_curves(rgba, node);
             else if (node.type == GradeNodeType::hdr_zones) apply_hdr_zones(rgba, node);
             else if (node.type == GradeNodeType::color_warper) apply_color_warper(rgba, node);
+            else if (lut) lut->applyRGBA(rgba);
             for (std::size_t channel = 0; channel < 3; ++channel) {
                 rgba[channel] = std::lerp(original[channel], rgba[channel], static_cast<float>(node.mix));
             }
+            rgba[3] = alpha;
         }
     }
+}
+
+void validate_grade_lut_file(const std::string& path) {
+    static_cast<void>(grade_lut_processor(path));
 }
 
 }  // namespace ffgui

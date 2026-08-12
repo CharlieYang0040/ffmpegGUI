@@ -5,6 +5,7 @@
 #include "core/subtitle_srt.hpp"
 #include "core/render_preflight.hpp"
 #include "color/color_frame_processor.hpp"
+#include "color/grade_processor.hpp"
 #include "color/ocio_engine.hpp"
 
 #include <QFile>
@@ -111,7 +112,7 @@ QJsonObject serializeGradeGraph(const ffgui::GradeGraph& graph) {
             {"mix", node.mix},
             {"parameters", parameters},
             {"curves", curves},
-            {"externalPath", QString::fromStdString(node.external_path)}});
+            {"externalPath", QString::fromUtf8(node.external_path)}});
     }
     return QJsonObject{{"nodes", nodes}};
 }
@@ -128,7 +129,7 @@ ffgui::GradeGraph parseGradeGraph(const QJsonObject& object) {
                        static_cast<int>(ffgui::GradeNodeType::power_window)));
         node.enabled = serialized.value("enabled").toBool(true);
         node.mix = serialized.value("mix").toDouble(1.0);
-        node.external_path = serialized.value("externalPath").toString().toStdString();
+        node.external_path = serialized.value("externalPath").toString().toUtf8().toStdString();
         const auto parameters = serialized.value("parameters").toObject();
         for (auto it = parameters.begin(); it != parameters.end(); ++it) {
             node.parameters.emplace(it.key().toStdString(), it.value().toDouble());
@@ -1058,6 +1059,9 @@ QVariantList EditorController::selectedGradeNodes() const {
             {"mixPercent", static_cast<int>(std::lround(node.mix * 100.0))},
             {"parameters", parameters},
             {"curveMidpoints", curveMidpoints},
+            {"externalPath", QString::fromUtf8(node.external_path)},
+            {"externalFileName", node.external_path.empty()
+                ? QString{} : QFileInfo(QString::fromUtf8(node.external_path)).fileName()},
             {"lutRepresentable", node.lut_representable()}});
     }
     return result;
@@ -1077,6 +1081,33 @@ void EditorController::addGradeNode(int type) {
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
         publishTimeline();
         setStatus("컬러 노드를 추가했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::addGradeLutUrl(const QUrl& url) {
+    if (selected_clip_id_.isEmpty() || !url.isLocalFile()) return;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    const auto localPath = QDir::toNativeSeparators(url.toLocalFile());
+    const auto utf8Path = localPath.toUtf8().toStdString();
+    try {
+        ffgui::validate_grade_lut_file(utf8Path);
+        auto graph = clip->grade;
+        auto node = ffgui::make_default_grade_node(
+            ffgui::GradeNodeType::lut,
+            "grade-" + std::to_string(++generated_grade_node_id_));
+        node.external_path = utf8Path;
+        const auto displayName = QFileInfo(localPath).completeBaseName().trimmed();
+        node.name = displayName.isEmpty()
+            ? ffgui::grade_node_type_name(ffgui::GradeNodeType::lut)
+            : "LUT · " + displayName.toUtf8().toStdString();
+        graph.add(std::move(node));
+        timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+        publishTimeline();
+        setStatus("LUT / Look을 검증하고 컬러 노드에 추가했습니다");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
     }
@@ -1116,6 +1147,59 @@ void EditorController::moveGradeNode(const QString& nodeId, int direction) {
     publishTimeline();
 }
 
+void EditorController::copyGradeNode(const QString& nodeId) {
+    if (selected_clip_id_.isEmpty()) return;
+    const auto clip = std::ranges::find(
+        timeline_.clips(), selected_clip_id_.toStdString(), &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    const auto* node = clip->grade.node(nodeId.toStdString());
+    if (node == nullptr) return;
+    grade_node_clipboard_ = *node;
+    emit gradeClipboardChanged();
+    setStatus("컬러 노드를 복사했습니다");
+}
+
+void EditorController::pasteGradeNode() {
+    if (selected_clip_id_.isEmpty() || !grade_node_clipboard_.has_value()) return;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    try {
+        auto graph = clip->grade;
+        auto node = grade_node_clipboard_.value();
+        node.id = "grade-" + std::to_string(++generated_grade_node_id_);
+        node.name += " 복사";
+        node.validate();
+        graph.add(std::move(node));
+        timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+        publishTimeline();
+        setStatus("복사한 컬러 노드를 붙여넣었습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::resetGradeNode(const QString& nodeId) {
+    if (selected_clip_id_.isEmpty()) return;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    auto graph = clip->grade;
+    auto* current = graph.node(nodeId.toStdString());
+    if (current == nullptr) return;
+    const auto original = *current;
+    auto replacement = ffgui::make_default_grade_node(original.type, original.id);
+    replacement.name = original.name;
+    if (original.type == ffgui::GradeNodeType::lut) {
+        replacement.external_path = original.external_path;
+    }
+    if (replacement == original) return;
+    *current = std::move(replacement);
+    timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+    publishTimeline();
+    setStatus("컬러 노드를 기본값으로 초기화했습니다");
+}
+
 void EditorController::setGradeNodeEnabled(const QString& nodeId, bool enabled) {
     if (selected_clip_id_.isEmpty()) return;
     const auto selectedId = selected_clip_id_.toStdString();
@@ -1125,6 +1209,23 @@ void EditorController::setGradeNodeEnabled(const QString& nodeId, bool enabled) 
     auto* node = graph.node(nodeId.toStdString());
     if (node == nullptr || node->enabled == enabled) return;
     node->enabled = enabled;
+    timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+    publishTimeline();
+}
+
+void EditorController::setGradeNodeName(const QString& nodeId, const QString& name) {
+    if (selected_clip_id_.isEmpty()) return;
+    const auto cleaned = name.simplified().left(80);
+    if (cleaned.isEmpty()) return;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    auto graph = clip->grade;
+    auto* node = graph.node(nodeId.toStdString());
+    const auto utf8Name = cleaned.toUtf8().toStdString();
+    if (node == nullptr || node->name == utf8Name) return;
+    node->name = utf8Name;
+    node->validate();
     timeline_.set_clip_grade_graph(selectedId, std::move(graph));
     publishTimeline();
 }

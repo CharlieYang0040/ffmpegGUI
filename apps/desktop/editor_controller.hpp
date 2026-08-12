@@ -95,6 +95,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(int sdrWhiteNits READ sdrWhiteNits WRITE setSdrWhiteNits NOTIFY colorPipelineChanged)
     Q_PROPERTY(QString colorPipelineSummary READ colorPipelineSummary NOTIFY colorPipelineChanged)
     Q_PROPERTY(QVariantList selectedGradeNodes READ selectedGradeNodes NOTIFY selectedClipChanged)
+    Q_PROPERTY(bool gradeClipboardAvailable READ gradeClipboardAvailable NOTIFY gradeClipboardChanged)
     Q_PROPERTY(bool scopesVisible READ scopesVisible WRITE setScopesVisible NOTIFY scopeSettingsChanged)
     Q_PROPERTY(int scopeMode READ scopeMode WRITE setScopeMode NOTIFY scopeSettingsChanged)
     Q_PROPERTY(quint64 scopeFramesAnalyzed READ scopeFramesAnalyzed NOTIFY scopeFrameChanged)
@@ -177,6 +178,9 @@ public:
     [[nodiscard]] int sdrWhiteNits() const noexcept { return color_pipeline_.sdr_white_nits; }
     [[nodiscard]] QString colorPipelineSummary() const;
     [[nodiscard]] QVariantList selectedGradeNodes() const;
+    [[nodiscard]] bool gradeClipboardAvailable() const noexcept {
+        return grade_node_clipboard_.has_value();
+    }
     [[nodiscard]] bool scopesVisible() const noexcept { return scopes_visible_; }
     [[nodiscard]] int scopeMode() const noexcept { return scope_mode_; }
     [[nodiscard]] quint64 scopeFramesAnalyzed() const noexcept { return scope_frames_analyzed_; }
@@ -293,9 +297,14 @@ public slots:
     void setHdrPeakNits(int nits);
     void setSdrWhiteNits(int nits);
     void addGradeNode(int type);
+    void addGradeLutUrl(const QUrl& url);
     void removeGradeNode(const QString& nodeId);
     void moveGradeNode(const QString& nodeId, int direction);
+    void copyGradeNode(const QString& nodeId);
+    void pasteGradeNode();
+    void resetGradeNode(const QString& nodeId);
     void setGradeNodeEnabled(const QString& nodeId, bool enabled);
+    void setGradeNodeName(const QString& nodeId, const QString& name);
     void setGradeNodeMix(const QString& nodeId, int percent);
     void setGradeParameter(const QString& nodeId, const QString& parameter, double value);
     void setGradeCurveMidpoint(
@@ -352,6 +361,7 @@ signals:
     void colorPipelineChanged();
     void scopeSettingsChanged();
     void scopeFrameChanged();
+    void gradeClipboardChanged();
     void gifEstimateChanged();
     void exportFinished(bool success, QUrl outputUrl);
 
@@ -443,6 +453,7 @@ private:
     std::uint64_t generated_asset_id_{};
     std::uint64_t generated_caption_id_{};
     std::uint64_t generated_grade_node_id_{};
+    std::optional<ffgui::GradeNode> grade_node_clipboard_;
     QString selected_caption_id_;
     bool stamp_enabled_{};
     QString stamp_worker_;

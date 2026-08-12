@@ -7,8 +7,8 @@ Windows용 네이티브 마그네틱 컷 편집기입니다. 기존 Python `ffmp
 
 2026-08-12 기준으로 타임라인·출력·미디어 수집·프록시·관리형 컬러의 기반과 D3D11
 미리보기 경로를 한 차례 마감했습니다. 고급 GradeGraph는 Primary, Log Wheels,
-RGB/Hue Curves, HDR Zones, Color Warper까지 동작하지만 외부 LUT/Look, keyframe,
-shared grade, HDR 표시·출력, Unreal 전달과 세컨더리 컬러 도구는 아직 개발 중입니다.
+RGB/Hue Curves, HDR Zones, Color Warper와 Cube/3DL/CLF/CTF LUT/Look까지 동작하지만
+keyframe, shared grade, HDR 표시·출력, Unreal 전달과 세컨더리 컬러 도구는 아직 개발 중입니다.
 완료 증거와 정확한 재개 순서는 [개발 계획](docs/development_plan.md)의
 `2026-08-12 단계 마감 기준점`을 기준으로 합니다. 현재 상태를 정식 완성판이나 릴리스
 준비 완료로 해석하지 않습니다.

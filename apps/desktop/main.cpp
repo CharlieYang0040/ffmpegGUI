@@ -564,8 +564,48 @@ int main(int argc, char* argv[]) {
         const auto gradeNodes = controller.selectedGradeNodes();
         if (gradeNodes.size() != 1) return EXIT_FAILURE;
         const auto gradeId = gradeNodes.front().toMap().value("id").toString();
+        controller.setGradeNodeName(gradeId, QStringLiteral("Hero Look"));
         controller.setGradeParameter(gradeId, QStringLiteral("exposure"), 1.25);
         controller.setGradeNodeMix(gradeId, 80);
+        controller.copyGradeNode(gradeId);
+        if (!controller.gradeClipboardAvailable()) return EXIT_FAILURE;
+        controller.pasteGradeNode();
+        auto editedGradeNodes = controller.selectedGradeNodes();
+        if (editedGradeNodes.size() != 2) return EXIT_FAILURE;
+        const auto copiedGradeId = editedGradeNodes.back().toMap().value("id").toString();
+        controller.resetGradeNode(copiedGradeId);
+        editedGradeNodes = controller.selectedGradeNodes();
+        if (editedGradeNodes.back().toMap().value("name").toString() !=
+                QStringLiteral("Hero Look 복사") ||
+            std::abs(editedGradeNodes.back().toMap().value("parameters").toMap()
+                         .value("exposure").toDouble()) > 0.0001) {
+            return EXIT_FAILURE;
+        }
+        controller.undo();
+        editedGradeNodes = controller.selectedGradeNodes();
+        if (std::abs(editedGradeNodes.back().toMap().value("parameters").toMap()
+                         .value("exposure").toDouble() - 1.25) > 0.0001) {
+            return EXIT_FAILURE;
+        }
+        controller.redo();
+        const auto lutPath = roundtripProject + QStringLiteral(".cube");
+        QFile lutFile(lutPath);
+        if (!lutFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) return EXIT_FAILURE;
+        lutFile.write(
+            "TITLE \"desktop smoke identity\"\n"
+            "LUT_3D_SIZE 2\n"
+            "0 0 0\n1 0 0\n0 1 0\n1 1 0\n"
+            "0 0 1\n1 0 1\n0 1 1\n1 1 1\n");
+        lutFile.close();
+        controller.addGradeLutUrl(QUrl::fromLocalFile(lutPath));
+        editedGradeNodes = controller.selectedGradeNodes();
+        if (editedGradeNodes.size() != 3 ||
+            editedGradeNodes.back().toMap().value("type").toInt() !=
+                static_cast<int>(ffgui::GradeNodeType::lut) ||
+            editedGradeNodes.back().toMap().value("externalPath").toString() !=
+                QDir::toNativeSeparators(lutPath)) {
+            return EXIT_FAILURE;
+        }
         if (importedAssets.front().toMap().value("kind").toString() == "imageSequence") {
             const auto submittedBefore = controller.scrubFramesSubmitted();
             controller.scrub(0, true);
@@ -654,8 +694,13 @@ int main(int argc, char* argv[]) {
                controller.gifResolution() == 2 && controller.gifFrameRate() == 3 &&
                controller.gifColors() == 2 && controller.gifDither() == 1 &&
                !controller.gifLoop() &&
-               loadedGradeNodes.size() == 1 && loadedGrade.value("mixPercent").toInt() == 80 &&
+               loadedGradeNodes.size() == 3 && loadedGrade.value("mixPercent").toInt() == 80 &&
+               loadedGrade.value("name").toString() == QStringLiteral("Hero Look") &&
                std::abs(loadedGradeParameters.value("exposure").toDouble() - 1.25) < 0.0001 &&
+               loadedGradeNodes.back().toMap().value("type").toInt() ==
+                   static_cast<int>(ffgui::GradeNodeType::lut) &&
+               loadedGradeNodes.back().toMap().value("externalPath").toString() ==
+                   QDir::toNativeSeparators(lutPath) &&
                expectedClipCount == importedClipCount + 4
             ? EXIT_SUCCESS
             : EXIT_FAILURE;

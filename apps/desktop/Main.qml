@@ -222,6 +222,13 @@ ApplicationWindow {
         onAccepted: EditorController.setCustomOcioUrl(selectedFile)
     }
     FileDialog {
+        id: gradeLutDialog
+        title: "LUT / Look 추가"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["컬러 LUT / Look (*.cube *.3dl *.clf *.ctf)"]
+        onAccepted: EditorController.addGradeLutUrl(selectedFile)
+    }
+    FileDialog {
         id: importSrtDialog
         title: "SRT 자막 가져오기"
         fileMode: FileDialog.OpenFile
@@ -1102,6 +1109,28 @@ ApplicationWindow {
                                 onClicked: EditorController.addGradeNode(gradeNodePicker.currentIndex)
                             }
                         }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            enabled: EditorController.selectedClipIds.length === 1
+                            AppButton {
+                                text: "LUT / Look"
+                                Layout.fillWidth: true
+                                onClicked: gradeLutDialog.open()
+                            }
+                            AppButton {
+                                text: "붙여넣기"
+                                Layout.fillWidth: true
+                                enabled: EditorController.gradeClipboardAvailable
+                                onClicked: EditorController.pasteGradeNode()
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: "LUT / Look은 작업 색공간의 창작 노드로 적용됩니다. 입력·표시·출력 변환은 프로젝트 컬러 설정에서 분리해 관리합니다."
+                            color: "#738194"
+                            font.pixelSize: 10
+                        }
                         Repeater {
                             model: EditorController.selectedGradeNodes
                             delegate: Rectangle {
@@ -1183,12 +1212,51 @@ ApplicationWindow {
                                         Layout.leftMargin: 10; Layout.rightMargin: 10; Layout.bottomMargin: 8
                                         columns: 2
                                         visible: root.expandedGradeNode === gradeNode.modelData.id
+                                        Label { text: "이름"; color: "#9aa7b7" }
+                                        TextField {
+                                            Layout.fillWidth: true
+                                            text: gradeNode.modelData.name
+                                            maximumLength: 80
+                                            selectByMouse: true
+                                            onEditingFinished: EditorController.setGradeNodeName(
+                                                gradeNode.modelData.id, text)
+                                        }
                                         Label { text: "혼합"; color: "#9aa7b7" }
                                         SpinBox {
                                             Layout.fillWidth: true; from: 0; to: 100
                                             value: gradeNode.modelData.mixPercent
                                             textFromValue: function(value) { return value + "%" }
                                             onValueModified: EditorController.setGradeNodeMix(gradeNode.modelData.id, value)
+                                        }
+                                        Label {
+                                            visible: gradeNode.modelData.type === 7
+                                            text: "파일"
+                                            color: "#9aa7b7"
+                                        }
+                                        Label {
+                                            visible: gradeNode.modelData.type === 7
+                                            Layout.fillWidth: true
+                                            text: gradeNode.modelData.externalFileName
+                                            elide: Text.ElideMiddle
+                                            color: "#d5dee8"
+                                            ToolTip.visible: lutHover.hovered
+                                            ToolTip.text: gradeNode.modelData.externalPath
+                                            HoverHandler { id: lutHover }
+                                        }
+                                        RowLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            Item { Layout.fillWidth: true }
+                                            AppButton {
+                                                text: "복사"
+                                                compact: true
+                                                onClicked: EditorController.copyGradeNode(gradeNode.modelData.id)
+                                            }
+                                            AppButton {
+                                                text: "초기화"
+                                                compact: true
+                                                onClicked: EditorController.resetGradeNode(gradeNode.modelData.id)
+                                            }
                                         }
                                         Label { visible: gradeNode.modelData.type === 0; text: "노출"; color: "#9aa7b7" }
                                         SpinBox {
