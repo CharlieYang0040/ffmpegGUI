@@ -288,13 +288,88 @@
 - [x] GPU 컬러 bin 전후의 합성 메타 보존과 NLE gap source로 디졸브·끝점 seek 연속성 보장
 - [x] D3D11 compositor 기본 사용과 `FFGUI_FORCE_SYSTEM_COMPOSITOR=1` 진단 fallback
 
-### 다음 구현 순서
+### 2026-08-12 재정비 기준점
 
-1. GES effect system-memory 경계를 제거해 source shader 출력을 현재 D3D11 compositor에 직접 연결
-2. 스코프 기준점 전환과 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
-3. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
-4. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
-5. qualifier/window/tracking과 shot still/reference 비교
+이 표는 UI가 존재하는지보다 실제 미리보기·출력·저장·회귀 검증이 연결되었는지를 기준으로
+판정한다. `부분 완료`는 모델이나 일부 렌더 경로만 존재해 원래 완료 조건을 아직 만족하지
+못한다는 뜻이다.
+
+| 원 계획 | 상태 | 현재 증거 | 완료를 위해 남은 것 |
+| --- | --- | --- | --- |
+| M1 출력 워크플로 | 완료 | 프로젝트별 출력 폴더, 최근 경로 상속, 원자적 `v001` 증가, 즉시 출력, 진행률·취소·사전 검사 회귀 | 깨끗한 PC 배포 검증은 최종 릴리스 게이트에서 반복 |
+| M2 GIF·스틸·시퀀스 수집 | 부분 완료 | GIF VFR, 스틸·시퀀스, 음수/1001 시작, 누락 대체, EXR part/view/AOV 선택과 저장·복원 | 혼합 자리수·마지막 누락·대규모 드롭 가져오기 전체 매트릭스, ICC/영상 메타데이터 추정 UX |
+| M3 프록시·캐시 | 부분 완료 | content-addressed EXR 캐시, 48프레임 증분 프록시, 최신 스크럽 요청 병합 | 사용자 캐시 위치·예상 용량·삭제/재생성 UI, 알파 보존 10-bit 중간 코덱 정책, 4K 100ms 목표 측정 |
+| M4 ACES/OCIO | 부분 완료 | Legacy 기본값, OCIO 2.5.2/ACES 2.0, CPU 기준 float 변환, D3D11 OCIO shader와 LUT, 입력 공간 재지정 | 모니터 Display/View 선택, 변환 우회, gamut warning, ACES 적용 전후 비교와 기술 노드 UX |
+| M4 HDR10 | 미완료 | 프로젝트 HDR 설정과 메타데이터 저장 계약 | scRGB/PQ swapchain, 모니터 이동 재검사, SDR white 보정, HDR fallback, HDR10 파일 메타데이터 검증 |
+| M5 Primary·스코프 | 부분 완료 | 일부 Primary/LGG/Contrast/RGB Mixer/RGB Curve CPU 렌더, Waveform/Parade/Vectorscope/Histogram 실시간 분석 | 모든 미디어/GPU/출력 공통 노드 렌더, 스코프 기준점, false color/pixel inspector, keyframe·undo/redo |
+| M5 고급 그레이딩 | 미완료 | 노드 순서·bypass·mix·기본 저장 모델 | Log/HDR wheels, Hue 곡선군, Color Warper, LUT/Look, 공유 grade, 복사·붙여넣기·초기화 |
+| M6 LUT·Unreal 전달 | 미완료 | 공통 컬러 결과를 내부 33³ LUT로 베이크하는 기반 | 33³/65³ 외부 Cube, shaper, look/display 구분, `.ocioz`, CLF/CTF, manifest, Unreal 사전 검사·실기 검증 |
+| 세컨더리 도구 | 미착수 | 저장·렌더 계약도 아직 확정 전 | qualifier, matte 정리, power window, mask/outside, tracking, shot still, wipe/split, shot matching |
+| 최종 품질 게이트 | 미완료 | Debug 자동 회귀와 여러 실제 미디어 smoke/soak 기준선 | 전체 입력 매트릭스, CPU/GPU 수치 비교, HDR 다중 모니터, Unreal 5.5–5.8, 깨끗한 PC 패키지 |
+
+#### 안정 기준선
+
+- 기준 커밋은 `5d389d1`이다. 이 커밋까지 D3D11 compositor, 관리형 컬러, 디졸브,
+  CPU fallback, 데스크톱 smoke와 4K 탐색 soak가 통과했다.
+- D3D11 source effect에서 compositor로 직접 texture를 전달하려던 후속 실험은 GES custom
+  `GESBaseEffect`의 `nleobject` 생성 수명주기를 만족하지 못해 기본 회귀를 깨뜨렸다. 이 코드는
+  기준선에 포함하지 않고 제거했다.
+- 따라서 현재 제품 경로는 안정적으로 GPU 컬러와 GPU 합성을 사용하지만, GES effect 경계에서
+  source별 download/upload 한 쌍이 남아 있다. 이를 제거하기 전까지 zero-copy 완료로 표시하지 않는다.
+- 새 작업은 항상 Debug build, CTest, GES GPU/system/CPU 3경로, desktop smoke를 통과한 뒤
+  다음 단계로 이동한다. 성능 변경은 4K seek/playback soak 수치도 함께 기록한다.
+
+### 재정비된 구현 순서
+
+#### R1. 네이티브 GPU 프레임 경로
+
+- GES의 일반 `GESEffect`에 D3D11 메모리를 억지로 통과시키지 않는다.
+- 전용 track element 또는 source wrapper가 유효한 `nleoperation`을 생성하도록 GES 1.28의
+  extractable/asset 수명주기를 먼저 회귀 테스트로 고정한다.
+- source OCIO/Grade 결과의 D3D11 texture와 composition meta를 D3D11 compositor까지 유지한다.
+- 완료 증거는 source download 0회, D3D compositor frame 증가, 디졸브·alpha·VFR·2배속 일치,
+  system/CPU fallback 통과와 4K soak 전후 수치다.
+
+#### R2. 컬러 노드 실행 계약 완성
+
+- `GradeGraph`의 모든 노드가 하나의 순서형 float 계약으로 CPU 기준 렌더를 갖게 한다.
+- 같은 파라미터를 OCIO/D3D11 동적 shader 또는 LUT 자원으로 게시해 일반 영상, 이미지
+  시퀀스, 미리보기, 최종 출력 사이의 결과를 맞춘다.
+- Primary/Log/HDR wheels, RGB/Hue 곡선군, Warper, LUT/Look를 순차적으로 연결한다.
+- 파라미터 keyframe, 노드 편집 command, 전체 undo/redo, shared grade를 같은 저장 버전으로 묶는다.
+- 각 노드는 bypass/mix/order/keyframe의 CPU·GPU golden patch 비교를 통과해야 완료다.
+
+#### R3. 검수용 표시와 스코프
+
+- 스코프 입력을 `그레이드 전`, `그레이드 후`, `디스플레이 변환 후`로 명시적으로 선택한다.
+- gamut warning, false color, pixel inspector를 추가하고 SDR/HDR 단위를 분리한다.
+- OCIO Display/View, 모니터 ICC, 표시 변환 bypass와 적용 전후 비교를 프로그램 모니터에 연결한다.
+
+#### R4. Windows HDR와 HDR10 출력
+
+- Qt RHI/D3D11에서 16-bit float scRGB를 우선하고 불가능할 때 Rec.2020 PQ 10-bit로 전환한다.
+- 창의 모니터 이동 때 HDR 능력과 SDR white level을 재평가하고 SDR tone-map fallback을 표시한다.
+- Rec.2100 PQ, mastering display, MaxCLL/MaxFALL을 인코더와 ffprobe 검증까지 연결한다.
+
+#### R5. LUT·Unreal 전달
+
+- 창작용 look만 굽는 33³/65³ Cube와 선택형 shaper를 우선 구현한다.
+- 공간·시간 효과 등 3D LUT로 표현 불가능한 노드를 보고하고 내보내기를 차단한다.
+- Unreal용 OCIO 2.2 호환 `.ocioz`, 필요한 CLF/CTF/LUT, manifest와 설정 안내를 한 패키지로 만든다.
+- Unreal 5.5–5.8에서 차트·회색 램프·고채도 패치와 이중 tone mapping 검사를 통과시킨다.
+
+#### R6. 세컨더리와 샷 관리
+
+- qualifier와 matte, power window/mask/outside, tracking·수동 keyframe 순서로 구현한다.
+- shot still, reference wipe, split screen, grade 복사와 기본 shot matching을 추가한다.
+- 신경망 Magic Mask, 얼굴 보정, 노이즈 제거, Fusion급 합성은 기존 범위대로 제외한다.
+
+#### R7. 완료 감사와 배포
+
+- 원 계획의 기능·컬러 정확도·HDR·성능·안정성 항목을 요구사항별 증거표로 다시 감사한다.
+- CFR/VFR/GIF/PNG/WebP/DPX/EXR과 alpha/multipart/multiview/AOV 실제 미디어를 자동 회귀한다.
+- OCIO/OIIO/OpenEXR DLL, ACES config와 GPU/CPU fallback을 깨끗한 Windows PC에서 확인한다.
+- 이 단계 전에는 전체 계획을 완료로 표시하거나 정식 릴리스를 만들지 않는다.
 
 ### 현재 완료 경계
 
