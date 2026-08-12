@@ -67,6 +67,11 @@ public:
     void set_video_window_handle(std::uintptr_t window_handle);
     void set_d3d11_device(void* device);
     void set_video_frame_callback(std::function<void(PreviewVideoFrame)> callback);
+    void set_scope_frame_callback(std::function<void(PreviewVideoFrame)> callback);
+    void set_scope_capture_enabled(bool enabled) noexcept {
+        scope_capture_enabled_.store(enabled, std::memory_order_release);
+        if (enabled) scope_last_pts_.store(GST_CLOCK_TIME_NONE, std::memory_order_release);
+    }
     void set_float_output_enabled(bool enabled);
     void set_legacy_source_color_enabled(bool enabled);
     void set_color_pipeline(ColorPipelineSettings settings, std::string output_space);
@@ -114,10 +119,13 @@ private:
     StateCallback state_callback_;
     ErrorCallback error_callback_;
     std::function<void(PreviewVideoFrame)> video_frame_callback_;
+    std::function<void(PreviewVideoFrame)> scope_frame_callback_;
     mutable std::mutex cut_points_mutex_;
     std::vector<TimeNs> hard_cut_points_;
     std::atomic<void*> d3d11_device_handle_{nullptr};
     std::atomic<std::uint64_t> video_frame_serial_{0};
+    std::atomic<std::uint64_t> scope_last_pts_{GST_CLOCK_TIME_NONE};
+    std::atomic<bool> scope_capture_enabled_{true};
     std::atomic<std::uint64_t> source_automation_bindings_{0};
     std::atomic<std::uint64_t> source_color_lut_bindings_{0};
     std::atomic<std::uint64_t> source_gpu_color_lut_bindings_{0};

@@ -1,6 +1,7 @@
 #include "editor_controller.hpp"
 #include "ffprobe_analyzer.hpp"
 #include "d3d11_video_item.hpp"
+#include "color_scope_item.hpp"
 #include "core/subtitle_srt.hpp"
 #include "core/render_preflight.hpp"
 #include "color/color_frame_processor.hpp"
@@ -37,6 +38,16 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#ifdef FFGUI_HAS_GES
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define GST_USE_UNSTABLE_API
+#include <gst/gst.h>
+#include <gst/video/video.h>
+#include <gst/d3d11/gstd3d11.h>
+#endif
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -368,6 +379,31 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             }
         }, Qt::QueuedConnection);
     });
+    player_->set_scope_frame_callback([this](ffgui::PreviewVideoFrame frame) {
+        bool scheduleDelivery = false;
+        {
+            std::scoped_lock lock(pending_scope_frame_mutex_);
+            pending_scope_frame_ = std::move(frame);
+            if (!scope_frame_delivery_queued_) {
+                scope_frame_delivery_queued_ = true;
+                scheduleDelivery = true;
+            }
+        }
+        if (!scheduleDelivery) return;
+        QMetaObject::invokeMethod(this, [this] {
+            std::optional<ffgui::PreviewVideoFrame> frame;
+            {
+                std::scoped_lock lock(pending_scope_frame_mutex_);
+                frame = std::move(pending_scope_frame_);
+                pending_scope_frame_.reset();
+                scope_frame_delivery_queued_ = false;
+            }
+            if (frame.has_value() && scopes_visible_) {
+                submitScopeFrame(std::move(*frame));
+            }
+        }, Qt::QueuedConnection);
+    });
+    player_->set_scope_capture_enabled(scopes_visible_);
     player_->set_position_callback([this](ffgui::TimeNs position) {
         QMetaObject::invokeMethod(
             this,
@@ -424,6 +460,8 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         this,
         [this] {
             const auto result = preview_watcher_.result();
+            const bool generationAdvanced = result.generation != preview_generation_;
+            const bool retryPending = preview_operation_pending_ || generationAdvanced;
             if (result.success) {
                 if (preview_failed_) {
                     preview_failed_ = false;
@@ -434,19 +472,23 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                     ++preview_rebuild_count_;
                 }
             } else {
-                preview_should_play_ = false;
-                qWarning().noquote() << "preview operation failed:" << result.error;
-                if (!preview_failed_) {
-                    preview_failed_ = true;
-                    emit previewFailedChanged();
+                if (retryPending) {
+                    qWarning().noquote() << "stale preview operation failed; retrying latest request:"
+                                         << result.error;
+                } else {
+                    preview_should_play_ = false;
+                    qWarning().noquote() << "preview operation failed:" << result.error;
+                    if (!preview_failed_) {
+                        preview_failed_ = true;
+                        emit previewFailedChanged();
+                    }
+                    setStatus(result.error.isEmpty()
+                        ? QStringLiteral("미리보기를 준비하지 못했습니다")
+                        : result.error);
                 }
-                setStatus(result.error.isEmpty()
-                    ? QStringLiteral("미리보기를 준비하지 못했습니다")
-                    : result.error);
             }
 
-            const bool generationAdvanced = result.generation != preview_generation_;
-            if (preview_operation_pending_ || generationAdvanced) {
+            if (retryPending) {
                 startPreviewOperation();
                 return;
             }
@@ -482,8 +524,10 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             } else if (result.generation == float_scrub_generation_) {
                 auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
                 if (item != nullptr) {
+                    auto scopeFrame = result.frame;
                     ++scrub_frames_submitted_;
                     item->submitFrame(std::move(result.frame));
+                    if (scopes_visible_) submitScopeFrame(std::move(scopeFrame));
                     if (result.requested_frame != result.resolved_frame) {
                         setStatus(QStringLiteral("누락 프레임 %1 · %2 프레임으로 대체")
                             .arg(result.requested_frame).arg(result.resolved_frame));
@@ -537,8 +581,10 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             } else if (result.generation == preview_generation_) {
                 ++float_video_frames_processed_;
                 if (auto* item = qobject_cast<VideoPreviewItem*>(video_item_)) {
+                    auto scopeFrame = result.frame;
                     ++video_frames_delivered_;
                     item->submitFrame(std::move(result.frame));
+                    if (scopes_visible_) submitScopeFrame(std::move(scopeFrame));
                 }
                 if (float_video_frames_processed_ <= 2 || result.elapsed_ms >= 100) {
                     qInfo().noquote() << "float video frame completed"
@@ -550,6 +596,30 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 auto next = std::move(*pending_float_video_frame_);
                 pending_float_video_frame_.reset();
                 startFloatVideoFrame(std::move(next));
+            }
+        });
+    connect(
+        &scope_watcher_,
+        &QFutureWatcher<ScopeResult>::finished,
+        this,
+        [this] {
+            const auto result = scope_watcher_.result();
+            scope_active_ = false;
+            if (result.error.isEmpty() && result.analysis != nullptr && scopes_visible_) {
+                if (auto* item = qobject_cast<ColorScopeItem*>(scope_item_)) {
+                    item->submitAnalysis(*result.analysis);
+                    ++scope_frames_analyzed_;
+                    emit scopeFrameChanged();
+                }
+            } else if (!result.error.isEmpty()) {
+                qWarning().noquote() << "scope analysis failed:" << result.error;
+            }
+            if (scopes_visible_ && pending_scope_analysis_frame_.has_value()) {
+                auto next = std::move(*pending_scope_analysis_frame_);
+                pending_scope_analysis_frame_.reset();
+                startScopeFrame(std::move(next));
+            } else if (!scopes_visible_) {
+                pending_scope_analysis_frame_.reset();
             }
         });
 #endif
@@ -584,6 +654,8 @@ EditorController::~EditorController() {
     if (float_export_watcher_.isRunning()) float_export_watcher_.waitForFinished();
     pending_float_video_frame_.reset();
     if (float_video_watcher_.isRunning()) float_video_watcher_.waitForFinished();
+    pending_scope_analysis_frame_.reset();
+    if (scope_watcher_.isRunning()) scope_watcher_.waitForFinished();
     pending_float_scrub_ns_.reset();
     ++float_scrub_generation_;
     if (float_scrub_watcher_.isRunning()) float_scrub_watcher_.waitForFinished();
@@ -1081,6 +1153,39 @@ void EditorController::attachVideoItem(QObject* item) {
         }
     }
 #endif
+}
+
+void EditorController::attachScopeItem(QObject* item) {
+    auto* scopeItem = qobject_cast<ColorScopeItem*>(item);
+    if (scopeItem == nullptr) {
+        setStatus(QStringLiteral("컬러 스코프 화면을 연결할 수 없습니다"));
+        return;
+    }
+    scope_item_ = scopeItem;
+    scopeItem->setMode(scope_mode_);
+}
+
+void EditorController::setScopesVisible(bool visible) {
+    if (scopes_visible_ == visible) return;
+    scopes_visible_ = visible;
+#ifdef FFGUI_HAS_GES
+    player_->set_scope_capture_enabled(visible);
+    if (!visible) {
+        pending_scope_analysis_frame_.reset();
+    } else if (!timeline_.clips().empty()) {
+        pending_preview_seek_ = playhead_ns_;
+        queuePreviewOperation(false);
+    }
+#endif
+    emit scopeSettingsChanged();
+}
+
+void EditorController::setScopeMode(int mode) {
+    const auto clamped = std::clamp(mode, 0, 3);
+    if (scope_mode_ == clamped) return;
+    scope_mode_ = clamped;
+    if (auto* item = qobject_cast<ColorScopeItem*>(scope_item_)) item->setMode(scope_mode_);
+    emit scopeSettingsChanged();
 }
 
 void EditorController::loadFiles(const QStringList& paths) {
@@ -1590,6 +1695,99 @@ void EditorController::startFloatVideoFrame(ffgui::PreviewVideoFrame frame) {
             result.elapsed_ms = elapsed.elapsed();
             return result;
         }));
+#else
+    static_cast<void>(frame);
+#endif
+}
+
+void EditorController::submitScopeFrame(ffgui::PreviewVideoFrame frame) {
+#ifdef FFGUI_HAS_GES
+    const bool cpuFrame = frame.cpu_format == ffgui::PreviewCpuFormat::bgra8 &&
+        frame.cpu_pixels != nullptr && frame.width > 0 && frame.height > 0 &&
+        frame.cpu_stride >= frame.width * 4;
+    if (!cpuFrame && frame.sample == nullptr) return;
+    if (scope_active_) {
+        pending_scope_analysis_frame_ = std::move(frame);
+    } else {
+        startScopeFrame(std::move(frame));
+    }
+#else
+    static_cast<void>(frame);
+#endif
+}
+
+void EditorController::startScopeFrame(ffgui::PreviewVideoFrame frame) {
+#ifdef FFGUI_HAS_GES
+    scope_active_ = true;
+    scope_watcher_.setFuture(QtConcurrent::run([frame = std::move(frame)]() mutable {
+        ScopeResult result;
+        try {
+            if (frame.cpu_pixels != nullptr) {
+                const auto expected = static_cast<std::size_t>(frame.cpu_stride) * frame.height;
+                if (frame.cpu_pixels->size() < expected) {
+                    throw std::invalid_argument("scope frame storage is invalid");
+                }
+                result.analysis = std::make_shared<ffgui::ScopeAnalysis>(
+                    ffgui::analyze_scope_bgra8(
+                        frame.cpu_pixels->data(), frame.width, frame.height, frame.cpu_stride,
+                        frame.serial, ffgui::ScopeReferenceStage::post_display));
+            } else {
+                auto* sample = static_cast<GstSample*>(frame.sample.get());
+                auto* buffer = sample != nullptr ? gst_sample_get_buffer(sample) : nullptr;
+                auto* caps = sample != nullptr ? gst_sample_get_caps(sample) : nullptr;
+                GstVideoInfo info{};
+                if (buffer == nullptr || caps == nullptr ||
+                    !gst_video_info_from_caps(&info, caps)) {
+                    throw std::invalid_argument("scope GPU sample has invalid video metadata");
+                }
+                const auto format = GST_VIDEO_INFO_FORMAT(&info);
+                if (format != GST_VIDEO_FORMAT_RGBA && format != GST_VIDEO_FORMAT_BGRA) {
+                    throw std::invalid_argument("scope GPU sample is not RGBA/BGRA");
+                }
+                GstMapInfo map{};
+                if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+                    throw std::runtime_error("scope GPU frame download failed");
+                }
+                auto stride = static_cast<std::size_t>(
+                    std::max(0, GST_VIDEO_INFO_PLANE_STRIDE(&info, 0)));
+                if (gst_buffer_n_memory(buffer) > 0) {
+                    auto* memory = gst_buffer_peek_memory(buffer, 0);
+                    if (memory != nullptr && gst_is_d3d11_memory(memory)) {
+                        guint resourceStride{};
+                        if (gst_d3d11_memory_get_resource_stride(
+                                GST_D3D11_MEMORY_CAST(memory), &resourceStride)) {
+                            stride = resourceStride;
+                        }
+                    }
+                }
+                const auto width = static_cast<std::size_t>(GST_VIDEO_INFO_WIDTH(&info));
+                const auto height = static_cast<std::size_t>(GST_VIDEO_INFO_HEIGHT(&info));
+                if (stride < width * 4 || map.size < stride * height) {
+                    gst_buffer_unmap(buffer, &map);
+                    throw std::invalid_argument("scope GPU frame has invalid row stride");
+                }
+                std::optional<ffgui::ScopeAnalysis> analysis;
+                try {
+                    analysis = format == GST_VIDEO_FORMAT_RGBA
+                        ? ffgui::analyze_scope_rgba8(
+                            map.data, width, height, stride, frame.serial,
+                            ffgui::ScopeReferenceStage::post_display)
+                        : ffgui::analyze_scope_bgra8(
+                            map.data, width, height, stride, frame.serial,
+                            ffgui::ScopeReferenceStage::post_display);
+                } catch (...) {
+                    gst_buffer_unmap(buffer, &map);
+                    throw;
+                }
+                gst_buffer_unmap(buffer, &map);
+                result.analysis = std::make_shared<ffgui::ScopeAnalysis>(
+                    std::move(*analysis));
+            }
+        } catch (const std::exception& error) {
+            result.error = QString::fromUtf8(error.what());
+        }
+        return result;
+    }));
 #else
     static_cast<void>(frame);
 #endif

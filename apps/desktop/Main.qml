@@ -638,6 +638,12 @@ ApplicationWindow {
                                 font.bold: EditorController.previewBusy || EditorController.playing
                             }
                             Item { Layout.fillWidth: true }
+                            AppButton {
+                                text: EditorController.scopesVisible ? "스코프 닫기" : "스코프"
+                                compact: true
+                                onClicked: EditorController.scopesVisible =
+                                    !EditorController.scopesVisible
+                            }
                             Label {
                                 text: EditorController.timeText(EditorController.playheadNs)
                                       + "  ·  F" + EditorController.frameNumberAt(EditorController.playheadNs)
@@ -833,6 +839,61 @@ ApplicationWindow {
                                             (overlayTextItem.y + overlayTextItem.height / 2 -
                                                 previewSurface.videoTop) / previewSurface.videoHeight)
                                     }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: EditorController.scopesVisible ? 190 : 0
+                        visible: EditorController.scopesVisible
+                        color: "#0b0e12"
+                        border.color: "#27303a"
+                        clip: true
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            spacing: 6
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label {
+                                    text: "컬러 스코프"
+                                    color: "#c8d1dc"
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                                Label {
+                                    text: "디스플레이 변환 후"
+                                    color: "#758292"
+                                    font.pixelSize: 10
+                                }
+                                Item { Layout.fillWidth: true }
+                                ComboBox {
+                                    implicitWidth: 132
+                                    model: ["Waveform", "RGB Parade", "Vectorscope", "Histogram"]
+                                    currentIndex: EditorController.scopeMode
+                                    onActivated: EditorController.scopeMode = currentIndex
+                                }
+                            }
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                ColorScopeItem {
+                                    id: colorScope
+                                    anchors.fill: parent
+                                    mode: EditorController.scopeMode
+                                    Component.onCompleted: EditorController.attachScopeItem(colorScope)
+                                }
+                                Label {
+                                    anchors.centerIn: parent
+                                    visible: !colorScope.hasSignal
+                                    text: EditorController.durationNs === 0
+                                          ? "미디어를 추가하면 스코프가 표시됩니다"
+                                          : "프레임 분석 대기 중"
+                                    color: "#687587"
+                                    font.pixelSize: 11
                                 }
                             }
                         }

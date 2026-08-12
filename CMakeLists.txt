@@ -23,6 +23,7 @@ add_library(ffgui_core STATIC
     src/color/ocio_engine.cpp
     src/color/grade_processor.cpp
     src/color/color_frame_processor.cpp
+    src/color/scope_analyzer.cpp
     src/core/color_pipeline.cpp
     src/core/ffprobe_parser.cpp
     src/core/media_asset.cpp
@@ -132,6 +133,8 @@ if(FFGUI_BUILD_DESKTOP)
                 apps/desktop/editor_controller.hpp
                 apps/desktop/d3d11_video_item.cpp
                 apps/desktop/d3d11_video_item.hpp
+                apps/desktop/color_scope_item.cpp
+                apps/desktop/color_scope_item.hpp
                 apps/desktop/ffprobe_analyzer.cpp
                 apps/desktop/ffprobe_analyzer.hpp
                 apps/desktop/timeline_view.cpp

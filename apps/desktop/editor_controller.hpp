@@ -2,6 +2,7 @@
 
 #include "core/timeline_model.hpp"
 #include "core/color_pipeline.hpp"
+#include "color/scope_analyzer.hpp"
 #include "export/ffmpeg_export_plan.hpp"
 #include "media/oiio_frame_source.hpp"
 #include "render/timeline_frame_server.hpp"
@@ -94,6 +95,9 @@ class EditorController final : public QObject {
     Q_PROPERTY(int sdrWhiteNits READ sdrWhiteNits WRITE setSdrWhiteNits NOTIFY colorPipelineChanged)
     Q_PROPERTY(QString colorPipelineSummary READ colorPipelineSummary NOTIFY colorPipelineChanged)
     Q_PROPERTY(QVariantList selectedGradeNodes READ selectedGradeNodes NOTIFY selectedClipChanged)
+    Q_PROPERTY(bool scopesVisible READ scopesVisible WRITE setScopesVisible NOTIFY scopeSettingsChanged)
+    Q_PROPERTY(int scopeMode READ scopeMode WRITE setScopeMode NOTIFY scopeSettingsChanged)
+    Q_PROPERTY(quint64 scopeFramesAnalyzed READ scopeFramesAnalyzed NOTIFY scopeFrameChanged)
     Q_PROPERTY(int exportQuality READ exportQuality WRITE setExportQuality NOTIFY exportSettingsChanged)
     Q_PROPERTY(int exportCodec READ exportCodec WRITE setExportCodec NOTIFY exportSettingsChanged)
     Q_PROPERTY(int exportContainer READ exportContainer WRITE setExportContainer NOTIFY exportSettingsChanged)
@@ -173,6 +177,9 @@ public:
     [[nodiscard]] int sdrWhiteNits() const noexcept { return color_pipeline_.sdr_white_nits; }
     [[nodiscard]] QString colorPipelineSummary() const;
     [[nodiscard]] QVariantList selectedGradeNodes() const;
+    [[nodiscard]] bool scopesVisible() const noexcept { return scopes_visible_; }
+    [[nodiscard]] int scopeMode() const noexcept { return scope_mode_; }
+    [[nodiscard]] quint64 scopeFramesAnalyzed() const noexcept { return scope_frames_analyzed_; }
     [[nodiscard]] int exportQuality() const noexcept { return export_quality_; }
     [[nodiscard]] int exportCodec() const noexcept { return export_codec_; }
     [[nodiscard]] int exportContainer() const noexcept { return export_container_; }
@@ -287,6 +294,9 @@ public slots:
     void setGradeNodeEnabled(const QString& nodeId, bool enabled);
     void setGradeNodeMix(const QString& nodeId, int percent);
     void setGradeParameter(const QString& nodeId, const QString& parameter, double value);
+    void setScopesVisible(bool visible);
+    void setScopeMode(int mode);
+    void attachScopeItem(QObject* item);
     void cancelExport();
     void setExportQuality(int quality);
     void setExportCodec(int codec);
@@ -334,6 +344,8 @@ signals:
     void exportProgressChanged();
     void exportSettingsChanged();
     void colorPipelineChanged();
+    void scopeSettingsChanged();
+    void scopeFrameChanged();
     void gifEstimateChanged();
     void exportFinished(bool success, QUrl outputUrl);
 
@@ -359,6 +371,8 @@ private:
     [[nodiscard]] bool requiresFloatVideoPreview() const;
     void submitFloatVideoFrame(ffgui::PreviewVideoFrame frame);
     void startFloatVideoFrame(ffgui::PreviewVideoFrame frame);
+    void submitScopeFrame(ffgui::PreviewVideoFrame frame);
+    void startScopeFrame(ffgui::PreviewVideoFrame frame);
     [[nodiscard]] bool canUseFloatExport() const;
     void startFloatExport();
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
@@ -394,6 +408,10 @@ private:
         QString error;
         qint64 elapsed_ms{};
     };
+    struct ScopeResult final {
+        std::shared_ptr<ffgui::ScopeAnalysis> analysis;
+        QString error;
+    };
 #endif
 
     ffgui::TimelineModel timeline_;
@@ -427,9 +445,13 @@ private:
     int stamp_opacity_{90};
     int stamp_mode_{};
     QObject* video_item_{};
+    QObject* scope_item_{};
     QWindow* video_window_{};
     bool use_d3d_scene_graph_{};
     bool in_process_preview_{};
+    bool scopes_visible_{};
+    int scope_mode_{};
+    std::uint64_t scope_frames_analyzed_{};
     bool importing_{};
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
     QTimer preview_update_timer_;
@@ -446,6 +468,9 @@ private:
     mutable std::mutex pending_video_frame_mutex_;
     std::optional<ffgui::PreviewVideoFrame> pending_video_frame_;
     bool video_frame_delivery_queued_{};
+    mutable std::mutex pending_scope_frame_mutex_;
+    std::optional<ffgui::PreviewVideoFrame> pending_scope_frame_;
+    bool scope_frame_delivery_queued_{};
     ffgui::TimelineFrameServer timeline_frame_server_{512ULL * 1024ULL * 1024ULL};
     QFutureWatcher<FloatScrubResult> float_scrub_watcher_;
     bool float_scrub_active_{};
@@ -458,6 +483,9 @@ private:
     bool float_video_active_{};
     std::uint64_t float_video_frames_processed_{};
     std::optional<ffgui::PreviewVideoFrame> pending_float_video_frame_;
+    QFutureWatcher<ScopeResult> scope_watcher_;
+    bool scope_active_{};
+    std::optional<ffgui::PreviewVideoFrame> pending_scope_analysis_frame_;
 #endif
     QHash<QString, QString> thumbnail_atlases_;
     QHash<QString, QImage> thumbnail_images_;

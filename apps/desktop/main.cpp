@@ -201,6 +201,7 @@ int main(int argc, char* argv[]) {
         }
         mediaFiles.push_back(arguments[index]);
     }
+    if (offscreenPresentationSmoke) controller.setScopesVisible(true);
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(
@@ -791,6 +792,7 @@ int main(int argc, char* argv[]) {
                                   << "delivered=" << controller.videoFramesDelivered()
                                   << "presented=" << controller.videoFramesPresented()
                                   << "scrub_cached=" << controller.scrubFramesSubmitted()
+                                  << "scopes=" << controller.scopeFramesAnalyzed()
                                   << "surface_exposed=" << controller.videoSurfaceExposed()
                                   << "playhead_ns=" << controller.playheadNs()
                                   << "failed=" << controller.previewFailed();
@@ -803,6 +805,7 @@ int main(int argc, char* argv[]) {
                 else if (controller.inProcessPreview() && controller.videoFramesReceived() < 10) application.exit(11);
                 else if (controller.inProcessPreview() && controller.videoFramesDelivered() < 10) application.exit(12);
                 else if (controller.scrubFramesSubmitted() < 4) application.exit(16);
+                else if (offscreenPresentationSmoke && controller.scopeFramesAnalyzed() < 3) application.exit(18);
                 else if (offscreenPresentationSmoke && !controller.videoSurfaceExposed()) application.exit(15);
                 else if (controller.inProcessPreview() && controller.videoSurfaceExposed() &&
                          controller.videoFramesPresented() < 10) application.exit(13);

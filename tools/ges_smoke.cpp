@@ -95,8 +95,19 @@ int main(int argc, char* argv[]) {
 
         const bool expectGpuColor = g_getenv("FFGUI_FORCE_CPU_COLOR") == nullptr;
         std::atomic<std::uint64_t> videoFrames{0};
+        std::atomic<std::uint64_t> scopeFrames{0};
         std::atomic<bool> invalidCpuFrame{false};
+        std::atomic<bool> invalidScopeFrame{false};
         GesSequencePlayer player{"cpu-appsink", "fakesink"};
+        player.set_scope_frame_callback([&](ffgui::PreviewVideoFrame frame) {
+            if (frame.cpu_format != ffgui::PreviewCpuFormat::bgra8 ||
+                frame.cpu_pixels == nullptr || frame.width != 1280 || frame.height != 720 ||
+                frame.cpu_stride != frame.width * 4) {
+                invalidScopeFrame.store(true);
+                return;
+            }
+            scopeFrames.fetch_add(1);
+        });
         auto solidRed = std::make_shared<ffgui::ColorCube>();
         solidRed->size = 2;
         solidRed->rgb.resize(2 * 2 * 2 * 3);
@@ -318,6 +329,11 @@ int main(int argc, char* argv[]) {
             throw std::runtime_error(
                 "CPU appsink did not deliver enough valid 1280x720 BGRA frames: " +
                 std::to_string(videoFrames.load()));
+        }
+        if (invalidScopeFrame.load() || scopeFrames.load() < 5) {
+            throw std::runtime_error(
+                "scope callback did not deliver enough valid post-display frames: " +
+                std::to_string(scopeFrames.load()));
         }
 
         std::atomic<std::uint64_t> floatFrames{0};

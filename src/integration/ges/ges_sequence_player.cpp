@@ -423,6 +423,12 @@ void GesSequencePlayer::set_video_frame_callback(
     video_frame_callback_ = std::move(callback);
 }
 
+void GesSequencePlayer::set_scope_frame_callback(
+    std::function<void(PreviewVideoFrame)> callback) {
+    std::scoped_lock lock(callback_mutex_);
+    scope_frame_callback_ = std::move(callback);
+}
+
 void GesSequencePlayer::set_float_output_enabled(bool enabled) {
     float_output_enabled_.store(enabled, std::memory_order_release);
 }
@@ -494,9 +500,11 @@ GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_d
         ? gst_buffer_peek_memory(buffer, 0)
         : nullptr;
     std::function<void(PreviewVideoFrame)> callback;
+    std::function<void(PreviewVideoFrame)> scopeCallback;
     {
         std::scoped_lock lock(player->callback_mutex_);
         callback = player->video_frame_callback_;
+        scopeCallback = player->scope_frame_callback_;
     }
     if (!callback || buffer == nullptr || memory == nullptr) return GST_FLOW_OK;
 
@@ -574,7 +582,19 @@ GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_d
         frame.sample.reset();
     }
     frame.serial = player->video_frame_serial_.fetch_add(1) + 1;
+    bool deliverScope = false;
+    if (player->scope_capture_enabled_.load(std::memory_order_acquire) && scopeCallback) {
+        const auto pts = static_cast<std::uint64_t>(std::max<TimeNs>(0, frame.pts));
+        const auto previous = player->scope_last_pts_.load(std::memory_order_relaxed);
+        constexpr auto interval = static_cast<std::uint64_t>(GST_SECOND / 10);
+        if (previous == GST_CLOCK_TIME_NONE || pts < previous || pts - previous >= interval) {
+            player->scope_last_pts_.store(pts, std::memory_order_relaxed);
+            deliverScope = true;
+        }
+    }
+    auto scopeFrame = deliverScope ? frame : PreviewVideoFrame{};
     callback(std::move(frame));
+    if (deliverScope) scopeCallback(std::move(scopeFrame));
     return GST_FLOW_OK;
 }
 

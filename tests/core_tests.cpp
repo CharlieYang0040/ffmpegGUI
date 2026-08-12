@@ -4,6 +4,7 @@
 #include "color/ocio_engine.hpp"
 #include "color/grade_processor.hpp"
 #include "color/color_frame_processor.hpp"
+#include "color/scope_analyzer.hpp"
 #include "media/oiio_probe.hpp"
 #include "media/oiio_frame_source.hpp"
 #include "render/timeline_frame_server.hpp"
@@ -18,6 +19,7 @@
 #include <functional>
 #include <fstream>
 #include <iostream>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -225,6 +227,49 @@ void test_float_grade_pipeline_preserves_alpha_and_node_mix() {
     const auto cube = ffgui::bake_color_cube({}, {}, fullGrade, {}, 2);
     require(cube.contains("LUT_3D_SIZE 2") && std::ranges::count(cube, '\n') == 12,
             "clip color cube must contain every RGB lattice point from the reference path");
+}
+
+void test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope() {
+    const std::array<std::uint8_t, 16> pixels{
+        0, 0, 255, 255, 0, 255, 0, 255,
+        255, 0, 0, 255, 255, 255, 255, 255};
+    const auto scopes = ffgui::analyze_scope_bgra8(
+        pixels.data(), 2, 2, 8, 42, ffgui::ScopeReferenceStage::post_display);
+    require(scopes.serial == 42 && scopes.sampled_pixels == 4 &&
+                scopes.histogram[0][255] == 2 && scopes.histogram[0][0] == 2 &&
+                scopes.histogram[1][255] == 2 && scopes.histogram[2][255] == 2,
+            "scope histograms must count final display RGB channels exactly");
+    const auto waveformCount = std::accumulate(
+        scopes.waveform.begin(), scopes.waveform.end(), std::uint64_t{});
+    const auto vectorscopeCount = std::accumulate(
+        scopes.vectorscope.begin(), scopes.vectorscope.end(), std::uint64_t{});
+    require(waveformCount == 4 && vectorscopeCount == 4 &&
+                std::ranges::all_of(scopes.rgb_parade, [](const auto& channel) {
+                    return std::accumulate(
+                        channel.begin(), channel.end(), std::uint64_t{}) == 4;
+                }),
+            "waveform, RGB parade and vectorscope must receive every sampled pixel");
+
+    const std::array<std::uint8_t, 16> rgbaPixels{
+        255, 0, 0, 255, 0, 255, 0, 255,
+        0, 0, 255, 255, 255, 255, 255, 255};
+    const auto rgbaScopes = ffgui::analyze_scope_rgba8(
+        rgbaPixels.data(), 2, 2, 8, 44, ffgui::ScopeReferenceStage::post_display);
+    require(rgbaScopes.histogram == scopes.histogram &&
+                rgbaScopes.waveform == scopes.waveform &&
+                rgbaScopes.rgb_parade == scopes.rgb_parade &&
+                rgbaScopes.vectorscope == scopes.vectorscope,
+            "RGBA GPU downloads and BGRA CPU frames must produce identical scopes");
+
+    ffgui::FloatImageFrame frame;
+    frame.width = 2;
+    frame.height = 2;
+    frame.rgba = {
+        1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 1.0F, 0.0F, 1.0F,
+        0.0F, 0.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F};
+    const auto floatScopes = ffgui::analyze_scope_float(frame, 43);
+    require(floatScopes.serial == 43 && floatScopes.histogram == scopes.histogram,
+            "float and BGRA scope inputs must agree for the same display-referred pixels");
 }
 
 void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
@@ -1272,6 +1317,7 @@ int main() {
         {"color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes", test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes},
         {"ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube", test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube},
         {"float_grade_pipeline_preserves_alpha_and_node_mix", test_float_grade_pipeline_preserves_alpha_and_node_mix},
+        {"scope_analyzer_builds_histogram_waveform_parade_and_vectorscope", test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope},
         {"oiio_probe_reports_exr_layers_alpha_and_color_space", test_oiio_probe_reports_exr_layers_alpha_and_color_space},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},
         {"global_frame_trim_is_atomic_magnetic_and_undoable", test_global_frame_trim_is_atomic_magnetic_and_undoable},

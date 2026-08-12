@@ -280,12 +280,15 @@
 - [x] OCIO 동적 HLSL과 1D/2D/3D LUT texture를 D3D reflection으로 실제 slot에 바인딩
 - [x] 관리형 입력·출력은 정확한 OCIO shader, 창작용 GradeGraph는 working-space 33³ texture로 분리
 - [x] GStreamer C 객체에서 C++ GPU 상태를 분리하고 재협상·프레임 실행을 직렬화해 디졸브 충돌 제거
+- [x] 프로그램 모니터 최종 표시 프레임의 Waveform/RGB Parade/Vectorscope/Histogram
+- [x] GPU 동일 샘플 비동기 readback·CPU/float 픽셀 재사용과 최신 요청 병합으로 스코프가 재생 그래프를 방해하지 않는 10fps 분석
+- [x] 편집 중 이전 seek 실패가 최신 재생 요청을 지우지 않는 세대 기반 재시도
 - [x] 개발 Debug EXE의 Qt/GStreamer 런타임 자동 배치와 탐색기 직접 실행
 
 ### 다음 구현 순서
 
 1. 현재 source shader 앞뒤의 upload/download를 제거하고 D3D11 compositor에 직접 연결
-2. 스코프와 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
+2. 스코프 기준점 전환과 Primary/Log/Curve/HDR/Warper 노드의 실제 렌더 및 키프레임/undo 통합
 3. Windows scRGB/PQ 모니터 출력과 HDR10 메타데이터 출력 검증
 4. 33³/65³ look LUT 및 Unreal 호환 `.ocioz`·manifest 생성
 5. qualifier/window/tracking과 shot still/reference 비교
@@ -337,3 +340,6 @@ ACES Managed 미리보기를 재구축해 소스 LUT 3개가 합성 전에 연�
 D3D11 3D LUT 경로는 반투명 RGBA64 테스트 픽셀과 관리형 4샷 타임라인에서 모두 통과했다.
 동일한 Debug GES 회귀의 BGRA 전달량은 CPU LUT 약 25프레임에서 GPU LUT 약 85프레임으로
 증가했으며, GPU 강제 비활성화 시 같은 결과를 내는 CPU fallback도 별도로 통과했다.
+프로그램 모니터 스코프를 켠 D3D11 데스크톱 회귀에서는 5초 동안 GPU 프레임 117개를
+컨트롤러에 전달하면서 38개를 분석했고 Qt Scene Graph 표시까지 통과했다. 스코프를 닫은
+기본 재생, 스코프를 연 D3D11 표시와 CPU BGRA fallback을 포함한 전체 데스크톱 회귀도 통과했다.

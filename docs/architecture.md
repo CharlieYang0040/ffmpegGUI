@@ -261,6 +261,17 @@ FFmpeg 종료 코드 0 이후에도 FFprobe JSON으로 영상 스트림 존재 �
 재생시간 오차를 검사한다. 검증 실패 파일은 삭제하며, 작업별 전체 stderr와 검증 JSON은
 앱 데이터의 `logs/export-*.log`에 남긴다.
 
+## 프로그램 모니터 컬러 스코프
+
+Waveform, RGB Parade, Vectorscope, Histogram은 프로그램 모니터에 실제로 전달된
+display-referred 프레임을 공통 `ScopeAnalyzer`로 분석한다. CPU BGRA, GPU RGBA와 float
+입력은 채널 순서만 정규화하고 같은 누적기를 사용하므로 같은 픽셀은 같은 결과를 만든다.
+D3D11 경로는 스코프용 `tee`나 보조 sink를 재생 그래프에 추가하지 않는다. Qt에 전달되는
+같은 `GstSample`의 수명을 공유하고 최대 10fps만 작업 스레드에서 system-memory map하여
+메인 appsink의 재생 시계, 프리롤과 프레임 전달률을 보존한다. 분석이 늦으면 대기열을
+쌓지 않고 최신 프레임 하나로 교체한다. CPU 및 float 프레임은 이미 독립 복사된 픽셀을
+재사용한다. 패널이 닫혀 있을 때는 GPU readback과 분석을 모두 중단한다.
+
 ## 편집 리비전과 작업 격리
 
 성공한 구조 편집, undo와 redo는 `TimelineModel` 리비전을 증가시킨다. 컨트롤러는 GES
