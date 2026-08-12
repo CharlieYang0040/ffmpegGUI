@@ -20,6 +20,7 @@ $gstRoot = Join-Path $root ".tools\gstreamer"
 $gstBin = Join-Path $gstRoot "bin"
 $gstPluginRoot = Join-Path $gstRoot "lib\gstreamer-1.0"
 $ffmpegRoot = Join-Path $root ".tools\ffmpeg"
+$vcpkgBin = Join-Path $root "out\vcpkg_installed\x64-windows\bin"
 $dumpbin = Get-ChildItem `
     "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC" `
     -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -like '*Hostx64\x64*' } |
@@ -92,13 +93,16 @@ while ($dependencyQueue.Count -gt 0) {
     foreach ($line in $lines) {
         if ($line -notmatch '^\s+([A-Za-z0-9_.+-]+\.dll)\s*$') { continue }
         $name = $Matches[1]
-        $gstDependency = Join-Path $gstBin $name
-        if (-not (Test-Path -LiteralPath $gstDependency)) { continue }
+        $dependencySource = @(
+            (Join-Path $gstBin $name),
+            (Join-Path $vcpkgBin $name)
+        ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if ($null -eq $dependencySource) { continue }
         $target = Join-Path $packageDir $name
         if (-not (Test-Path -LiteralPath $target)) {
-            Copy-Item -LiteralPath $gstDependency -Destination $target
+            Copy-Item -LiteralPath $dependencySource -Destination $target
         }
-        $dependencyQueue.Enqueue($gstDependency)
+        $dependencyQueue.Enqueue($dependencySource)
     }
 }
 

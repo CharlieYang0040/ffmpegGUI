@@ -17,7 +17,14 @@ $media = @(
     (Join-Path $mediaDir "shot-b.mkv"),
     (Join-Path $mediaDir "shot-vfr.mkv")
 )
-foreach ($required in @($application) + $media) {
+$runtimeFiles = @(
+    (Join-Path $packageDir "OpenColorIO_2_5.dll"),
+    (Join-Path $packageDir "OpenImageIO.dll"),
+    (Join-Path $packageDir "OpenImageIO_Util.dll"),
+    (Join-Path $packageDir "platforms\qwindows.dll"),
+    (Join-Path $packageDir "tools\ffprobe.exe")
+)
+foreach ($required in @($application) + $runtimeFiles + $media) {
     if (-not (Test-Path -LiteralPath $required)) { throw "missing package test file: $required" }
 }
 
@@ -35,7 +42,12 @@ try {
     $roundtrip = Join-Path $mediaDir "packaged-roundtrip.ffnext"
     $roundtripArguments = @("--project-roundtrip", $roundtrip) + $media
     $roundtripProcess = Start-Process -FilePath $application -ArgumentList $roundtripArguments `
-        -WindowStyle Hidden -Wait -PassThru
+        -WindowStyle Hidden -PassThru
+    if (-not $roundtripProcess.WaitForExit(60000)) {
+        Stop-Process -Id $roundtripProcess.Id -Force
+        $roundtripProcess.WaitForExit()
+        throw "packaged project roundtrip timed out"
+    }
     if ($roundtripProcess.ExitCode -ne 0) { throw "packaged project roundtrip failed" }
     $project = Get-Content -LiteralPath $roundtrip -Raw | ConvertFrom-Json
     $vfrAsset = $project.assets | Where-Object { $_.path -like '*shot-vfr.mkv' } | Select-Object -First 1
