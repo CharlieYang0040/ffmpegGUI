@@ -289,6 +289,8 @@
 - [x] D3D11 compositor 기본 사용과 `FFGUI_FORCE_SYSTEM_COMPOSITOR=1` 진단 fallback
 - [x] converter 없는 native GES effect로 source shader texture를 D3D11 compositor에 직접 전달
 - [x] D3D11 경로의 Legacy clip controls와 2배속 videorate를 GPU-memory 호환 경로로 통합
+- [x] Primary 전체 창작 파라미터, Log Wheels, RGB/Hue Curves, HDR Zones, Color Warper 공통 float 렌더
+- [x] 고급 노드의 일반 영상 GPU LUT·이미지 시퀀스 CPU 기준 경로와 편집 UI 연결
 
 ### 2026-08-12 재정비 기준점
 
@@ -303,8 +305,8 @@
 | M3 프록시·캐시 | 부분 완료 | content-addressed EXR 캐시, 48프레임 증분 프록시, 최신 스크럽 요청 병합 | 사용자 캐시 위치·예상 용량·삭제/재생성 UI, 알파 보존 10-bit 중간 코덱 정책, 4K 100ms 목표 측정 |
 | M4 ACES/OCIO | 부분 완료 | Legacy 기본값, OCIO 2.5.2/ACES 2.0, CPU 기준 float 변환, D3D11 OCIO shader와 LUT, 입력 공간 재지정 | 모니터 Display/View 선택, 변환 우회, gamut warning, ACES 적용 전후 비교와 기술 노드 UX |
 | M4 HDR10 | 미완료 | 프로젝트 HDR 설정과 메타데이터 저장 계약 | scRGB/PQ swapchain, 모니터 이동 재검사, SDR white 보정, HDR fallback, HDR10 파일 메타데이터 검증 |
-| M5 Primary·스코프 | 부분 완료 | 일부 Primary/LGG/Contrast/RGB Mixer/RGB Curve CPU 렌더, Waveform/Parade/Vectorscope/Histogram 실시간 분석 | 모든 미디어/GPU/출력 공통 노드 렌더, 스코프 기준점, false color/pixel inspector, keyframe·undo/redo |
-| M5 고급 그레이딩 | 미완료 | 노드 순서·bypass·mix·기본 저장 모델 | Log/HDR wheels, Hue 곡선군, Color Warper, LUT/Look, 공유 grade, 복사·붙여넣기·초기화 |
+| M5 Primary·스코프 | 부분 완료 | Primary 전체 파라미터, RGB Mixer/Curve 공통 렌더와 Waveform/Parade/Vectorscope/Histogram | 스코프 기준점, false color/pixel inspector, parameter keyframe |
+| M5 고급 그레이딩 | 부분 완료 | Log Wheels, RGB/Hue 곡선군, HDR Zones, Color Warper의 CPU 기준·GPU LUT·UI 연결 | LUT/Look, 공유 grade, 복사·붙여넣기·초기화, keyframe |
 | M6 LUT·Unreal 전달 | 미완료 | 공통 컬러 결과를 내부 33³ LUT로 베이크하는 기반 | 33³/65³ 외부 Cube, shaper, look/display 구분, `.ocioz`, CLF/CTF, manifest, Unreal 사전 검사·실기 검증 |
 | R1 네이티브 GPU 프레임 | 완료 | native GES asset/effect, D3D11 source download 0회, VFR·2배속·디졸브·오디오 및 fallback 회귀 | 최종 릴리스 GPU 매트릭스에서 반복 검증 |
 | 세컨더리 도구 | 미착수 | 저장·렌더 계약도 아직 확정 전 | qualifier, matte 정리, power window, mask/outside, tracking, shot still, wipe/split, shot matching |
@@ -332,12 +334,13 @@
 - [x] 디졸브·straight alpha·VFR·2배속·오디오 연속성 회귀
 - [x] system compositor와 CPU color fallback 및 전체 desktop smoke 통과
 
-#### R2. 컬러 노드 실행 계약 완성
+#### R2. 컬러 노드 실행 계약 완성 — 진행 중
 
-- `GradeGraph`의 모든 노드가 하나의 순서형 float 계약으로 CPU 기준 렌더를 갖게 한다.
-- 같은 파라미터를 OCIO/D3D11 동적 shader 또는 LUT 자원으로 게시해 일반 영상, 이미지
+- [x] `GradeGraph`의 공간 비의존 노드가 하나의 순서형 float 계약으로 CPU 기준 렌더를 갖는다.
+- [x] 같은 파라미터를 OCIO/D3D11 동적 shader 또는 LUT 자원으로 게시해 일반 영상, 이미지
   시퀀스, 미리보기, 최종 출력 사이의 결과를 맞춘다.
-- Primary/Log/HDR wheels, RGB/Hue 곡선군, Warper, LUT/Look를 순차적으로 연결한다.
+- [x] Primary/Log/HDR wheels, RGB/Hue 곡선군, Warper를 공통 렌더와 UI에 연결했다.
+- LUT/Look 파일 로더와 기술 변환 분리 UI를 연결한다.
 - 파라미터 keyframe, 노드 편집 command, 전체 undo/redo, shared grade를 같은 저장 버전으로 묶는다.
 - 각 노드는 bypass/mix/order/keyframe의 CPU·GPU golden patch 비교를 통과해야 완료다.
 
@@ -375,7 +378,8 @@
 
 ### 현재 완료 경계
 
-- Primary exposure/LGG/contrast/pivot/saturation, RGB Mixer, RGB Curve의 CPU float 처리는
+- Primary exposure/LGG/temperature/tint/contrast/pivot/saturation/hue/color boost, Log Wheels,
+  RGB Mixer, master·채널 RGB Curve, 7종 Hue Curve, HDR Zone, Color Warper의 CPU float 처리는
   이미지 시퀀스의 정지·탐색·연속 재생·디졸브·최종 출력에서 같은 프레임 서버를 사용한다.
   일반 영상과 혼합 타임라인 출력은 이 기준 경로를 33³ LUT로 베이크하고 각 클립의
   scale·xfade 전에 적용한다. 따라서 문구·스탬프·레터박스와 편집 오디오도 같은 FFmpeg
@@ -407,7 +411,7 @@
   48프레임 intra 구간으로 주소화한다. 원본 한 프레임이 바뀌면 해당 구간만 다시 인코딩하고
   나머지 구간은 재사용한 뒤 최종 MKV/MOV를 stream-copy로 빠르게 다시 결합한다.
 
-검증 기준선: Debug 빌드, 코어 45/45와 타임라인 테스트 통과. 누락 1장을 포함한
+검증 기준선: Debug 빌드, 코어 47/47와 타임라인 테스트 통과. 누락 1장을 포함한
 1001–1048 PNG 시퀀스를 별도 환경 변수 없이 Debug EXE에서 가져와 프로젝트 v3
 저장·재로드했으며 `proxy-v4.mkv`와 `export-nearest-v3.mov` 생성을 확인했다.
 일반 영상 3개 출력은 5.968초 MP4, 1280×848 확장 스탬프, 영상·오디오 스트림과

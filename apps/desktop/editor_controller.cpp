@@ -1028,6 +1028,28 @@ QVariantList EditorController::selectedGradeNodes() const {
         for (const auto& [name, value] : node.parameters) {
             parameters.insert(QString::fromStdString(name), value);
         }
+        QVariantMap curveMidpoints;
+        for (const auto& [name, points] : node.curves) {
+            auto midpoint = 0.5;
+            if (!points.empty()) {
+                if (0.5 <= points.front().x) midpoint = points.front().y;
+                else if (0.5 >= points.back().x) midpoint = points.back().y;
+                else {
+                    const auto upper = std::upper_bound(
+                        points.begin(), points.end(), 0.5,
+                        [](double value, const ffgui::CurvePoint& point) {
+                            return value < point.x;
+                        });
+                    const auto& right = *upper;
+                    const auto& left = *(upper - 1);
+                    const auto amount = (0.5 - left.x) / (right.x - left.x);
+                    midpoint = std::lerp(left.y, right.y, amount);
+                }
+            }
+            curveMidpoints.insert(
+                QString::fromStdString(name),
+                static_cast<int>(std::lround((midpoint - 0.5) * 200.0)));
+        }
         result.push_back(QVariantMap{
             {"id", QString::fromStdString(node.id)},
             {"name", QString::fromStdString(node.name)},
@@ -1035,6 +1057,7 @@ QVariantList EditorController::selectedGradeNodes() const {
             {"enabled", node.enabled},
             {"mixPercent", static_cast<int>(std::lround(node.mix * 100.0))},
             {"parameters", parameters},
+            {"curveMidpoints", curveMidpoints},
             {"lutRepresentable", node.lut_representable()}});
     }
     return result;
@@ -1132,6 +1155,28 @@ void EditorController::setGradeParameter(
     const auto key = parameter.toStdString();
     if (node->parameters[key] == value) return;
     node->parameters[key] = value;
+    node->validate();
+    timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+    publishTimeline();
+}
+
+void EditorController::setGradeCurveMidpoint(
+    const QString& nodeId, const QString& curveName, int adjustmentPercent) {
+    if (selected_clip_id_.isEmpty() || curveName.isEmpty()) return;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    auto graph = clip->grade;
+    auto* node = graph.node(nodeId.toStdString());
+    if (node == nullptr) return;
+    const auto key = curveName.toStdString();
+    if (!node->curves.contains(key)) return;
+    const auto adjustment = std::clamp(adjustmentPercent, -100, 100);
+    const auto midpoint = 0.5 + adjustment / 200.0;
+    const std::vector<ffgui::CurvePoint> replacement{
+        {0.0, 0.0}, {0.5, midpoint}, {1.0, 1.0}};
+    if (node->curves[key] == replacement) return;
+    node->curves[key] = replacement;
     node->validate();
     timeline_.set_clip_grade_graph(selectedId, std::move(graph));
     publishTimeline();

@@ -219,14 +219,93 @@ void test_float_grade_pipeline_preserves_alpha_and_node_mix() {
             "premultiplied alpha must be separated for grading and restored afterward");
 
     ffgui::GradeGraph unsupported;
-    unsupported.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::color_warper, "warper"));
+    unsupported.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::qualifier, "qualifier"));
     require_throws<std::invalid_argument>([&] {
         ffgui::apply_grade_graph_rgba32f(pixel, 1, unsupported);
-    }, "unimplemented grade nodes must never be silently ignored by the reference renderer");
+    }, "spatial grade nodes must never be silently ignored by the reference renderer");
 
     const auto cube = ffgui::bake_color_cube({}, {}, fullGrade, {}, 2);
     require(cube.contains("LUT_3D_SIZE 2") && std::ranges::count(cube, '\n') == 12,
             "clip color cube must contain every RGB lattice point from the reference path");
+}
+
+void test_advanced_grade_nodes_share_the_float_reference_contract() {
+    constexpr std::array advancedTypes{
+        ffgui::GradeNodeType::log_wheels,
+        ffgui::GradeNodeType::rgb_curves,
+        ffgui::GradeNodeType::hue_curves,
+        ffgui::GradeNodeType::hdr_zones,
+        ffgui::GradeNodeType::color_warper};
+    for (const auto type : advancedTypes) {
+        ffgui::GradeGraph identity;
+        identity.add(ffgui::make_default_grade_node(type, "identity"));
+        float pixel[]{0.18F, 0.32F, 0.71F, 0.37F};
+        ffgui::apply_grade_graph_rgba32f(pixel, 1, identity);
+        require(std::abs(pixel[0] - 0.18F) < 0.00002F &&
+                    std::abs(pixel[1] - 0.32F) < 0.00002F &&
+                    std::abs(pixel[2] - 0.71F) < 0.00002F &&
+                    std::abs(pixel[3] - 0.37F) < 0.000001F,
+                "every advanced grade node must be identity by default and preserve alpha");
+    }
+
+    auto primary = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary");
+    primary.parameters["temperature"] = 60.0;
+    primary.parameters["tint"] = 20.0;
+    primary.parameters["colorBoost"] = 30.0;
+    ffgui::GradeGraph primaryGraph;
+    primaryGraph.add(primary);
+    float neutral[]{0.4F, 0.4F, 0.4F, 0.25F};
+    ffgui::apply_grade_graph_rgba32f(neutral, 1, primaryGraph);
+    require(neutral[0] > neutral[1] && neutral[1] > neutral[2] &&
+                std::abs(neutral[3] - 0.25F) < 0.000001F,
+            "temperature and tint must execute in the common primary renderer");
+
+    auto log = ffgui::make_default_grade_node(ffgui::GradeNodeType::log_wheels, "log");
+    log.parameters["shadowR"] = 0.2;
+    ffgui::GradeGraph logGraph;
+    logGraph.add(log);
+    float logPixels[]{0.02F, 0.02F, 0.02F, 1.0F, 2.0F, 2.0F, 2.0F, 1.0F};
+    ffgui::apply_grade_graph_rgba32f(logPixels, 2, logGraph);
+    require(logPixels[0] - 0.02F > logPixels[4] - 2.0F + 0.05F,
+            "log shadow wheel must protect highlights while changing dark values");
+
+    auto curves = ffgui::make_default_grade_node(ffgui::GradeNodeType::rgb_curves, "curves");
+    curves.curves["red"] = {{0.0, 0.0}, {0.5, 0.8}, {1.0, 1.0}};
+    ffgui::GradeGraph curveGraph;
+    curveGraph.add(curves);
+    float curvePixel[]{0.5F, 0.5F, 0.5F, 0.6F};
+    ffgui::apply_grade_graph_rgba32f(curvePixel, 1, curveGraph);
+    require(std::abs(curvePixel[0] - 0.8F) < 0.00001F &&
+                std::abs(curvePixel[1] - 0.5F) < 0.00001F,
+            "RGB curves must apply master and per-channel curves in sequence");
+
+    auto hue = ffgui::make_default_grade_node(ffgui::GradeNodeType::hue_curves, "hue");
+    hue.curves["hueVsHue"] = {{0.0, 0.333333}, {1.0, 1.333333}};
+    ffgui::GradeGraph hueGraph;
+    hueGraph.add(hue);
+    float red[]{1.0F, 0.0F, 0.0F, 0.8F};
+    ffgui::apply_grade_graph_rgba32f(red, 1, hueGraph);
+    require(red[1] > 0.9F && red[0] < 0.1F && red[2] < 0.1F,
+            "Hue vs Hue must rotate selected colors without changing alpha");
+
+    auto hdr = ffgui::make_default_grade_node(ffgui::GradeNodeType::hdr_zones, "hdr");
+    hdr.parameters["midtoneExposure"] = 1.0;
+    ffgui::GradeGraph hdrGraph;
+    hdrGraph.add(hdr);
+    float middleGray[]{0.18F, 0.18F, 0.18F, 1.0F};
+    ffgui::apply_grade_graph_rgba32f(middleGray, 1, hdrGraph);
+    require(middleGray[0] > 0.22F && middleGray[0] < 0.37F,
+            "HDR zone exposure must affect its selected scene-linear luminance range");
+
+    auto warper = ffgui::make_default_grade_node(ffgui::GradeNodeType::color_warper, "warper");
+    warper.parameters["satScale0"] = 0.0;
+    ffgui::GradeGraph warperGraph;
+    warperGraph.add(warper);
+    float warpedRed[]{1.0F, 0.0F, 0.0F, 0.5F};
+    ffgui::apply_grade_graph_rgba32f(warpedRed, 1, warperGraph);
+    require(std::abs(warpedRed[0] - warpedRed[1]) < 0.00001F &&
+                std::abs(warpedRed[1] - warpedRed[2]) < 0.00001F,
+            "Color Warper hue grid must apply local saturation scaling");
 }
 
 void test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope() {
@@ -1317,6 +1396,7 @@ int main() {
         {"color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes", test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes},
         {"ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube", test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube},
         {"float_grade_pipeline_preserves_alpha_and_node_mix", test_float_grade_pipeline_preserves_alpha_and_node_mix},
+        {"advanced_grade_nodes_share_the_float_reference_contract", test_advanced_grade_nodes_share_the_float_reference_contract},
         {"scope_analyzer_builds_histogram_waveform_parade_and_vectorscope", test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope},
         {"oiio_probe_reports_exr_layers_alpha_and_color_space", test_oiio_probe_reports_exr_layers_alpha_and_color_space},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},

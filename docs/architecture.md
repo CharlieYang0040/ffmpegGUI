@@ -146,6 +146,14 @@ seek되는 오류를 막는다. 문구와 스탬프는 현재 Qt overlay에서 �
 렌더하므로 GES title source를 D3D 트랙에 혼합하지 않는다. 문제가 있는 드라이버에서는
 `FFGUI_FORCE_SYSTEM_COMPOSITOR=1`로 기존 합성기를 강제할 수 있다.
 
+GradeGraph의 공간 비의존 기준 렌더는 `apply_grade_graph_rgba32f()` 하나로 유지한다. 현재
+Primary exposure/LGG/temperature/tint/contrast/pivot/saturation/hue/color boost, Log Wheels,
+RGB Mixer, master·채널별 RGB Curves, Hue vs Hue/Sat/Lum과 Lum/Sat 교차 곡선, scene-linear
+HDR zone exposure, Hue-Sat/Luma Color Warper가 이 경로를 사용한다. 이미지 시퀀스는 float
+프레임에 직접 적용하고 일반 영상은 같은 함수를 33³ working-space cube로 평가해 D3D11
+source shader에 게시한다. qualifier와 power window는 공간 마스크 계약이 생기기 전까지
+명시적으로 render unsupported 상태를 유지한다.
+
 구조 편집은 `TimelineModel`과 Scene Graph 화면에 즉시 반영하지만 GES 파이프라인은
 각 마우스 동작마다 다시 만들지 않는다. 50ms 단일 타이머가 연속 편집을 최신 스냅샷
 하나로 합치며, 사용자가 그 전에 seek 또는 재생을 요청하면 타이머를 취소하고 최신

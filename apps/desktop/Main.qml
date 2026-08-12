@@ -1107,6 +1107,48 @@ ApplicationWindow {
                             delegate: Rectangle {
                                 id: gradeNode
                                 required property var modelData
+                                function scalarControls(type) {
+                                    if (type === 0) return [
+                                        { label: "대비", key: "contrast", scale: 100, from: 0, to: 400 },
+                                        { label: "피벗", key: "pivot", scale: 1000, from: 0, to: 1000 },
+                                        { label: "채도", key: "saturation", scale: 100, from: 0, to: 400 },
+                                        { label: "색조", key: "hue", scale: 1, from: -180, to: 180 },
+                                        { label: "컬러 부스트", key: "colorBoost", scale: 1, from: -100, to: 100 }
+                                    ]
+                                    if (type === 1) return [
+                                        { label: "섀도 R", key: "shadowR", scale: 1000, from: -500, to: 500 },
+                                        { label: "섀도 G", key: "shadowG", scale: 1000, from: -500, to: 500 },
+                                        { label: "섀도 B", key: "shadowB", scale: 1000, from: -500, to: 500 },
+                                        { label: "미드 R", key: "midtoneR", scale: 1000, from: -500, to: 500 },
+                                        { label: "미드 G", key: "midtoneG", scale: 1000, from: -500, to: 500 },
+                                        { label: "미드 B", key: "midtoneB", scale: 1000, from: -500, to: 500 },
+                                        { label: "하이라이트 R", key: "highlightR", scale: 1000, from: -500, to: 500 },
+                                        { label: "하이라이트 G", key: "highlightG", scale: 1000, from: -500, to: 500 },
+                                        { label: "하이라이트 B", key: "highlightB", scale: 1000, from: -500, to: 500 },
+                                        { label: "Low Range", key: "lowRange", scale: 100, from: 1, to: 49 },
+                                        { label: "High Range", key: "highRange", scale: 100, from: 51, to: 99 }
+                                    ]
+                                    if (type === 2) return [
+                                        { label: "R ← R", key: "rr", scale: 100, from: -200, to: 200 },
+                                        { label: "R ← G", key: "rg", scale: 100, from: -200, to: 200 },
+                                        { label: "R ← B", key: "rb", scale: 100, from: -200, to: 200 },
+                                        { label: "G ← R", key: "gr", scale: 100, from: -200, to: 200 },
+                                        { label: "G ← G", key: "gg", scale: 100, from: -200, to: 200 },
+                                        { label: "G ← B", key: "gb", scale: 100, from: -200, to: 200 },
+                                        { label: "B ← R", key: "br", scale: 100, from: -200, to: 200 },
+                                        { label: "B ← G", key: "bg", scale: 100, from: -200, to: 200 },
+                                        { label: "B ← B", key: "bb", scale: 100, from: -200, to: 200 }
+                                    ]
+                                    if (type === 5) return [
+                                        { label: "블랙 노출", key: "blackExposure", scale: 10, from: -100, to: 100 },
+                                        { label: "섀도 노출", key: "shadowExposure", scale: 10, from: -100, to: 100 },
+                                        { label: "미드 노출", key: "midtoneExposure", scale: 10, from: -100, to: 100 },
+                                        { label: "하이라이트 노출", key: "highlightExposure", scale: 10, from: -100, to: 100 },
+                                        { label: "스페큘러 노출", key: "specularExposure", scale: 10, from: -100, to: 100 },
+                                        { label: "존 폭", key: "zoneWidth", scale: 10, from: 1, to: 80 }
+                                    ]
+                                    return []
+                                }
                                 Layout.fillWidth: true
                                 implicitHeight: gradeHeader.implicitHeight + (gradeBody.visible ? gradeBody.implicitHeight + 12 : 0)
                                 radius: 7
@@ -1170,10 +1212,109 @@ ApplicationWindow {
                                             value: Math.round(gradeNode.modelData.parameters.tint || 0)
                                             onValueModified: EditorController.setGradeParameter(gradeNode.modelData.id, "tint", value)
                                         }
+                                        Repeater {
+                                            model: gradeNode.scalarControls(gradeNode.modelData.type)
+                                            delegate: RowLayout {
+                                                required property var modelData
+                                                Layout.columnSpan: 2
+                                                Layout.fillWidth: true
+                                                Label {
+                                                    Layout.preferredWidth: 105
+                                                    text: modelData.label
+                                                    color: "#9aa7b7"
+                                                }
+                                                SpinBox {
+                                                    Layout.fillWidth: true
+                                                    from: modelData.from
+                                                    to: modelData.to
+                                                    value: Math.round(
+                                                        (gradeNode.modelData.parameters[modelData.key] || 0) *
+                                                        modelData.scale)
+                                                    editable: true
+                                                    textFromValue: function(value) {
+                                                        return (value / modelData.scale).toFixed(
+                                                            modelData.scale >= 100 ? 2 : 1)
+                                                    }
+                                                    valueFromText: function(text) {
+                                                        return Math.round((parseFloat(text) || 0) * modelData.scale)
+                                                    }
+                                                    onValueModified: EditorController.setGradeParameter(
+                                                        gradeNode.modelData.id, modelData.key,
+                                                        value / modelData.scale)
+                                                }
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 3 ||
+                                                     gradeNode.modelData.type === 4
+                                            ComboBox {
+                                                id: curvePicker
+                                                Layout.fillWidth: true
+                                                model: gradeNode.modelData.type === 3
+                                                       ? ["master", "red", "green", "blue"]
+                                                       : ["hueVsHue", "hueVsSat", "hueVsLum",
+                                                          "lumVsSat", "satVsSat", "satVsLum", "lumVsLum"]
+                                            }
+                                            SpinBox {
+                                                Layout.fillWidth: true
+                                                from: -100; to: 100
+                                                value: gradeNode.modelData.curveMidpoints[curvePicker.currentText] || 0
+                                                textFromValue: function(value) {
+                                                    return value > 0 ? "+" + value : value.toString()
+                                                }
+                                                onValueModified: EditorController.setGradeCurveMidpoint(
+                                                    gradeNode.modelData.id, curvePicker.currentText, value)
+                                            }
+                                        }
+                                        ColumnLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 6
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Label { text: "Hue 셀"; color: "#9aa7b7" }
+                                                ComboBox {
+                                                    id: warperHueCell
+                                                    Layout.fillWidth: true
+                                                    model: ["0°", "30°", "60°", "90°", "120°", "150°",
+                                                            "180°", "210°", "240°", "270°", "300°", "330°"]
+                                                }
+                                            }
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Label { text: "Hue 이동"; color: "#9aa7b7"; Layout.preferredWidth: 105 }
+                                                SpinBox {
+                                                    Layout.fillWidth: true; from: -180; to: 180
+                                                    value: Math.round(gradeNode.modelData.parameters[
+                                                        "hueShift" + warperHueCell.currentIndex] || 0)
+                                                    onValueModified: EditorController.setGradeParameter(
+                                                        gradeNode.modelData.id,
+                                                        "hueShift" + warperHueCell.currentIndex, value)
+                                                }
+                                            }
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Label { text: "채도 배율"; color: "#9aa7b7"; Layout.preferredWidth: 105 }
+                                                SpinBox {
+                                                    Layout.fillWidth: true; from: 0; to: 300
+                                                    value: Math.round((gradeNode.modelData.parameters[
+                                                        "satScale" + warperHueCell.currentIndex] === undefined
+                                                        ? 1 : gradeNode.modelData.parameters[
+                                                            "satScale" + warperHueCell.currentIndex]) * 100)
+                                                    textFromValue: function(value) { return value + "%" }
+                                                    onValueModified: EditorController.setGradeParameter(
+                                                        gradeNode.modelData.id,
+                                                        "satScale" + warperHueCell.currentIndex, value / 100)
+                                                }
+                                            }
+                                        }
                                         Label {
                                             Layout.columnSpan: 2; Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                            visible: gradeNode.modelData.type !== 0
-                                            text: "이 노드의 고급 컨트롤은 컬러 렌더 경로 연결 단계에서 활성화됩니다."
+                                            visible: gradeNode.modelData.type === 3 ||
+                                                     gradeNode.modelData.type === 4
+                                            text: "중앙점 조절은 공통 float 렌더와 GPU LUT에 즉시 반영됩니다."
                                             color: "#7f8c9c"; font.pixelSize: 11
                                         }
                                     }

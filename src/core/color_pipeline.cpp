@@ -23,8 +23,10 @@ bool GradeNode::lut_representable() const noexcept {
 }
 
 bool GradeNode::render_supported() const noexcept {
-    return type == GradeNodeType::primary || type == GradeNodeType::rgb_mixer ||
-           type == GradeNodeType::rgb_curves;
+    return type == GradeNodeType::primary || type == GradeNodeType::log_wheels ||
+           type == GradeNodeType::rgb_mixer || type == GradeNodeType::rgb_curves ||
+           type == GradeNodeType::hue_curves || type == GradeNodeType::hdr_zones ||
+           type == GradeNodeType::color_warper;
 }
 
 void GradeNode::validate() const {
@@ -38,6 +40,10 @@ void GradeNode::validate() const {
     }
     for (const auto& [curveName, points] : curves) {
         if (curveName.empty() || !std::ranges::is_sorted(points, {}, &CurvePoint::x) ||
+            std::adjacent_find(points.begin(), points.end(),
+                [](const CurvePoint& left, const CurvePoint& right) {
+                    return left.x >= right.x;
+                }) != points.end() ||
             std::ranges::any_of(points, [](const CurvePoint& point) {
                 return !std::isfinite(point.x) || !std::isfinite(point.y);
             })) {
@@ -140,13 +146,45 @@ GradeNode make_default_grade_node(GradeNodeType type, std::string id) {
             {"liftB", 0.0}, {"gammaR", 1.0}, {"gammaG", 1.0}, {"gammaB", 1.0},
             {"gainR", 1.0}, {"gainG", 1.0}, {"gainB", 1.0},
             {"offsetR", 0.0}, {"offsetG", 0.0}, {"offsetB", 0.0}};
+    } else if (type == GradeNodeType::log_wheels) {
+        node.parameters = {
+            {"shadowR", 0.0}, {"shadowG", 0.0}, {"shadowB", 0.0},
+            {"midtoneR", 0.0}, {"midtoneG", 0.0}, {"midtoneB", 0.0},
+            {"highlightR", 0.0}, {"highlightG", 0.0}, {"highlightB", 0.0},
+            {"offsetR", 0.0}, {"offsetG", 0.0}, {"offsetB", 0.0},
+            {"lowRange", 0.25}, {"highRange", 0.75}};
     } else if (type == GradeNodeType::rgb_mixer) {
         node.parameters = {
             {"rr", 1.0}, {"rg", 0.0}, {"rb", 0.0},
             {"gr", 0.0}, {"gg", 1.0}, {"gb", 0.0},
             {"br", 0.0}, {"bg", 0.0}, {"bb", 1.0}};
-    } else if (type == GradeNodeType::rgb_curves || type == GradeNodeType::hue_curves) {
+    } else if (type == GradeNodeType::rgb_curves) {
         node.curves.emplace("master", std::vector<CurvePoint>{{0.0, 0.0}, {1.0, 1.0}});
+        node.curves.emplace("red", std::vector<CurvePoint>{{0.0, 0.0}, {1.0, 1.0}});
+        node.curves.emplace("green", std::vector<CurvePoint>{{0.0, 0.0}, {1.0, 1.0}});
+        node.curves.emplace("blue", std::vector<CurvePoint>{{0.0, 0.0}, {1.0, 1.0}});
+    } else if (type == GradeNodeType::hue_curves) {
+        for (const auto* name : {
+                 "hueVsHue", "hueVsSat", "hueVsLum", "lumVsSat",
+                 "satVsSat", "satVsLum", "lumVsLum"}) {
+            node.curves.emplace(name, std::vector<CurvePoint>{{0.0, 0.0}, {1.0, 1.0}});
+        }
+    } else if (type == GradeNodeType::hdr_zones) {
+        node.parameters = {
+            {"blackExposure", 0.0}, {"shadowExposure", 0.0},
+            {"midtoneExposure", 0.0}, {"highlightExposure", 0.0},
+            {"specularExposure", 0.0}, {"blackCenter", -4.0},
+            {"shadowCenter", -2.0}, {"midtoneCenter", 0.0},
+            {"highlightCenter", 2.0}, {"specularCenter", 4.0},
+            {"zoneWidth", 2.0}};
+    } else if (type == GradeNodeType::color_warper) {
+        for (int index = 0; index < 12; ++index) {
+            node.parameters["hueShift" + std::to_string(index)] = 0.0;
+            node.parameters["satScale" + std::to_string(index)] = 1.0;
+        }
+        for (int index = 0; index < 8; ++index) {
+            node.parameters["lumScale" + std::to_string(index)] = 1.0;
+        }
     }
     return node;
 }

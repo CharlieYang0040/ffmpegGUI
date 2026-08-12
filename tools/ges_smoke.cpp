@@ -89,6 +89,11 @@ int main(int argc, char* argv[]) {
             ffgui::GradeNodeType::primary, "shot-b-primary");
         shotBGrade.parameters["exposure"] = 0.25;
         shotB.grade.add(std::move(shotBGrade));
+        auto shotBLog = ffgui::make_default_grade_node(
+            ffgui::GradeNodeType::log_wheels, "shot-b-log");
+        shotBLog.parameters["shadowB"] = 0.04;
+        shotBLog.parameters["highlightR"] = 0.03;
+        shotB.grade.add(std::move(shotBLog));
         timeline.append_clip(std::move(shotB));
         timeline.append_clip(Clip{"shot-vfr", "asset-c", milliseconds(300), milliseconds(900)});
         timeline.append_clip(Clip{"shot-c", "asset-a", milliseconds(1000), milliseconds(500)});

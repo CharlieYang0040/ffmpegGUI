@@ -298,6 +298,19 @@ int main(int argc, char* argv[]) {
         if (nodes.isEmpty()) return EXIT_FAILURE;
         controller.setGradeParameter(
             nodes.front().toMap().value("id").toString(), QStringLiteral("exposure"), 0.25);
+        controller.addGradeNode(static_cast<int>(ffgui::GradeNodeType::log_wheels));
+        auto advancedNodes = controller.selectedGradeNodes();
+        if (advancedNodes.size() != 2) return EXIT_FAILURE;
+        const auto logNodeId = advancedNodes.back().toMap().value("id").toString();
+        controller.setGradeParameter(logNodeId, QStringLiteral("shadowB"), 0.04);
+        controller.undo();
+        controller.redo();
+        controller.addGradeNode(static_cast<int>(ffgui::GradeNodeType::rgb_curves));
+        advancedNodes = controller.selectedGradeNodes();
+        if (advancedNodes.size() != 3) return EXIT_FAILURE;
+        controller.setGradeCurveMidpoint(
+            advancedNodes.back().toMap().value("id").toString(),
+            QStringLiteral("master"), 20);
         controller.setColorPipelineMode(1);
         const auto deliveredBefore = controller.videoFramesDelivered();
         const auto processedBefore = controller.floatVideoFramesProcessed();

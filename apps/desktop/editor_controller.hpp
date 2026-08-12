@@ -298,6 +298,8 @@ public slots:
     void setGradeNodeEnabled(const QString& nodeId, bool enabled);
     void setGradeNodeMix(const QString& nodeId, int percent);
     void setGradeParameter(const QString& nodeId, const QString& parameter, double value);
+    void setGradeCurveMidpoint(
+        const QString& nodeId, const QString& curveName, int adjustmentPercent);
     void setScopesVisible(bool visible);
     void setScopeMode(int mode);
     void attachScopeItem(QObject* item);
