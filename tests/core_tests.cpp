@@ -1657,6 +1657,54 @@ void test_ffmpeg_export_plan_applies_codec_and_quality_presets() {
             "compact H.264 preset must trade quality for speed and size");
 }
 
+void test_ffmpeg_export_plan_emits_hdr10_metadata() {
+    auto request = ffgui::ExportRequest{
+        {{std::filesystem::path{"A.mp4"}, 0, seconds(2), true,
+          seconds(2), {0, seconds(2)}}},
+        std::filesystem::path{"result.mov"},
+        ffgui::ExportVideoEncoder::libx265};
+    request.prefer_stream_copy = true;
+    request.concat_script_path = std::filesystem::path{"job.ffconcat"};
+    request.hdr10 = true;
+    request.hdr_peak_nits = 1000;
+    request.max_cll = 800;
+    request.max_fall = 200;
+    const auto plan = ffgui::compile_ffmpeg_export(request);
+    require(plan.mode == ffgui::ExportMode::transcode,
+            "HDR10 mastering metadata must disable stream copy");
+    std::string arguments;
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(arguments.contains("color_primaries\nbt2020") &&
+                arguments.contains("color_trc\nsmpte2084") &&
+                arguments.contains("colorspace\nbt2020nc"),
+            "HDR10 output must signal Rec.2100 PQ");
+    require(arguments.contains("yuv420p10le") && arguments.contains("x265-params"),
+            "HEVC HDR10 must encode 10-bit with x265 mastering parameters");
+    require(arguments.contains("master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)") &&
+                arguments.contains("max-cll=800,200"),
+            "Rec.2020 mastering display and MaxCLL/MaxFALL must reach x265");
+
+    request.video_encoder = ffgui::ExportVideoEncoder::hevc_nvenc;
+    const auto nvenc = ffgui::compile_ffmpeg_export(request);
+    arguments.clear();
+    for (const auto& argument : nvenc.arguments) arguments += argument + '\n';
+    require(arguments.contains("hevc_nvenc") && arguments.contains("p010le") &&
+                arguments.contains("hevc_metadata=colour_primaries=9"),
+            "NVENC HDR10 must use 10-bit HEVC and bitstream color metadata");
+
+    require_throws<std::invalid_argument>(
+        [] {
+            auto invalid = ffgui::ExportRequest{
+                {{std::filesystem::path{"A.mp4"}, 0, seconds(2), true}},
+                std::filesystem::path{"result.mp4"},
+                ffgui::ExportVideoEncoder::libx265};
+            invalid.hdr10 = true;
+            invalid.hdr_peak_nits = 50;
+            static_cast<void>(ffgui::compile_ffmpeg_export(invalid));
+        },
+        "invalid HDR10 peak luminance must be rejected");
+}
+
 void test_ffmpeg_export_plan_applies_resolution_fps_and_color() {
     auto request = ffgui::ExportRequest{
         {{std::filesystem::path{"A.mp4"}, 0, seconds(2), true}},
@@ -1863,6 +1911,7 @@ int main() {
         {"ffmpeg_export_plan_rejects_invalid_requests", test_ffmpeg_export_plan_rejects_invalid_requests},
         {"ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts", test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts},
         {"ffmpeg_export_plan_applies_codec_and_quality_presets", test_ffmpeg_export_plan_applies_codec_and_quality_presets},
+        {"ffmpeg_export_plan_emits_hdr10_metadata", test_ffmpeg_export_plan_emits_hdr10_metadata},
         {"ffmpeg_export_plan_applies_resolution_fps_and_color", test_ffmpeg_export_plan_applies_resolution_fps_and_color},
         {"ffmpeg_export_plan_compiles_video_and_audio_dissolve", test_ffmpeg_export_plan_compiles_video_and_audio_dissolve},
         {"ffmpeg_export_plan_builds_palette_optimized_gif_without_audio", test_ffmpeg_export_plan_builds_palette_optimized_gif_without_audio},

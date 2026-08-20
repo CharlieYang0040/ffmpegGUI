@@ -799,6 +799,10 @@ void GesSequencePlayer::set_timeline(
 }
 
 void GesSequencePlayer::seek(TimeNs timeline_position) {
+    seek(timeline_position, PreviewSeekMode::accurate);
+}
+
+void GesSequencePlayer::seek(TimeNs timeline_position, PreviewSeekMode mode) {
     std::unique_lock lock(mutex_);
     const auto target = std::max<TimeNs>(0, std::min(timeline_position, duration_ns_.load()));
     if (pipeline_ == nullptr) {
@@ -806,6 +810,7 @@ void GesSequencePlayer::seek(TimeNs timeline_position) {
     }
     auto* pipeline = GST_ELEMENT(pipeline_);
     bool notifyPaused = false;
+    const bool accurate = mode == PreviewSeekMode::accurate;
     if (state_.load() == PlaybackState::stopped) {
         auto prepareResult = gst_element_set_state(pipeline, GST_STATE_PAUSED);
         GstState current = GST_STATE_VOID_PENDING;
@@ -833,13 +838,31 @@ void GesSequencePlayer::seek(TimeNs timeline_position) {
         state_.store(PlaybackState::paused);
         notifyPaused = true;
     }
+    if (!accurate && state_.load() == PlaybackState::playing) {
+        gst_element_set_state(pipeline, GST_STATE_PAUSED);
+        state_.store(PlaybackState::paused);
+        notifyPaused = true;
+    }
     auto* bus = gst_element_get_bus(pipeline);
     while (auto* stale = gst_bus_pop_filtered(bus, GST_MESSAGE_ASYNC_DONE)) {
         gst_message_unref(stale);
     }
-    const auto waitForPreroll = state_.load() == PlaybackState::paused;
-    const auto flags = static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE);
+    const auto waitForPreroll = accurate && state_.load() == PlaybackState::paused;
+    const auto flags = accurate
+        ? static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE)
+        : static_cast<GstSeekFlags>(
+            GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT | GST_SEEK_FLAG_SNAP_NEAREST);
     if (!gst_element_seek_simple(pipeline, GST_FORMAT_TIME, flags, target)) {
+        if (!accurate) {
+            const auto fallback = static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH);
+            if (gst_element_seek_simple(pipeline, GST_FORMAT_TIME, fallback, target)) {
+                gst_object_unref(bus);
+                lock.unlock();
+                position_ns_.store(target);
+                if (notifyPaused) notify_state(PlaybackState::paused);
+                return;
+            }
+        }
         gst_object_unref(bus);
         throw std::runtime_error("GES timeline seek failed");
     }
@@ -864,13 +887,15 @@ void GesSequencePlayer::seek(TimeNs timeline_position) {
         }
         gst_message_unref(message);
     }
-    const auto graph = inspect_preview_graph(pipeline);
-    d3d_compositor_instances_.store(graph.d3d_compositors);
-    d3d_download_instances_.store(graph.d3d_downloads);
-    system_compositor_instances_.store(graph.system_compositors);
-    d3d_composition_frames_.store(graph.composition_frames);
-    d3d_composition_meta_frames_.store(graph.composition_meta_frames);
-    d3d_blended_frames_.store(graph.blended_frames);
+    if (accurate) {
+        const auto graph = inspect_preview_graph(pipeline);
+        d3d_compositor_instances_.store(graph.d3d_compositors);
+        d3d_download_instances_.store(graph.d3d_downloads);
+        system_compositor_instances_.store(graph.system_compositors);
+        d3d_composition_frames_.store(graph.composition_frames);
+        d3d_composition_meta_frames_.store(graph.composition_meta_frames);
+        d3d_blended_frames_.store(graph.blended_frames);
+    }
     gst_object_unref(bus);
     lock.unlock();
     position_ns_.store(target);

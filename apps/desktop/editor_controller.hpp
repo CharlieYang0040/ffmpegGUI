@@ -94,6 +94,10 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool hdrMonitoring READ hdrMonitoring WRITE setHdrMonitoring NOTIFY colorPipelineChanged)
     Q_PROPERTY(int hdrPeakNits READ hdrPeakNits WRITE setHdrPeakNits NOTIFY colorPipelineChanged)
     Q_PROPERTY(int sdrWhiteNits READ sdrWhiteNits WRITE setSdrWhiteNits NOTIFY colorPipelineChanged)
+    Q_PROPERTY(int maxCll READ maxCll WRITE setMaxCll NOTIFY colorPipelineChanged)
+    Q_PROPERTY(int maxFall READ maxFall WRITE setMaxFall NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QString hdrDisplayStatus READ hdrDisplayStatus NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QString monitorIccPath READ monitorIccPath NOTIFY colorPipelineChanged)
     Q_PROPERTY(QString colorPipelineSummary READ colorPipelineSummary NOTIFY colorPipelineChanged)
     Q_PROPERTY(QString displayName READ displayName WRITE setDisplayName NOTIFY colorPipelineChanged)
     Q_PROPERTY(QString viewName READ viewName WRITE setViewName NOTIFY colorPipelineChanged)
@@ -189,6 +193,12 @@ public:
     [[nodiscard]] bool hdrMonitoring() const noexcept { return color_pipeline_.hdr_monitoring; }
     [[nodiscard]] int hdrPeakNits() const noexcept { return color_pipeline_.hdr_peak_nits; }
     [[nodiscard]] int sdrWhiteNits() const noexcept { return color_pipeline_.sdr_white_nits; }
+    [[nodiscard]] int maxCll() const noexcept { return color_pipeline_.max_cll; }
+    [[nodiscard]] int maxFall() const noexcept { return color_pipeline_.max_fall; }
+    [[nodiscard]] QString hdrDisplayStatus() const { return hdr_display_status_; }
+    [[nodiscard]] QString monitorIccPath() const {
+        return QString::fromStdString(color_pipeline_.monitor_icc_path);
+    }
     [[nodiscard]] QString colorPipelineSummary() const;
     [[nodiscard]] QString displayName() const {
         return QString::fromStdString(color_pipeline_.display);
@@ -333,6 +343,10 @@ public slots:
     void setHdrMonitoring(bool enabled);
     void setHdrPeakNits(int nits);
     void setSdrWhiteNits(int nits);
+    void setMaxCll(int nits);
+    void setMaxFall(int nits);
+    Q_INVOKABLE void attachPreviewWindow(QObject* window);
+    Q_INVOKABLE void refreshHdrDisplay();
     void addGradeNode(int type);
     void addGradeLutUrl(const QUrl& url);
     void removeGradeNode(const QString& nodeId);
@@ -430,6 +444,8 @@ private:
     void setStatus(QString status);
     void queuePreviewOperation(bool restorePosition);
     void startPreviewOperation();
+    void queueLiveSeek(qint64 timelinePosition);
+    void pumpLiveSeek();
     void submitCachedScrubFrame(qint64 timelinePosition);
     bool submitFloatScrubFrame(qint64 timelinePosition);
     void startFloatScrubFrame(qint64 timelinePosition);
@@ -445,6 +461,9 @@ private:
     void presentPreviewFrame(ffgui::PreviewVideoFrame frame);
     void recoverCpuPreview();
     void syncOutputSpaceFromDisplayView();
+    void applyHdrDisplayPath();
+    bool selectHdrDisplayView();
+    void restoreSdrDisplayView();
     void storeInspectableFrame(const ffgui::PreviewVideoFrame& frame);
     [[nodiscard]] bool canUseFloatExport() const;
     void startFloatExport();
@@ -463,6 +482,10 @@ private:
         std::uint64_t generation{};
         bool rebuilt{};
         bool color_only{};
+        bool success{};
+        QString error;
+    };
+    struct LiveSeekResult final {
         bool success{};
         QString error;
     };
@@ -503,6 +526,7 @@ private:
     qint64 in_point_ns_{-1};
     qint64 out_point_ns_{-1};
     bool playing_{};
+    bool scrubbing_{};
     bool preview_busy_{};
     bool preview_failed_{};
     bool preview_suspended_for_export_{};
@@ -527,6 +551,11 @@ private:
     QObject* video_item_{};
     QObject* scope_item_{};
     QWindow* video_window_{};
+    QWindow* preview_quick_window_{};
+    QString hdr_display_status_;
+    std::string saved_display_before_hdr_;
+    std::string saved_view_before_hdr_;
+    bool hdr_display_override_{};
     bool use_d3d_scene_graph_{};
     bool cpu_preview_fallback_{};
     bool in_process_preview_{};
@@ -555,7 +584,9 @@ private:
     bool float_playback_running_{};
 #ifdef FFGUI_HAS_GES
     QFutureWatcher<PreviewOperationResult> preview_watcher_;
+    QFutureWatcher<LiveSeekResult> live_seek_watcher_;
     std::optional<qint64> pending_preview_seek_;
+    std::optional<qint64> pending_live_seek_;
     bool preview_operation_pending_{};
     bool preview_color_only_pending_{};
     bool preview_should_play_{};

@@ -52,7 +52,7 @@ bool can_stream_copy(const ExportRequest& request) {
     if (extension == ".gif" || request.gif.enabled) return false;
     if (!request.prefer_stream_copy || request.concat_script_path.empty() ||
         request.clips.empty() || !request.captions.empty() || request.stamp.enabled ||
-        request.output_width > 0 ||
+        request.hdr10 || request.output_width > 0 ||
         request.output_height > 0 || request.output_fps > 0) {
         return false;
     }
@@ -128,6 +128,49 @@ std::string ass_alpha(int opacity_percent) {
     return stream.str();
 }
 
+std::string rec2100_master_display(int peak_nits) {
+    const auto peak = std::clamp(peak_nits, 100, 10'000) * 10'000;
+    std::ostringstream stream;
+    stream << "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L("
+           << peak << ",1)";
+    return stream.str();
+}
+
+void append_hdr10_signaling(
+    std::vector<std::string>& arguments,
+    const ExportRequest& request,
+    ExportVideoEncoder encoder) {
+    arguments.insert(
+        arguments.end(),
+        {"-color_primaries", "bt2020", "-color_trc", "smpte2084",
+         "-colorspace", "bt2020nc", "-color_range", "tv"});
+    if (encoder == ExportVideoEncoder::hevc_nvenc) {
+        arguments.insert(arguments.end(), {"-pix_fmt", "p010le"});
+        arguments.insert(
+            arguments.end(),
+            {"-bsf:v",
+             "hevc_metadata=colour_primaries=9:transfer_characteristics=16:"
+             "matrix_coefficients=9"});
+        return;
+    }
+    if (encoder == ExportVideoEncoder::libx265) {
+        arguments.insert(arguments.end(), {"-pix_fmt", "yuv420p10le"});
+        std::ostringstream params;
+        params << "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:"
+                  "colormatrix=bt2020nc:master-display="
+               << rec2100_master_display(request.hdr_peak_nits)
+               << ":max-cll=" << std::clamp(request.max_cll, 0, 10'000) << ','
+               << std::clamp(request.max_fall, 0, 10'000);
+        arguments.insert(arguments.end(), {"-x265-params", params.str()});
+        return;
+    }
+    if (encoder == ExportVideoEncoder::libx264) {
+        arguments.insert(
+            arguments.end(),
+            {"-x264-params", "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"});
+    }
+}
+
 std::string atempo_chain(double rate) {
     std::string chain;
     while (rate < 0.5) {
@@ -155,6 +198,13 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         request.output_width < 0 || request.output_height < 0 || request.output_fps < 0 ||
         request.output_fps > 240) {
         throw std::invalid_argument("export resolution or frame rate is invalid");
+    }
+    if (request.hdr10 &&
+        (request.hdr_peak_nits < 100 || request.hdr_peak_nits > 10'000 ||
+         request.sdr_white_nits < 80 || request.sdr_white_nits > 500 ||
+         request.max_cll < 0 || request.max_fall < 0 ||
+         request.max_cll > 10'000 || request.max_fall > 10'000)) {
+        throw std::invalid_argument("HDR10 mastering metadata is invalid");
     }
 
     FfmpegExportPlan plan;
@@ -295,7 +345,9 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         }
         // Rebase once more after trim/fps so every xfade input starts at zero with the
         // same time base and pixel format, including MKV and VFR sources.
-        filter += ",format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[v" + suffix + "];";
+        filter += request.hdr10
+            ? ",format=yuv420p10le,settb=AVTB,setpts=PTS-STARTPTS[v" + suffix + "];"
+            : ",format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[v" + suffix + "];";
         if (!gifOutput && clip.has_audio) {
             filter += "[" + suffix + ":a:0]aresample=48000:async=1:first_pts=0,"
                       "apad=whole_dur=" + seconds(clip.duration) +
@@ -507,6 +559,9 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
             {"-c:v", "libx265", "-preset", high ? "slow" : (compact ? "fast" : "medium"),
              "-crf", high ? "18" : (compact ? "28" : "23")});
         if (movFamily) plan.arguments.insert(plan.arguments.end(), {"-tag:v", "hvc1"});
+    }
+    if (request.hdr10 && !gifOutput) {
+        append_hdr10_signaling(plan.arguments, request, request.video_encoder);
     }
     plan.arguments.insert(
         plan.arguments.end(),

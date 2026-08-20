@@ -31,6 +31,9 @@ ApplicationWindow {
     property string expandedNode: ""
     property string expandedGradeNode: ""
 
+    Component.onCompleted: EditorController.attachPreviewWindow(root)
+    onScreenChanged: EditorController.refreshHdrDisplay()
+
     function durationText(nanoseconds) {
         const totalSeconds = Math.max(0, Math.floor(nanoseconds / 1000000000))
         const minutes = Math.floor(totalSeconds / 60)
@@ -1835,6 +1838,41 @@ ApplicationWindow {
                                 valueFromText: function(text) { return parseInt(text) || 203 }
                                 onValueModified: EditorController.setSdrWhiteNits(value)
                             }
+                            Label { text: "MaxCLL"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 0; to: 10000; stepSize: 50
+                                value: EditorController.maxCll
+                                textFromValue: function(value) { return value + " nits" }
+                                valueFromText: function(text) { return parseInt(text) || 1000 }
+                                onValueModified: EditorController.setMaxCll(value)
+                            }
+                            Label { text: "MaxFALL"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 0; to: 10000; stepSize: 50
+                                value: EditorController.maxFall
+                                textFromValue: function(value) { return value + " nits" }
+                                valueFromText: function(text) { return parseInt(text) || 400 }
+                                onValueModified: EditorController.setMaxFall(value)
+                            }
+                        }
+                        Label {
+                            visible: EditorController.colorPipelineMode !== 0 &&
+                                     EditorController.hdrMonitoring
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: "#7f8c9c"
+                            font.pixelSize: 11
+                            text: EditorController.hdrDisplayStatus
+                        }
+                        Label {
+                            visible: EditorController.colorPipelineMode !== 0 &&
+                                     EditorController.monitorIccPath.length > 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.WrapAnywhere
+                            elide: Text.ElideMiddle
+                            color: "#7f8c9c"
+                            font.pixelSize: 10
+                            text: "모니터 ICC · " + EditorController.monitorIccPath
                         }
                     }
 

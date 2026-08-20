@@ -57,7 +57,9 @@ public:
     void set_timeline(
         std::vector<TimelineSpan> timeline,
         std::vector<CaptionCue> captions);
+    enum class PreviewSeekMode { accurate, keyframe };
     void seek(TimeNs timeline_position) override;
+    void seek(TimeNs timeline_position, PreviewSeekMode mode);
     void play() override;
     void pause() override;
     void stop() override;

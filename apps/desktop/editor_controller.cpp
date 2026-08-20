@@ -2,6 +2,7 @@
 #include "ffprobe_analyzer.hpp"
 #include "d3d11_video_item.hpp"
 #include "color_scope_item.hpp"
+#include "hdr_display.hpp"
 #include "core/subtitle_srt.hpp"
 #include "core/render_preflight.hpp"
 #include "color/color_frame_processor.hpp"
@@ -242,8 +243,12 @@ void EditorController::setSingletonInstance(EditorController* instance) {
 }
 
 EditorController::EditorController(QObject* parent) : QObject(parent) {
-    connect(this, &EditorController::playheadChanged,
-            this, &EditorController::gradeUiChanged);
+    connect(this, &EditorController::playheadChanged, this, [this] {
+        if (!playing_ && !scrubbing_) emit gradeUiChanged();
+    });
+    connect(this, &EditorController::playingChanged, this, [this] {
+        if (!playing_ && !scrubbing_) emit gradeUiChanged();
+    });
     connect(this, &EditorController::selectedClipChanged,
             this, &EditorController::gradeUiChanged);
     connect(this, &EditorController::timelineChanged,
@@ -387,10 +392,21 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             const auto document = QJsonDocument::fromJson(output);
             const auto streams = document.object().value("streams").toArray();
             bool hasVideo = false;
+            bool hdrSignaled = false;
+            bool hdrConflict = false;
             for (const auto& stream : streams) {
-                if (stream.toObject().value("codec_type").toString() == "video") {
-                    hasVideo = true;
-                    break;
+                const auto object = stream.toObject();
+                if (object.value("codec_type").toString() != "video") continue;
+                hasVideo = true;
+                const auto transfer = object.value("color_transfer").toString();
+                const auto primaries = object.value("color_primaries").toString();
+                const auto pq = transfer.contains(QStringLiteral("smpte2084"), Qt::CaseInsensitive) ||
+                    transfer == QStringLiteral("16");
+                const auto bt2020 = primaries.contains(QStringLiteral("bt2020"), Qt::CaseInsensitive) ||
+                    primaries == QStringLiteral("9");
+                hdrSignaled = pq && bt2020;
+                if ((!transfer.isEmpty() && !pq) || (!primaries.isEmpty() && !bt2020)) {
+                    hdrConflict = true;
                 }
             }
             const auto durationSeconds = document.object().value("format").toObject()
@@ -401,11 +417,22 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 500'000'000, export_duration_ns_ / 50);
             valid = valid && hasVideo && actualDuration > 0 &&
                 std::abs(actualDuration - export_duration_ns_) <= tolerance;
+            if (valid && export_request_ && export_request_->hdr10) {
+                if (hdrConflict) {
+                    qWarning().noquote() << "HDR10 export has conflicting stream color metadata";
+                    valid = false;
+                } else if (!hdrSignaled) {
+                    qWarning().noquote()
+                        << "HDR10 export did not report Rec.2100 PQ stream metadata";
+                }
+            }
             qInfo().noquote() << "export validation finished"
                               << "valid=" << valid
                               << "expected_ns=" << export_duration_ns_
                               << "actual_ns=" << actualDuration
                               << "video=" << hasVideo
+                              << "hdr10=" << (export_request_ && export_request_->hdr10)
+                              << "hdr_signaled=" << hdrSignaled
                               << "log=" << export_log_path_;
             if (!valid && !error.trimmed().isEmpty()) export_stderr_.append(error);
             finishExport(valid);
@@ -599,6 +626,22 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                         ? QStringLiteral("재생 중")
                         : QStringLiteral("미리보기 준비 완료")));
             }
+            pumpLiveSeek();
+        });
+    connect(
+        &live_seek_watcher_,
+        &QFutureWatcher<LiveSeekResult>::finished,
+        this,
+        [this] {
+            const auto result = live_seek_watcher_.result();
+            if (!result.success && !result.error.isEmpty()) {
+                qWarning().noquote() << "live preview seek failed" << result.error;
+            }
+            if (preview_operation_pending_) {
+                startPreviewOperation();
+                return;
+            }
+            pumpLiveSeek();
         });
     connect(
         &float_scrub_watcher_,
@@ -754,6 +797,8 @@ EditorController::~EditorController() {
     pending_float_scrub_ns_.reset();
     ++float_scrub_generation_;
     if (float_scrub_watcher_.isRunning()) float_scrub_watcher_.waitForFinished();
+    pending_live_seek_.reset();
+    if (live_seek_watcher_.isRunning()) live_seek_watcher_.waitForFinished();
     if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
 #endif
     if (import_watcher_.isRunning()) import_watcher_.waitForFinished();
@@ -1820,9 +1865,32 @@ void EditorController::scrub(qint64 timelinePosition, bool finalPosition) {
     if (!floatSubmitted) submitCachedScrubFrame(playhead_ns_);
 #ifdef FFGUI_HAS_GES
     preview_should_play_ = false;
-    if (!finalPosition || floatSubmitted) return;
+    if (floatSubmitted) {
+        scrubbing_ = !finalPosition;
+        if (finalPosition) emit gradeUiChanged();
+        return;
+    }
+    if (!finalPosition) {
+        if (!scrubbing_) {
+            scrubbing_ = true;
+            if (player_) player_->set_scope_capture_enabled(false);
+        }
+        queueLiveSeek(playhead_ns_);
+        return;
+    }
+    if (scrubbing_) {
+        scrubbing_ = false;
+        if (player_) player_->set_scope_capture_enabled(scopes_visible_);
+    }
+    pending_live_seek_.reset();
     pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
+    if (scopes_visible_ && pending_scope_analysis_frame_.has_value()) {
+        auto frame = std::move(*pending_scope_analysis_frame_);
+        pending_scope_analysis_frame_.reset();
+        submitScopeFrame(std::move(frame));
+    }
+    emit gradeUiChanged();
 #else
     static_cast<void>(finalPosition);
 #endif
@@ -2238,6 +2306,10 @@ void EditorController::submitScopeFrame(ffgui::PreviewVideoFrame frame) {
         frame.cpu_pixels != nullptr && frame.width > 0 && frame.height > 0 &&
         frame.cpu_stride >= frame.width * 4;
     if (!cpuFrame && frame.sample == nullptr) return;
+    if (scrubbing_) {
+        pending_scope_analysis_frame_ = std::move(frame);
+        return;
+    }
     if (scope_active_) {
         pending_scope_analysis_frame_ = std::move(frame);
     } else {
@@ -3436,7 +3508,8 @@ void EditorController::saveProject(const QString& path) {
             {"hdrPeakNits", color_pipeline_.hdr_peak_nits},
             {"sdrWhiteNits", color_pipeline_.sdr_white_nits},
             {"maxCll", color_pipeline_.max_cll},
-            {"maxFall", color_pipeline_.max_fall}};
+            {"maxFall", color_pipeline_.max_fall},
+            {"monitorIccPath", QString::fromStdString(color_pipeline_.monitor_icc_path)}};
         const QJsonDocument document(QJsonObject{
             {"format", "ffmpegGUI-next"},
             {"version", 4},
@@ -3667,6 +3740,8 @@ void EditorController::loadProject(const QString& path) {
             color_pipeline_.sdr_white_nits = colorPipeline.value("sdrWhiteNits").toInt(203);
             color_pipeline_.max_cll = colorPipeline.value("maxCll").toInt(1000);
             color_pipeline_.max_fall = colorPipeline.value("maxFall").toInt(400);
+            color_pipeline_.monitor_icc_path =
+                colorPipeline.value("monitorIccPath").toString().toStdString();
             color_pipeline_.validate();
         }
         current_project_path_ = QFileInfo(path).absoluteFilePath();
@@ -3679,6 +3754,7 @@ void EditorController::loadProject(const QString& path) {
         emit exportSettingsChanged();
         emit colorPipelineChanged();
         emit gifEstimateChanged();
+        refreshHdrDisplay();
         setStatus("프로젝트 불러오기 완료");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -3995,8 +4071,17 @@ void EditorController::setCustomOcioUrl(const QUrl& url) {
 void EditorController::setHdrMonitoring(bool enabled) {
     if (color_pipeline_.hdr_monitoring == enabled) return;
     color_pipeline_.hdr_monitoring = enabled;
+    if (enabled) {
+        if (!selectHdrDisplayView()) applyHdrDisplayPath();
+    } else {
+        restoreSdrDisplayView();
+        applyHdrDisplayPath();
+    }
     emit colorPipelineChanged();
-    setStatus(enabled ? "HDR 모니터 출력을 요청했습니다" : "SDR 모니터 출력을 사용합니다");
+    setStatus(hdr_display_status_.isEmpty()
+        ? (enabled ? QStringLiteral("HDR 모니터 출력을 요청했습니다")
+                   : QStringLiteral("SDR 모니터 출력을 사용합니다"))
+        : hdr_display_status_);
 }
 
 void EditorController::setHdrPeakNits(int nits) {
@@ -4012,6 +4097,150 @@ void EditorController::setSdrWhiteNits(int nits) {
     if (color_pipeline_.sdr_white_nits == nits) return;
     color_pipeline_.sdr_white_nits = nits;
     emit colorPipelineChanged();
+}
+
+void EditorController::setMaxCll(int nits) {
+    nits = std::clamp(nits, 0, 10'000);
+    if (color_pipeline_.max_cll == nits) return;
+    color_pipeline_.max_cll = nits;
+    emit colorPipelineChanged();
+}
+
+void EditorController::setMaxFall(int nits) {
+    nits = std::clamp(nits, 0, 10'000);
+    if (color_pipeline_.max_fall == nits) return;
+    color_pipeline_.max_fall = nits;
+    emit colorPipelineChanged();
+}
+
+void EditorController::attachPreviewWindow(QObject* window) {
+    auto* quickWindow = qobject_cast<QWindow*>(window);
+    if (preview_quick_window_ == quickWindow) return;
+    if (preview_quick_window_ != nullptr) {
+        disconnect(preview_quick_window_, &QWindow::screenChanged,
+                   this, &EditorController::refreshHdrDisplay);
+    }
+    preview_quick_window_ = quickWindow;
+    if (preview_quick_window_ != nullptr) {
+        connect(preview_quick_window_, &QWindow::screenChanged,
+                this, &EditorController::refreshHdrDisplay, Qt::UniqueConnection);
+    }
+    refreshHdrDisplay();
+}
+
+void EditorController::refreshHdrDisplay() {
+    applyHdrDisplayPath();
+    if (color_pipeline_.hdr_monitoring) selectHdrDisplayView();
+    emit colorPipelineChanged();
+}
+
+bool EditorController::selectHdrDisplayView() {
+    if (!color_pipeline_.hdr_monitoring ||
+        color_pipeline_.mode == ffgui::ColorPipelineMode::legacy) {
+        applyHdrDisplayPath();
+        return false;
+    }
+    try {
+        ffgui::OcioEngine engine(color_pipeline_);
+        const auto displays = engine.displays();
+        auto findPq = [](const std::string& value) {
+            const auto lower = QString::fromStdString(value).toLower();
+            return lower.contains(QStringLiteral("2100")) &&
+                (lower.contains(QStringLiteral("pq")) ||
+                 lower.contains(QStringLiteral("2084")));
+        };
+        std::string hdrDisplay;
+        for (const auto& display : displays) {
+            if (findPq(display)) {
+                hdrDisplay = display;
+                break;
+            }
+        }
+        if (hdrDisplay.empty()) {
+            applyHdrDisplayPath();
+            return false;
+        }
+        const auto views = engine.views(hdrDisplay);
+        std::string hdrView = engine.default_view(hdrDisplay);
+        for (const auto& view : views) {
+            const auto lower = QString::fromStdString(view).toLower();
+            if (lower.contains(QStringLiteral("pq")) ||
+                lower.contains(QStringLiteral("2084")) ||
+                lower.contains(QStringLiteral("2100"))) {
+                hdrView = view;
+                break;
+            }
+        }
+        if (hdrView.empty() && !views.empty()) hdrView = views.front();
+        if (color_pipeline_.display != hdrDisplay || color_pipeline_.view != hdrView) {
+            if (!hdr_display_override_) {
+                saved_display_before_hdr_ = color_pipeline_.display;
+                saved_view_before_hdr_ = color_pipeline_.view;
+                hdr_display_override_ = true;
+            }
+            color_pipeline_.display = hdrDisplay;
+            color_pipeline_.view = hdrView;
+            syncOutputSpaceFromDisplayView();
+            publishColorPreview();
+        }
+    } catch (...) {
+        applyHdrDisplayPath();
+        return false;
+    }
+    applyHdrDisplayPath();
+    return true;
+}
+
+void EditorController::restoreSdrDisplayView() {
+    if (!hdr_display_override_) return;
+    if (!saved_display_before_hdr_.empty()) {
+        color_pipeline_.display = saved_display_before_hdr_;
+    }
+    if (!saved_view_before_hdr_.empty()) {
+        color_pipeline_.view = saved_view_before_hdr_;
+    }
+    hdr_display_override_ = false;
+    saved_display_before_hdr_.clear();
+    saved_view_before_hdr_.clear();
+    syncOutputSpaceFromDisplayView();
+    publishColorPreview();
+}
+
+void EditorController::applyHdrDisplayPath() {
+    auto* window = preview_quick_window_ != nullptr ? preview_quick_window_ : video_window_;
+    const auto probe = probe_hdr_display(window);
+    if (!probe.monitor_icc_path.isEmpty()) {
+        color_pipeline_.monitor_icc_path = probe.monitor_icc_path.toStdString();
+    }
+    HdrWindowMode mode = HdrWindowMode::sdr;
+    QString status;
+    if (color_pipeline_.hdr_monitoring) {
+        if (!probe.hdr_capable) {
+            mode = HdrWindowMode::sdr;
+            status = QStringLiteral("이 모니터는 HDR를 지원하지 않아 SDR로 표시합니다");
+        } else if (apply_window_color_space(window, HdrWindowMode::scrgb, probe.monitor_icc_path)) {
+            mode = HdrWindowMode::scrgb;
+            status = QStringLiteral("HDR 표시 · scRGB");
+        } else if (apply_window_color_space(
+                       window, HdrWindowMode::rec2020_pq, probe.monitor_icc_path)) {
+            mode = HdrWindowMode::rec2020_pq;
+            status = QStringLiteral("HDR 표시 · Rec.2020 PQ");
+        } else {
+            apply_window_color_space(window, HdrWindowMode::sdr, probe.monitor_icc_path);
+            status = QStringLiteral("HDR 창 색공간을 열지 못해 SDR로 표시합니다");
+        }
+    } else {
+        apply_window_color_space(window, HdrWindowMode::sdr, probe.monitor_icc_path);
+        status = probe.monitor_icc_path.isEmpty()
+            ? QStringLiteral("SDR 표시")
+            : QStringLiteral("SDR 표시 · 모니터 ICC 연결");
+    }
+    if (mode == HdrWindowMode::sdr && color_pipeline_.hdr_monitoring && probe.hdr_capable) {
+        status += QStringLiteral(" · 출력은 HDR10");
+    } else if (color_pipeline_.hdr_monitoring) {
+        status += QStringLiteral(" · 출력 HDR10");
+    }
+    hdr_display_status_ = status;
 }
 
 void EditorController::setExportQuality(int quality) {
@@ -4305,7 +4534,9 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     preview_update_timer_.stop();
     preview_operation_pending_ = false;
     pending_preview_seek_.reset();
+    pending_live_seek_.reset();
     preview_should_play_ = false;
+    if (live_seek_watcher_.isRunning()) live_seek_watcher_.waitForFinished();
     if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
     player_->stop();
 #endif
@@ -4313,6 +4544,11 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     request.output_path = std::filesystem::path(output.toStdWString());
     request.prefer_stream_copy = export_codec_ == 2;
     request.quality = static_cast<ffgui::ExportQuality>(export_quality_);
+    request.hdr10 = color_pipeline_.hdr_monitoring && export_container_ != 3;
+    request.hdr_peak_nits = color_pipeline_.hdr_peak_nits;
+    request.sdr_white_nits = color_pipeline_.sdr_white_nits;
+    request.max_cll = color_pipeline_.max_cll;
+    request.max_fall = color_pipeline_.max_fall;
     if (export_resolution_ == 1) {
         request.output_width = 3840; request.output_height = 2160;
     } else if (export_resolution_ == 2) {
@@ -4603,7 +4839,9 @@ void EditorController::startExportValidation() {
         const auto output = QString::fromStdWString(export_request_->output_path.wstring());
         export_validation_process_.setProgram(ffgui::locate_ffprobe());
         export_validation_process_.setArguments({
-            "-v", "error", "-show_entries", "stream=codec_type:format=duration",
+            "-v", "error",
+            "-show_entries",
+            "stream=codec_type,color_primaries,color_transfer,color_space:format=duration",
             "-of", "json", output});
         export_validation_process_.start();
     } catch (const std::exception& error) {
@@ -4689,10 +4927,46 @@ void EditorController::queuePreviewOperation(bool restorePosition) {
 #endif
 }
 
+void EditorController::queueLiveSeek(qint64 timelinePosition) {
+#ifdef FFGUI_HAS_GES
+    if (preview_suspended_for_export_ || player_ == nullptr) return;
+    pending_live_seek_ = timelinePosition;
+    pumpLiveSeek();
+#else
+    static_cast<void>(timelinePosition);
+#endif
+}
+
+void EditorController::pumpLiveSeek() {
+#ifdef FFGUI_HAS_GES
+    if (preview_suspended_for_export_ || !pending_live_seek_.has_value()) return;
+    if (preview_watcher_.isRunning() || live_seek_watcher_.isRunning() || player_ == nullptr) {
+        return;
+    }
+    const auto position = *pending_live_seek_;
+    pending_live_seek_.reset();
+    auto* player = player_.get();
+    live_seek_watcher_.setFuture(QtConcurrent::run([player, position] {
+        LiveSeekResult result;
+        try {
+            if (player->duration() > 0) {
+                const auto target = std::clamp<qint64>(
+                    position, 0, static_cast<qint64>(player->duration()));
+                player->seek(target, ffgui::GesSequencePlayer::PreviewSeekMode::keyframe);
+            }
+            result.success = true;
+        } catch (const std::exception& error) {
+            result.error = QString::fromUtf8(error.what());
+        }
+        return result;
+    }));
+#endif
+}
+
 void EditorController::startPreviewOperation() {
 #ifdef FFGUI_HAS_GES
     if (preview_suspended_for_export_ || preview_watcher_.isRunning() ||
-        !preview_operation_pending_) return;
+        live_seek_watcher_.isRunning() || !preview_operation_pending_) return;
 
     const auto generation = preview_generation_;
     const bool rebuild = !preview_applied_generation_.has_value() ||
@@ -4712,7 +4986,7 @@ void EditorController::startPreviewOperation() {
     pending_preview_seek_.reset();
     preview_stop_requested_ = false;
     preview_operation_pending_ = false;
-    if (!colorOnly) {
+    if (rebuild && !colorOnly) {
         if (!preview_busy_) {
             preview_busy_ = true;
             emit previewBusyChanged();
@@ -4721,9 +4995,7 @@ void EditorController::startPreviewOperation() {
             preview_failed_ = false;
             emit previewFailedChanged();
         }
-        setStatus(rebuild
-            ? QStringLiteral("미리보기 타임라인 준비 중…")
-            : QStringLiteral("미리보기 위치 이동 중…"));
+        setStatus(QStringLiteral("미리보기 타임라인 준비 중…"));
     }
 
     auto* player = player_.get();

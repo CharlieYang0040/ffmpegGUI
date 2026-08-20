@@ -16,6 +16,12 @@
   인코딩을 쓰고, 일반 영상 그레이드 전은 표시 변환 역변환 근사다.
 - gamut warning, false color, 픽셀 검사기를 프로그램 모니터에 연결했다.
 - D3D11 `DXGI_ERROR_DEVICE_REMOVED`를 감지하면 GPU 자원을 버리고 CPU 미리보기로 복구한다.
+- 타임라인 드래그 중에도 키프레임 seek로 실제 미리보기를 최신 위치만 따라가며, 마우스를
+  놓으면 정확 seek로 확정한다. 탐색 중에는 스코프 분석과 그레이드 인스펙터 재평가를 멈춘다.
+- 재생 헤드 틱마다 그레이드 UI를 다시 만들지 않아 재생이 컬러 인스펙터 때문에 끊기지 않는다.
+- HDR 모니터가 있으면 창 색공간을 scRGB 우선, 실패 시 Rec.2020 PQ로 맞추고 모니터 ICC를
+  SDR 표시에 연결한다. HDR 출력은 Rec.2100 PQ·mastering display·MaxCLL/MaxFALL을 FFmpeg
+  HEVC 인코더와 ffprobe 검증에 넣는다.
 
 ## 0.1.1 Preview - 2026-08-12
 

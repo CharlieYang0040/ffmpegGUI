@@ -27,6 +27,7 @@ struct ColorPipelineSettings final {
     int sdr_white_nits{203};
     int max_cll{1000};
     int max_fall{400};
+    std::string monitor_icc_path;
 
     bool operator==(const ColorPipelineSettings&) const = default;
     void validate() const;
