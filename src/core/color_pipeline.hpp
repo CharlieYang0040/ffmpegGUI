@@ -80,6 +80,7 @@ public:
     void remove(const std::string& id);
     void move(const std::string& id, std::size_t insertion_index);
     [[nodiscard]] bool lut_representable() const noexcept;
+    [[nodiscard]] bool has_keyframes() const noexcept;
     [[nodiscard]] std::vector<std::string> lut_incompatible_nodes() const;
     [[nodiscard]] std::vector<std::string> render_unsupported_nodes() const;
 

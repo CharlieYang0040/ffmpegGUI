@@ -611,6 +611,7 @@ struct PreparedSourceColor final {
     std::string shader_id;
     std::shared_ptr<const ColorCube> cube;
     std::shared_ptr<const OcioGpuShader> shader;
+    std::shared_ptr<const ColorLutRecipe> recipe;
 };
 
 [[nodiscard]] std::optional<PreparedSourceColor> prepare_source_color(
@@ -629,15 +630,30 @@ struct PreparedSourceColor final {
     const auto outputSpace = managed ? output_space : std::string{};
     PreparedSourceColor prepared;
     prepared.clip_id = span.clip.id;
+    prepared.lut_id = source_color_lut_id(span.clip.id);
+    const auto animated = grade.has_keyframes();
     if (managed && d3d11_lut_available) {
         prepared.shader_id = source_color_shader_id(span.clip.id);
         prepared.shader = std::make_shared<const OcioGpuShader>(
             build_managed_gpu_shader(
-                span.source_color, pipeline, grade, outputSpace));
+                span.source_color, pipeline, grade, outputSpace, 33, 0));
     } else {
-        prepared.lut_id = source_color_lut_id(span.clip.id);
         prepared.cube = std::make_shared<const ColorCube>(build_color_cube(
-            span.source_color, pipeline, grade, outputSpace, 33));
+            span.source_color, pipeline, grade, outputSpace, 33, 0));
+    }
+    if (animated) {
+        ColorLutRecipe recipe;
+        recipe.source_color = span.source_color;
+        recipe.settings = pipeline;
+        recipe.grade = grade;
+        recipe.output_space = outputSpace;
+        recipe.cube_size = 33;
+        recipe.source_in = span.clip.source_in;
+        recipe.timeline_in = span.timeline_in;
+        recipe.playback_rate = span.clip.playback_rate;
+        recipe.animated = true;
+        recipe.working_space_grade_only = prepared.shader != nullptr;
+        prepared.recipe = std::make_shared<const ColorLutRecipe>(std::move(recipe));
     }
     return prepared;
 }
@@ -665,6 +681,14 @@ void publish_prepared_source_color(const PreparedSourceColor& prepared) {
     }
     if (prepared.cube != nullptr) {
         publish_gst_color_lut(prepared.lut_id, prepared.cube);
+    }
+    if (prepared.recipe != nullptr) {
+        if (!prepared.lut_id.empty()) {
+            publish_gst_color_recipe(prepared.lut_id, prepared.recipe);
+        }
+        if (!prepared.shader_id.empty()) {
+            publish_gst_color_recipe(prepared.shader_id, prepared.recipe);
+        }
     }
 }
 

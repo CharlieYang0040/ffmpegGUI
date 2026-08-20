@@ -89,6 +89,14 @@ ffgui::MediaKind parseMediaKind(const QString& value) {
     return ffgui::MediaKind::video;
 }
 
+void removeExportColorArtifacts(const QStringList& paths) {
+    for (const auto& path : paths) {
+        QFileInfo info(path);
+        if (info.isDir()) QDir(path).removeRecursively();
+        else QFile::remove(path);
+    }
+}
+
 QJsonObject serializeGradeGraph(const ffgui::GradeGraph& graph) {
     QJsonArray nodes;
     for (const auto& node : graph.nodes()) {
@@ -718,7 +726,7 @@ EditorController::~EditorController() {
     }
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
     if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
-    for (const auto& path : export_color_lut_paths_) QFile::remove(path);
+    removeExportColorArtifacts(export_color_lut_paths_);
 }
 
 std::uint64_t EditorController::videoFramesReceived() const noexcept {
@@ -1085,7 +1093,7 @@ QVariantList EditorController::selectedGradeNodes() const {
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return result;
     const auto* asset = timeline_.asset(clip->asset_id);
-    const auto keyframeSupported = asset != nullptr && asset->image_sequence().has_value();
+    const auto keyframeSupported = asset != nullptr;
     const auto sourceTime = selectedClipSourceTime().value_or(clip->source_in);
     for (const auto& node : clip->grade.nodes()) {
         QVariantMap parameters;
@@ -4089,6 +4097,8 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             : color_pipeline_.output_space.empty()
                 ? std::string{"sRGB - Display"} : color_pipeline_.output_space;
         try {
+            const int clutFps = request.gif.enabled ? std::max(1, request.gif.fps) :
+                (request.output_fps > 0 ? request.output_fps : 30);
             for (std::size_t index = 0; index < exportSnapshot.size(); ++index) {
                 const auto& span = exportSnapshot[index];
                 const auto* asset = timeline_.asset(span.clip.asset_id);
@@ -4098,11 +4108,51 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
                     span.clip.grade.nodes().empty() && !hasClipControls)) {
                     continue;
                 }
+                const auto grade = ffgui::compose_clip_grade(span.clip);
+                request.clips[index].brightness = 0.0;
+                request.clips[index].contrast = 1.0;
+                request.clips[index].saturation = 1.0;
+                if (grade.has_keyframes()) {
+                    const auto clutDir = QDir(exportCache).filePath(
+                        QStringLiteral("%1-clip-%2-clut").arg(exportJobId).arg(index));
+                    if (!QDir().mkpath(clutDir)) {
+                        throw std::runtime_error("animated color CLUT directory could not be created");
+                    }
+                    const auto durationSeconds = static_cast<double>(span.clip.duration) /
+                        static_cast<double>(ffgui::kNanosecondsPerSecond);
+                    auto fps = clutFps;
+                    auto frameCount = std::max(1, static_cast<int>(std::llround(
+                        durationSeconds * static_cast<double>(fps))));
+                    constexpr int kMaxClutFrames = 1'800;
+                    if (frameCount > kMaxClutFrames) {
+                        fps = std::max(1, static_cast<int>(
+                            std::llround(static_cast<double>(kMaxClutFrames) / durationSeconds)));
+                        frameCount = std::max(1, static_cast<int>(std::llround(
+                            durationSeconds * static_cast<double>(fps))));
+                    }
+                    for (int frame = 0; frame < frameCount; ++frame) {
+                        const auto sourceTime = span.clip.source_in + static_cast<ffgui::TimeNs>(
+                            std::llround(static_cast<double>(frame) /
+                                static_cast<double>(fps) *
+                                static_cast<double>(ffgui::kNanosecondsPerSecond)));
+                        const auto clut = ffgui::build_hald_clut(
+                            asset->source_color(), color_pipeline_, grade, outputSpace, 6,
+                            sourceTime);
+                        const auto framePath = QDir(clutDir).filePath(
+                            QStringLiteral("%1.ppm").arg(frame + 1, 6, 10, QLatin1Char('0')));
+                        ffgui::write_hald_clut_ppm(
+                            std::filesystem::path(framePath.toStdWString()), clut);
+                    }
+                    export_color_lut_paths_.push_back(clutDir);
+                    request.clips[index].color_clut_pattern =
+                        std::filesystem::path(QDir(clutDir).filePath("%06d.ppm").toStdWString());
+                    request.clips[index].color_clut_fps = fps;
+                    continue;
+                }
                 const auto lutPath = QDir(exportCache).filePath(
                     QStringLiteral("%1-clip-%2.cube").arg(exportJobId).arg(index));
                 const auto payload = ffgui::bake_color_cube(
-                    asset->source_color(), color_pipeline_,
-                    ffgui::compose_clip_grade(span.clip), outputSpace, 33);
+                    asset->source_color(), color_pipeline_, grade, outputSpace, 33);
                 QSaveFile file(lutPath);
                 const auto bytes = QByteArray::fromStdString(payload);
                 if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() ||
@@ -4112,12 +4162,9 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
                 export_color_lut_paths_.push_back(lutPath);
                 request.clips[index].color_lut_path =
                     std::filesystem::path(lutPath.toStdWString());
-                request.clips[index].brightness = 0.0;
-                request.clips[index].contrast = 1.0;
-                request.clips[index].saturation = 1.0;
             }
         } catch (const std::exception& error) {
-            for (const auto& path : export_color_lut_paths_) QFile::remove(path);
+            removeExportColorArtifacts(export_color_lut_paths_);
             export_color_lut_paths_.clear();
             setStatus(QStringLiteral("출력 중단: 컬러 준비 실패 · %1")
                 .arg(QString::fromUtf8(error.what())));
@@ -4301,7 +4348,7 @@ void EditorController::finishExport(bool success) {
                       << "log=" << export_log_path_;
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
     if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
-    for (const auto& path : export_color_lut_paths_) QFile::remove(path);
+    removeExportColorArtifacts(export_color_lut_paths_);
     export_concat_path_.clear();
     export_subtitle_path_.clear();
     export_color_lut_paths_.clear();

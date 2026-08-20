@@ -13,13 +13,17 @@
 #include "core/subtitle_srt.hpp"
 #include "export/ffmpeg_export_plan.hpp"
 
-#include <exception>
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <numeric>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -382,6 +386,151 @@ void test_grade_parameter_keyframes_evaluate_in_source_time() {
     invalid.parameter_keyframes["exposure"] = {{seconds(2), 0.0}, {seconds(2), 1.0}};
     require_throws<std::invalid_argument>([&] { invalid.validate(); },
         "duplicate keyframe times must be rejected");
+}
+
+void test_source_time_buffer_mapping_and_animated_cube_cache() {
+    require(ffgui::source_time_for_clip_buffer(
+                seconds(2), seconds(5), 1.0, seconds(5) + seconds(1) / 2) ==
+                seconds(2) + seconds(1) / 2,
+            "timeline-absolute PTS must convert to source time after the clip in-point");
+    require(ffgui::source_time_for_clip_buffer(seconds(2), seconds(5), 2.0, seconds(1) / 2) ==
+                seconds(3),
+            "clip-local PTS must still apply playback rate to reach source time");
+    ffgui::ColorLutRecipe recipe;
+    auto node = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "animated");
+    node.parameter_keyframes["exposure"] = {{0, 0.0}, {seconds(1), 2.0}};
+    recipe.grade.add(std::move(node));
+    recipe.animated = true;
+    recipe.cube_size = 5;
+    recipe.source_in = 0;
+    recipe.timeline_in = seconds(5);
+    recipe.playback_rate = 1.0;
+    ffgui::AnimatedCubeCache cache;
+    auto shared = std::make_shared<const ffgui::ColorLutRecipe>(recipe);
+    const auto first = cache.cube_for_pts(shared, seconds(5));
+    const auto again = cache.cube_for_pts(shared, seconds(5) + 1000);
+    const auto later = cache.cube_for_pts(shared, seconds(6));
+    require(first && again && first == again,
+            "animated cube cache must reuse the same baked cube within 1ms");
+    require(later && later != first,
+            "animated cube cache must bake a new cube when source time changes");
+    float identity[3]{0.5F, 0.5F, 0.5F};
+    float early[3]{};
+    float late[3]{};
+    ffgui::sample_color_cube(*first, identity, early);
+    ffgui::sample_color_cube(*later, identity, late);
+    require(std::abs(early[0] - 0.5F) < 0.02F && late[0] > early[0] + 0.4F,
+            "source-time cube evaluation must brighten as exposure keyframes advance");
+}
+
+void test_grade_cube_matches_float_reference_for_bypass_mix_order_and_keyframes() {
+    const auto compare = [](const ffgui::GradeGraph& graph, std::int64_t sourceTime,
+                            const char* message) {
+        const auto cube = ffgui::build_color_cube({}, {}, graph, {}, 9, sourceTime);
+        require(cube.size == 9 && cube.rgb.size() == 9U * 9U * 9U * 3U,
+                "golden patch cubes must use the published 3D lattice size");
+        const std::array<float, 3> samples[]{
+            {0.0F, 0.0F, 0.0F}, {0.5F, 0.5F, 0.5F}, {1.0F, 1.0F, 1.0F},
+            {0.25F, 0.5F, 0.75F}, {0.8F, 0.2F, 0.1F}};
+        for (const auto& sample : samples) {
+            float fromCube[3]{};
+            ffgui::sample_color_cube(cube, sample.data(), fromCube);
+            float pixel[]{sample[0], sample[1], sample[2], 0.42F};
+            ffgui::apply_grade_graph_rgba32f(pixel, 1, graph, sourceTime);
+            const auto lattice =
+                std::fmod(sample[0] * 8.0F, 1.0F) < 0.000001F &&
+                std::fmod(sample[1] * 8.0F, 1.0F) < 0.000001F &&
+                std::fmod(sample[2] * 8.0F, 1.0F) < 0.000001F;
+            const auto tolerance = lattice ? 0.0001F : 0.03F;
+            require(std::abs(fromCube[0] - pixel[0]) < tolerance &&
+                        std::abs(fromCube[1] - pixel[1]) < tolerance &&
+                        std::abs(fromCube[2] - pixel[2]) < tolerance &&
+                        std::abs(pixel[3] - 0.42F) < 0.000001F,
+                    message);
+        }
+    };
+
+    ffgui::GradeGraph bypassed;
+    auto disabled = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "off");
+    disabled.enabled = false;
+    disabled.parameters["exposure"] = 4.0;
+    bypassed.add(disabled);
+    compare(bypassed, 0, "bypassed nodes must leave the cube identical to the float renderer");
+
+    ffgui::GradeGraph mixed;
+    auto primary = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "mix");
+    primary.parameters["exposure"] = 1.0;
+    primary.mix = 0.5;
+    mixed.add(primary);
+    compare(mixed, 0, "node mix must match between the float renderer and sampled 3D cube");
+
+    ffgui::GradeGraph logThenPrimary;
+    auto log = ffgui::make_default_grade_node(ffgui::GradeNodeType::log_wheels, "log");
+    log.parameters["offsetR"] = 0.05;
+    log.parameters["offsetG"] = 0.05;
+    log.parameters["offsetB"] = 0.05;
+    auto second = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "after-log");
+    second.parameters["contrast"] = 1.2;
+    logThenPrimary.add(log);
+    logThenPrimary.add(second);
+    ffgui::GradeGraph primaryThenLog;
+    primaryThenLog.add(second);
+    primaryThenLog.add(log);
+    compare(logThenPrimary, 0, "node order log-then-primary must match the cube contract");
+    compare(primaryThenLog, 0, "node order primary-then-log must match the cube contract");
+    float logFirst[]{0.4F, 0.4F, 0.4F, 1.0F};
+    float primaryFirst[]{0.4F, 0.4F, 0.4F, 1.0F};
+    ffgui::apply_grade_graph_rgba32f(logFirst, 1, logThenPrimary);
+    ffgui::apply_grade_graph_rgba32f(primaryFirst, 1, primaryThenLog);
+    require(std::abs(logFirst[0] - primaryFirst[0]) > 0.0001F,
+            "swapping node order must change the float reference so order is actually tested");
+
+    ffgui::GradeGraph keyed;
+    auto animated = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "key");
+    animated.parameter_keyframes["exposure"] = {{0, 0.0}, {seconds(1), 1.0}};
+    keyed.add(animated);
+    compare(keyed, 0, "keyframe start must match the cube sampled at source time 0");
+    compare(keyed, seconds(1), "keyframe end must match the cube sampled at source time 1s");
+    require(keyed.has_keyframes(), "graphs with parameter keyframes must report animation");
+}
+
+void test_hald_clut_identity_and_export_plan_uses_time_varying_haldclut() {
+    const auto identity = ffgui::build_hald_clut({}, {}, {}, {}, 4);
+    require(identity.level == 4 && identity.width == 64 &&
+                identity.rgb.size() == 64U * 64U * 3U,
+            "Hald CLUT level 4 must be a 64x64 RGB image");
+    const auto cubeSize = 16;
+    const auto index = static_cast<std::size_t>(8) +
+        static_cast<std::size_t>(8) * cubeSize +
+        static_cast<std::size_t>(8) * cubeSize * cubeSize;
+    const auto y = static_cast<int>(index / 64);
+    const auto x = static_cast<int>(index % 64);
+    const auto pixel = (static_cast<std::size_t>(y) * 64 + static_cast<std::size_t>(x)) * 3;
+    require(identity.rgb[pixel] > 110 && identity.rgb[pixel] < 145 &&
+                identity.rgb[pixel + 1] > 110 && identity.rgb[pixel + 1] < 145 &&
+                identity.rgb[pixel + 2] > 110 && identity.rgb[pixel + 2] < 145,
+            "identity Hald CLUT mid-gray lattice must round-trip near 0.5");
+    auto request = ffgui::ExportRequest{
+        {
+            {std::filesystem::path{"A.mp4"}, 0, seconds(2), true},
+            {std::filesystem::path{"B.mp4"}, 0, seconds(2), true},
+        },
+        std::filesystem::path{"result.mp4"},
+        ffgui::ExportVideoEncoder::libx264};
+    request.clips[1].transition_in = seconds(1) / 2;
+    request.clips[0].color_clut_pattern = std::filesystem::path{"cluts/%06d.ppm"};
+    request.clips[0].color_clut_fps = 24;
+    const auto plan = ffgui::compile_ffmpeg_export(request);
+    std::string arguments;
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(arguments.contains("\n-framerate\n24\n-start_number\n1\n") &&
+                arguments.contains("cluts/%06d.ppm"),
+            "animated grades must attach a Hald CLUT image sequence as an extra input");
+    require(arguments.contains("haldclut=interp=trilinear") &&
+                arguments.find("haldclut=") < arguments.find("xfade="),
+            "time-varying clip color must run haldclut before the timeline dissolve");
+    require(!arguments.contains("lut3d="),
+            "animated grades must not fall back to a static 3D LUT");
 }
 
 void test_shared_grade_node_updates_all_clips_as_one_undoable_edit() {
@@ -1542,11 +1691,11 @@ void test_render_preflight_blocks_offline_and_unresolved_managed_media() {
     animatedClip.grade.add(std::move(animatedNode));
     animatedVideo.append_clip(std::move(animatedClip));
     report = ffgui::build_render_preflight(animatedVideo, {});
-    require(!report.can_render() &&
-                std::ranges::any_of(report.issues, [](const auto& issue) {
+    require(report.can_render() &&
+                std::ranges::none_of(report.issues, [](const auto& issue) {
                     return issue.code == "animated-grade-frame-server-required";
                 }),
-            "ordinary video keyframes must not silently export through a static LUT");
+            "ordinary video keyframes must export through the time-varying color path");
     std::filesystem::remove(path);
 }
 
@@ -1563,6 +1712,9 @@ int main() {
         {"advanced_grade_nodes_share_the_float_reference_contract", test_advanced_grade_nodes_share_the_float_reference_contract},
         {"external_lut_node_uses_ocio_and_preserves_mix_and_alpha", test_external_lut_node_uses_ocio_and_preserves_mix_and_alpha},
         {"grade_parameter_keyframes_evaluate_in_source_time", test_grade_parameter_keyframes_evaluate_in_source_time},
+        {"source_time_buffer_mapping_and_animated_cube_cache", test_source_time_buffer_mapping_and_animated_cube_cache},
+        {"grade_cube_matches_float_reference_for_bypass_mix_order_and_keyframes", test_grade_cube_matches_float_reference_for_bypass_mix_order_and_keyframes},
+        {"hald_clut_identity_and_export_plan_uses_time_varying_haldclut", test_hald_clut_identity_and_export_plan_uses_time_varying_haldclut},
         {"shared_grade_node_updates_all_clips_as_one_undoable_edit", test_shared_grade_node_updates_all_clips_as_one_undoable_edit},
         {"coalesced_grade_parameter_edits_are_one_undo_step", test_coalesced_grade_parameter_edits_are_one_undo_step},
         {"scope_analyzer_builds_histogram_waveform_parade_and_vectorscope", test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope},

@@ -14,6 +14,7 @@ namespace {
 
 std::mutex registryMutex;
 std::unordered_map<std::string, std::shared_ptr<const ffgui::ColorCube>> registry;
+std::unordered_map<std::string, std::shared_ptr<const ffgui::ColorLutRecipe>> recipeRegistry;
 
 std::shared_ptr<const ffgui::ColorCube> find_cube(const char* id) {
     if (id == nullptr || *id == '\0') return {};
@@ -22,11 +23,20 @@ std::shared_ptr<const ffgui::ColorCube> find_cube(const char* id) {
     return found == registry.end() ? nullptr : found->second;
 }
 
+std::shared_ptr<const ffgui::ColorLutRecipe> find_recipe(const char* id) {
+    if (id == nullptr || *id == '\0') return {};
+    std::scoped_lock lock(registryMutex);
+    const auto found = recipeRegistry.find(id);
+    return found == recipeRegistry.end() ? nullptr : found->second;
+}
+
 struct GstFfguiLut3d final {
     GstBaseTransform parent;
     gchar* lut_id{};
     GstVideoInfo info{};
     std::shared_ptr<const ffgui::ColorCube>* cube{};
+    std::shared_ptr<const ffgui::ColorLutRecipe>* recipe{};
+    ffgui::AnimatedCubeCache* cache{};
 };
 
 struct GstFfguiLut3dClass final {
@@ -64,6 +74,10 @@ void gst_ffgui_lut3d_finalize(GObject* object) {
     self->lut_id = nullptr;
     delete self->cube;
     self->cube = nullptr;
+    delete self->recipe;
+    self->recipe = nullptr;
+    delete self->cache;
+    self->cache = nullptr;
     G_OBJECT_CLASS(gst_ffgui_lut3d_parent_class)->finalize(object);
 }
 
@@ -71,7 +85,11 @@ gboolean gst_ffgui_lut3d_start(GstBaseTransform* transform) {
     auto* self = reinterpret_cast<GstFfguiLut3d*>(transform);
     delete self->cube;
     self->cube = new std::shared_ptr<const ffgui::ColorCube>(find_cube(self->lut_id));
+    delete self->recipe;
+    self->recipe = new std::shared_ptr<const ffgui::ColorLutRecipe>(find_recipe(self->lut_id));
     const auto& cube = *self->cube;
+    const auto& recipe = *self->recipe;
+    if (recipe != nullptr && recipe->animated) return TRUE;
     return cube != nullptr && cube->size >= 2 &&
         cube->rgb.size() == static_cast<std::size_t>(cube->size) * cube->size * cube->size * 3;
 }
@@ -80,6 +98,8 @@ gboolean gst_ffgui_lut3d_stop(GstBaseTransform* transform) {
     auto* self = reinterpret_cast<GstFfguiLut3d*>(transform);
     delete self->cube;
     self->cube = nullptr;
+    delete self->recipe;
+    self->recipe = nullptr;
     return TRUE;
 }
 
@@ -89,41 +109,22 @@ gboolean gst_ffgui_lut3d_set_caps(
     return gst_video_info_from_caps(&self->info, input);
 }
 
-void sample_cube(const ffgui::ColorCube& cube, const float input[3], float output[3]) {
-    const auto maximum = cube.size - 1;
-    int lower[3]{};
-    int upper[3]{};
-    float fraction[3]{};
-    for (int channel = 0; channel < 3; ++channel) {
-        const auto coordinate = std::clamp(
-            std::isfinite(input[channel]) ? input[channel] : 0.0F, 0.0F, 1.0F) * maximum;
-        lower[channel] = static_cast<int>(std::floor(coordinate));
-        upper[channel] = std::min(maximum, lower[channel] + 1);
-        fraction[channel] = coordinate - lower[channel];
+std::shared_ptr<const ffgui::ColorCube> cube_for_buffer(
+    GstFfguiLut3d* self, GstBuffer* buffer) {
+    auto recipe = find_recipe(self->lut_id);
+    if (self->recipe != nullptr) *self->recipe = recipe;
+    if (recipe != nullptr && recipe->animated) {
+        if (self->cache == nullptr) self->cache = new ffgui::AnimatedCubeCache;
+        const auto pts = GST_BUFFER_PTS_IS_VALID(buffer)
+            ? static_cast<ffgui::TimeNs>(GST_BUFFER_PTS(buffer)) : ffgui::TimeNs{0};
+        return self->cache->cube_for_pts(recipe, pts);
     }
-    const auto value = [&](int red, int green, int blue, int channel) {
-        const auto index = (static_cast<std::size_t>(blue) * cube.size * cube.size +
-                            static_cast<std::size_t>(green) * cube.size + red) * 3 + channel;
-        return cube.rgb[index];
-    };
-    for (int channel = 0; channel < 3; ++channel) {
-        const auto c00 = std::lerp(value(lower[0], lower[1], lower[2], channel),
-                                   value(upper[0], lower[1], lower[2], channel), fraction[0]);
-        const auto c10 = std::lerp(value(lower[0], upper[1], lower[2], channel),
-                                   value(upper[0], upper[1], lower[2], channel), fraction[0]);
-        const auto c01 = std::lerp(value(lower[0], lower[1], upper[2], channel),
-                                   value(upper[0], lower[1], upper[2], channel), fraction[0]);
-        const auto c11 = std::lerp(value(lower[0], upper[1], upper[2], channel),
-                                   value(upper[0], upper[1], upper[2], channel), fraction[0]);
-        output[channel] = std::lerp(
-            std::lerp(c00, c10, fraction[1]),
-            std::lerp(c01, c11, fraction[1]), fraction[2]);
-    }
+    return find_cube(self->lut_id);
 }
 
 GstFlowReturn gst_ffgui_lut3d_transform_ip(GstBaseTransform* transform, GstBuffer* buffer) {
     auto* self = reinterpret_cast<GstFfguiLut3d*>(transform);
-    const auto cube = find_cube(self->lut_id);
+    const auto cube = cube_for_buffer(self, buffer);
     if (cube == nullptr || cube->size < 2 ||
         cube->rgb.size() != static_cast<std::size_t>(cube->size) * cube->size * cube->size * 3) {
         return GST_FLOW_NOT_NEGOTIATED;
@@ -145,7 +146,7 @@ GstFlowReturn gst_ffgui_lut3d_transform_ip(GstBaseTransform* transform, GstBuffe
                 static_cast<float>(rgba[1]) / 65535.0F,
                 static_cast<float>(rgba[2]) / 65535.0F};
             float output[3]{};
-            sample_cube(*cube, input, output);
+            ffgui::sample_color_cube(*cube, input, output);
             for (int channel = 0; channel < 3; ++channel) {
                 rgba[channel] = static_cast<std::uint16_t>(std::lround(
                     std::clamp(std::isfinite(output[channel]) ? output[channel] : 0.0F,
@@ -188,6 +189,7 @@ void gst_ffgui_lut3d_class_init(GstFfguiLut3dClass* klass) {
 
 void gst_ffgui_lut3d_init(GstFfguiLut3d* self) {
     gst_video_info_init(&self->info);
+    self->cache = new ffgui::AnimatedCubeCache;
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
     gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(self), FALSE);
 }
@@ -212,13 +214,29 @@ void publish_gst_color_lut(std::string id, std::shared_ptr<const ColorCube> cube
     registry.insert_or_assign(std::move(id), std::move(cube));
 }
 
+void publish_gst_color_recipe(std::string id, std::shared_ptr<const ColorLutRecipe> recipe) {
+    if (id.empty() || recipe == nullptr) return;
+    std::scoped_lock lock(registryMutex);
+    recipeRegistry.insert_or_assign(std::move(id), std::move(recipe));
+}
+
 std::shared_ptr<const ColorCube> find_published_gst_color_lut(const std::string& id) {
     return find_cube(id.c_str());
+}
+
+std::shared_ptr<const ColorLutRecipe> find_published_gst_color_recipe(const std::string& id) {
+    return find_recipe(id.c_str());
 }
 
 void remove_gst_color_lut(const std::string& id) noexcept {
     std::scoped_lock lock(registryMutex);
     registry.erase(id);
+    recipeRegistry.erase(id);
+}
+
+void remove_gst_color_recipe(const std::string& id) noexcept {
+    std::scoped_lock lock(registryMutex);
+    recipeRegistry.erase(id);
 }
 
 }  // namespace ffgui

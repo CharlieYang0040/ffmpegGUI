@@ -64,6 +64,7 @@ bool can_stream_copy(const ExportRequest& request) {
                clip.playback_rate == 1.0 && clip.brightness == 0.0 &&
                clip.contrast == 1.0 && clip.saturation == 1.0 &&
                clip.transition_in == 0 && clip.color_lut_path.empty() &&
+               clip.color_clut_pattern.empty() &&
                is_boundary(clip, clip.source_in) &&
                is_boundary(clip, checked_add(clip.source_in, clip.duration));
     });
@@ -247,10 +248,28 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
             plan.arguments.end(),
             {"-ss", seconds(clip.source_in), "-t", seconds(clip.duration),
              "-i", path_string(clip.source_path)});
-
+    }
+    std::vector<int> clutInputs(request.clips.size(), -1);
+    auto nextInput = static_cast<int>(request.clips.size());
+    for (std::size_t index = 0; index < request.clips.size(); ++index) {
+        const auto& clip = request.clips[index];
+        if (clip.color_clut_pattern.empty()) continue;
+        const auto fps = clip.color_clut_fps > 0 ? clip.color_clut_fps :
+            (compositionFps > 0 ? compositionFps : 30);
+        plan.arguments.insert(
+            plan.arguments.end(),
+            {"-framerate", std::to_string(fps), "-start_number", "1",
+             "-i", path_string(clip.color_clut_pattern)});
+        clutInputs[index] = nextInput++;
+    }
+    for (std::size_t index = 0; index < request.clips.size(); ++index) {
+        const auto& clip = request.clips[index];
         const auto suffix = std::to_string(index);
         filter += "[" + suffix + ":v:0]";
-        if (!clip.color_lut_path.empty()) {
+        if (clutInputs[index] >= 0) {
+            filter += "[" + std::to_string(clutInputs[index]) +
+                ":v:0]haldclut=interp=trilinear,";
+        } else if (!clip.color_lut_path.empty()) {
             filter += "lut3d=file='" + filter_path(clip.color_lut_path) +
                 "':interp=tetrahedral,";
         } else if (clip.brightness != 0.0 || clip.contrast != 1.0 || clip.saturation != 1.0) {

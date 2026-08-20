@@ -117,6 +117,15 @@ bool GradeGraph::lut_representable() const noexcept {
     return std::ranges::all_of(nodes_, &GradeNode::lut_representable);
 }
 
+bool GradeGraph::has_keyframes() const noexcept {
+    return std::ranges::any_of(nodes_, [](const GradeNode& node) {
+        return node.enabled && std::ranges::any_of(
+            node.parameter_keyframes, [](const auto& entry) {
+                return !entry.second.empty();
+            });
+    });
+}
+
 std::vector<std::string> GradeGraph::lut_incompatible_nodes() const {
     std::vector<std::string> result;
     for (const auto& value : nodes_) {

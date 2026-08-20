@@ -666,7 +666,8 @@ int main(int argc, char* argv[]) {
             sharedTargetNodeId, QStringLiteral("exposure"), 1.5);
         sharedTargetNodes = controller.selectedGradeNodes();
         if (!sharedTargetNodes.front().toMap().value("keyframedParameters").toStringList()
-                 .contains(QStringLiteral("exposure"))) {
+                 .contains(QStringLiteral("exposure")) ||
+            !sharedTargetNodes.front().toMap().value("keyframeSupported").toBool()) {
             qCritical() << "grade smoke: keyframe creation failed" << sharedTargetNodes;
             return EXIT_FAILURE;
         }

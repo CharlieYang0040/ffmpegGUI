@@ -84,6 +84,10 @@ struct GstFfguiD3D11Lut final {
     ID3D11Texture3D* lut_texture{};
     ID3D11ShaderResourceView* lut_view{};
     OcioResourceState* ocio_resources{};
+    std::shared_ptr<const ffgui::ColorLutRecipe>* recipe{};
+    std::shared_ptr<const ffgui::ColorCube>* animated_cube{};
+    ffgui::AnimatedCubeCache* cache{};
+    int grade_lut_index{-1};
 };
 
 struct GstFfguiD3D11LutClass final { GstBaseTransformClass parent_class; };
@@ -103,6 +107,7 @@ void release_gpu_resources(GstFfguiD3D11Lut* self) noexcept {
         self->ocio_resources->texture_bindings.clear();
         self->ocio_resources->sampler_bindings.clear();
     }
+    self->grade_lut_index = -1;
     release_com(self->lut_view);
     release_com(self->lut_texture);
     release_com(self->sampler);
@@ -185,6 +190,81 @@ bool create_ocio_texture(
     if (FAILED(hr) || *resource == nullptr) return false;
     hr = device->CreateShaderResourceView(*resource, nullptr, view);
     return SUCCEEDED(hr);
+}
+
+bool upload_cube_texture(
+    ID3D11Device* device, const ffgui::ColorCube& cube,
+    ID3D11Texture3D** texture, ID3D11ShaderResourceView** view) {
+    if (device == nullptr || texture == nullptr || view == nullptr || cube.size < 2 ||
+        cube.rgb.size() != static_cast<std::size_t>(cube.size) * cube.size * cube.size * 3) {
+        return false;
+    }
+    std::vector<float> rgba;
+    rgba.resize(static_cast<std::size_t>(cube.size) * cube.size * cube.size * 4);
+    for (std::size_t index = 0, output = 0; index < cube.rgb.size(); index += 3) {
+        rgba[output++] = cube.rgb[index];
+        rgba[output++] = cube.rgb[index + 1];
+        rgba[output++] = cube.rgb[index + 2];
+        rgba[output++] = 1.0F;
+    }
+    D3D11_TEXTURE3D_DESC textureDescription{};
+    textureDescription.Width = static_cast<UINT>(cube.size);
+    textureDescription.Height = static_cast<UINT>(cube.size);
+    textureDescription.Depth = static_cast<UINT>(cube.size);
+    textureDescription.MipLevels = 1;
+    textureDescription.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    textureDescription.Usage = D3D11_USAGE_IMMUTABLE;
+    textureDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA textureData{};
+    textureData.pSysMem = rgba.data();
+    textureData.SysMemPitch = static_cast<UINT>(cube.size * 4 * sizeof(float));
+    textureData.SysMemSlicePitch = static_cast<UINT>(
+        cube.size * cube.size * 4 * sizeof(float));
+    ID3D11Texture3D* created = nullptr;
+    auto hr = device->CreateTexture3D(&textureDescription, &textureData, &created);
+    if (FAILED(hr) || created == nullptr) return false;
+    ID3D11ShaderResourceView* createdView = nullptr;
+    hr = device->CreateShaderResourceView(created, nullptr, &createdView);
+    if (FAILED(hr) || createdView == nullptr) {
+        release_com(created);
+        return false;
+    }
+    release_com(*view);
+    release_com(*texture);
+    *texture = created;
+    *view = createdView;
+    return true;
+}
+
+bool replace_animated_cube_locked(
+    GstFfguiD3D11Lut* self, const ffgui::ColorCube& cube) {
+    if (self->device == nullptr) return false;
+    auto* device = gst_d3d11_device_get_device_handle(self->device);
+    if (self->grade_lut_index >= 0 && self->ocio_resources != nullptr &&
+        static_cast<std::size_t>(self->grade_lut_index) < self->ocio_resources->textures.size()) {
+        ffgui::OcioGpuTexture texture;
+        texture.name = "ffgui_grade_lut";
+        texture.width = static_cast<unsigned>(cube.size);
+        texture.height = static_cast<unsigned>(cube.size);
+        texture.depth = static_cast<unsigned>(cube.size);
+        texture.channels = 3;
+        texture.dimensions = 3;
+        texture.values = cube.rgb;
+        ID3D11Resource* resource = nullptr;
+        ID3D11ShaderResourceView* view = nullptr;
+        if (!create_ocio_texture(device, texture, &resource, &view)) {
+            release_com(resource);
+            release_com(view);
+            return false;
+        }
+        const auto index = static_cast<std::size_t>(self->grade_lut_index);
+        release_com(self->ocio_resources->views[index]);
+        release_com(self->ocio_resources->textures[index]);
+        self->ocio_resources->textures[index] = resource;
+        self->ocio_resources->views[index] = view;
+        return true;
+    }
+    return upload_cube_texture(device, cube, &self->lut_texture, &self->lut_view);
 }
 
 std::string ocio_pixel_shader_source(const ffgui::OcioGpuShader& shader) {
@@ -331,34 +411,15 @@ bool create_gpu_resources_locked(GstFfguiD3D11Lut* self) {
             self->ocio_resources->samplers.push_back(ocioSampler);
             self->ocio_resources->texture_bindings.push_back(textureBinding);
             self->ocio_resources->sampler_bindings.push_back(samplerBinding);
+            if (texture.name == "ffgui_grade_lut") {
+                self->grade_lut_index = static_cast<int>(
+                    self->ocio_resources->textures.size() - 1);
+            }
         }
         return true;
     }
 
-    std::vector<float> rgba;
-    rgba.resize(static_cast<std::size_t>(cube->size) * cube->size * cube->size * 4);
-    for (std::size_t index = 0, output = 0; index < cube->rgb.size(); index += 3) {
-        rgba[output++] = cube->rgb[index];
-        rgba[output++] = cube->rgb[index + 1];
-        rgba[output++] = cube->rgb[index + 2];
-        rgba[output++] = 1.0F;
-    }
-    D3D11_TEXTURE3D_DESC textureDescription{};
-    textureDescription.Width = static_cast<UINT>(cube->size);
-    textureDescription.Height = static_cast<UINT>(cube->size);
-    textureDescription.Depth = static_cast<UINT>(cube->size);
-    textureDescription.MipLevels = 1;
-    textureDescription.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    textureDescription.Usage = D3D11_USAGE_IMMUTABLE;
-    textureDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    D3D11_SUBRESOURCE_DATA textureData{};
-    textureData.pSysMem = rgba.data();
-    textureData.SysMemPitch = static_cast<UINT>(cube->size * 4 * sizeof(float));
-    textureData.SysMemSlicePitch = static_cast<UINT>(cube->size * cube->size * 4 * sizeof(float));
-    hr = device->CreateTexture3D(&textureDescription, &textureData, &self->lut_texture);
-    if (FAILED(hr)) return false;
-    hr = device->CreateShaderResourceView(self->lut_texture, nullptr, &self->lut_view);
-    return SUCCEEDED(hr);
+    return upload_cube_texture(device, *cube, &self->lut_texture, &self->lut_view);
 }
 
 bool create_gpu_resources(GstFfguiD3D11Lut* self) {
@@ -497,21 +558,47 @@ GstFlowReturn gst_ffgui_d3d11_lut_transform(
     auto* self = reinterpret_cast<GstFfguiD3D11Lut*>(transform);
     if (self->ocio_resources == nullptr) return GST_FLOW_ERROR;
     std::scoped_lock resourceLock(self->ocio_resources->mutex);
-    const auto publishedCube = ffgui::find_published_gst_color_lut(
+    auto publishedCube = ffgui::find_published_gst_color_lut(
         self->lut_id == nullptr ? "" : self->lut_id);
     const auto publishedShader = ffgui::find_published_gst_d3d11_ocio_shader(
         self->shader_id == nullptr ? "" : self->shader_id);
+    auto recipe = ffgui::find_published_gst_color_recipe(
+        self->lut_id == nullptr ? "" : self->lut_id);
+    if (recipe == nullptr) {
+        recipe = ffgui::find_published_gst_color_recipe(
+            self->shader_id == nullptr ? "" : self->shader_id);
+    }
     if (self->cube == nullptr) {
         self->cube = new std::shared_ptr<const ffgui::ColorCube>();
     }
     if (self->ocio_shader == nullptr) {
         self->ocio_shader = new std::shared_ptr<const ffgui::OcioGpuShader>();
     }
-    if (*self->cube != publishedCube || *self->ocio_shader != publishedShader) {
+    if (self->recipe == nullptr) {
+        self->recipe = new std::shared_ptr<const ffgui::ColorLutRecipe>();
+    }
+    if (self->animated_cube == nullptr) {
+        self->animated_cube = new std::shared_ptr<const ffgui::ColorCube>();
+    }
+    const auto shaderChanged = *self->ocio_shader != publishedShader;
+    const auto staticCubeChanged = *self->cube != publishedCube;
+    if (shaderChanged || (staticCubeChanged && (recipe == nullptr || !recipe->animated))) {
         *self->cube = publishedCube;
         *self->ocio_shader = publishedShader;
         if (!create_gpu_resources_locked(self)) return GST_FLOW_ERROR;
+        if (self->animated_cube != nullptr) self->animated_cube->reset();
     }
+    if (recipe != nullptr && recipe->animated) {
+        if (self->cache == nullptr) self->cache = new ffgui::AnimatedCubeCache;
+        const auto pts = GST_BUFFER_PTS_IS_VALID(input)
+            ? static_cast<ffgui::TimeNs>(GST_BUFFER_PTS(input)) : ffgui::TimeNs{0};
+        const auto frameCube = self->cache->cube_for_pts(recipe, pts);
+        if (frameCube != nullptr && *self->animated_cube != frameCube) {
+            if (!replace_animated_cube_locked(self, *frameCube)) return GST_FLOW_ERROR;
+            *self->animated_cube = frameCube;
+        }
+    }
+    *self->recipe = std::move(recipe);
     if (gst_buffer_n_memory(input) == 0 || gst_buffer_n_memory(output) == 0 ||
         self->device == nullptr ||
         (self->lut_view == nullptr && self->ocio_resources->views.empty() &&
@@ -618,6 +705,12 @@ void gst_ffgui_d3d11_lut_finalize(GObject* object) {
     self->cube = nullptr;
     delete self->ocio_shader;
     self->ocio_shader = nullptr;
+    delete self->recipe;
+    self->recipe = nullptr;
+    delete self->animated_cube;
+    self->animated_cube = nullptr;
+    delete self->cache;
+    self->cache = nullptr;
     gst_clear_object(&self->device);
     g_free(self->lut_id);
     self->lut_id = nullptr;
@@ -670,6 +763,8 @@ void gst_ffgui_d3d11_lut_class_init(GstFfguiD3D11LutClass* klass) {
 
 void gst_ffgui_d3d11_lut_init(GstFfguiD3D11Lut* self) {
     self->ocio_resources = new OcioResourceState;
+    self->cache = new ffgui::AnimatedCubeCache;
+    self->grade_lut_index = -1;
     gst_video_info_init(&self->info);
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), FALSE);
     gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(self), FALSE);
@@ -714,8 +809,11 @@ std::shared_ptr<const OcioGpuShader> find_published_gst_d3d11_ocio_shader(
 }
 
 void remove_gst_d3d11_ocio_shader(const std::string& id) noexcept {
-    std::scoped_lock lock(shaderRegistryMutex);
-    shaderRegistry.erase(id);
+    {
+        std::scoped_lock lock(shaderRegistryMutex);
+        shaderRegistry.erase(id);
+    }
+    remove_gst_color_recipe(id);
 }
 
 }  // namespace ffgui
