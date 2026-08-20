@@ -213,6 +213,9 @@ public:
     [[nodiscard]] std::uint64_t previewRebuildCount() const noexcept {
         return preview_rebuild_count_;
     }
+    [[nodiscard]] std::uint64_t previewColorUpdateCount() const noexcept {
+        return preview_color_update_count_;
+    }
     [[nodiscard]] std::uint64_t scrubFramesSubmitted() const noexcept {
         return scrub_frames_submitted_;
     }
@@ -378,6 +381,9 @@ private:
     };
 
     void publishTimeline(bool resetPlayhead = false);
+    void publishColorPreview();
+    void touchCoalescedGradeEdit();
+    void endCoalescedGradeEdit();
     void commitGradeNodeEdit(
         const std::string& clip_id, ffgui::GradeGraph graph, const std::string& node_id);
     [[nodiscard]] std::optional<ffgui::TimeNs> selectedClipSourceTime() const;
@@ -412,6 +418,7 @@ private:
     struct PreviewOperationResult final {
         std::uint64_t generation{};
         bool rebuilt{};
+        bool color_only{};
         bool success{};
         QString error;
     };
@@ -445,6 +452,7 @@ private:
     std::uint64_t preview_generation_{};
     std::optional<std::uint64_t> preview_applied_generation_;
     std::uint64_t preview_rebuild_count_{};
+    std::uint64_t preview_color_update_count_{};
     std::uint64_t video_frames_presented_{};
     std::uint64_t video_frames_delivered_{};
     qint64 playhead_ns_{};
@@ -483,6 +491,7 @@ private:
     bool importing_{};
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
     QTimer preview_update_timer_;
+    QTimer grade_coalesce_timer_;
     QTimer float_playback_timer_;
     QElapsedTimer float_playback_clock_;
     qint64 float_playback_origin_ns_{};
@@ -491,6 +500,7 @@ private:
     QFutureWatcher<PreviewOperationResult> preview_watcher_;
     std::optional<qint64> pending_preview_seek_;
     bool preview_operation_pending_{};
+    bool preview_color_only_pending_{};
     bool preview_should_play_{};
     bool preview_stop_requested_{};
     mutable std::mutex pending_video_frame_mutex_;

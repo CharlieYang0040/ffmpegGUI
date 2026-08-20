@@ -352,10 +352,36 @@ int main(int argc, char* argv[]) {
         playbackPoll.start();
         playbackTimeout.start(15'000);
         playbackLoop.exec();
+        const auto rebuildsBeforeLiveGrade = controller.previewRebuildCount();
+        const auto colorUpdatesBefore = controller.previewColorUpdateCount();
+        const auto liveNodes = controller.selectedGradeNodes();
+        if (liveNodes.isEmpty()) return EXIT_FAILURE;
+        const auto liveNodeId = liveNodes.front().toMap().value("id").toString();
+        controller.setGradeParameter(liveNodeId, QStringLiteral("exposure"), 0.55);
+        QEventLoop liveGradeLoop;
+        QTimer liveGradePoll;
+        QTimer liveGradeTimeout;
+        liveGradePoll.setInterval(10);
+        liveGradeTimeout.setSingleShot(true);
+        QObject::connect(&liveGradePoll, &QTimer::timeout, &liveGradeLoop, [&] {
+            if (controller.previewColorUpdateCount() > colorUpdatesBefore &&
+                controller.playing() && !controller.previewBusy()) {
+                liveGradeLoop.quit();
+            }
+        });
+        QObject::connect(&liveGradeTimeout, &QTimer::timeout, &liveGradeLoop, &QEventLoop::quit);
+        liveGradePoll.start();
+        liveGradeTimeout.start(8'000);
+        liveGradeLoop.exec();
+        const auto liveGradeStable = controller.playing() &&
+            controller.previewRebuildCount() == rebuildsBeforeLiveGrade &&
+            controller.previewColorUpdateCount() > colorUpdatesBefore &&
+            controller.sourceColorLutBindings() == static_cast<std::uint64_t>(clips.size());
         const auto passed = controller.videoFramesDelivered() > deliveredBefore &&
             controller.floatVideoFramesProcessed() == processedBefore &&
             controller.sourceColorLutBindings() == static_cast<std::uint64_t>(clips.size()) &&
             controller.sourceGpuColorLutBindings() == static_cast<std::uint64_t>(clips.size()) &&
+            liveGradeStable &&
             (!expectDirectD3d ||
                  (controller.directD3dCompositorEnabled() &&
                  controller.d3dCompositorInstances() > 0 &&
@@ -370,6 +396,9 @@ int main(int argc, char* argv[]) {
                           << controller.floatVideoFramesProcessed() - processedBefore
                           << "bindings=" << controller.sourceColorLutBindings()
                           << "gpu_bindings=" << controller.sourceGpuColorLutBindings()
+                          << "live_grade_stable=" << liveGradeStable
+                          << "color_updates=" << controller.previewColorUpdateCount()
+                          << "rebuilds=" << controller.previewRebuildCount()
                           << "direct_d3d=" << controller.directD3dCompositorEnabled()
                           << "d3d_compositors=" << controller.d3dCompositorInstances()
                           << "d3d_downloads=" << controller.d3dDownloadInstances()

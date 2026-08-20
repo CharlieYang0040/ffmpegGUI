@@ -201,9 +201,8 @@ std::string ocio_pixel_shader_source(const ffgui::OcioGpuShader& shader) {
     return source.str();
 }
 
-bool create_gpu_resources(GstFfguiD3D11Lut* self) {
+bool create_gpu_resources_locked(GstFfguiD3D11Lut* self) {
     if (self->ocio_resources == nullptr) return false;
-    std::scoped_lock resourceLock(self->ocio_resources->mutex);
     release_gpu_resources(self);
     if (self->device == nullptr) return false;
     const auto hasOcio = self->ocio_shader != nullptr && *self->ocio_shader;
@@ -362,6 +361,12 @@ bool create_gpu_resources(GstFfguiD3D11Lut* self) {
     return SUCCEEDED(hr);
 }
 
+bool create_gpu_resources(GstFfguiD3D11Lut* self) {
+    if (self->ocio_resources == nullptr) return false;
+    std::scoped_lock resourceLock(self->ocio_resources->mutex);
+    return create_gpu_resources_locked(self);
+}
+
 void gst_ffgui_d3d11_lut_set_property(
     GObject* object, guint property, const GValue* value, GParamSpec* specification) {
     auto* self = reinterpret_cast<GstFfguiD3D11Lut*>(object);
@@ -492,6 +497,21 @@ GstFlowReturn gst_ffgui_d3d11_lut_transform(
     auto* self = reinterpret_cast<GstFfguiD3D11Lut*>(transform);
     if (self->ocio_resources == nullptr) return GST_FLOW_ERROR;
     std::scoped_lock resourceLock(self->ocio_resources->mutex);
+    const auto publishedCube = ffgui::find_published_gst_color_lut(
+        self->lut_id == nullptr ? "" : self->lut_id);
+    const auto publishedShader = ffgui::find_published_gst_d3d11_ocio_shader(
+        self->shader_id == nullptr ? "" : self->shader_id);
+    if (self->cube == nullptr) {
+        self->cube = new std::shared_ptr<const ffgui::ColorCube>();
+    }
+    if (self->ocio_shader == nullptr) {
+        self->ocio_shader = new std::shared_ptr<const ffgui::OcioGpuShader>();
+    }
+    if (*self->cube != publishedCube || *self->ocio_shader != publishedShader) {
+        *self->cube = publishedCube;
+        *self->ocio_shader = publishedShader;
+        if (!create_gpu_resources_locked(self)) return GST_FLOW_ERROR;
+    }
     if (gst_buffer_n_memory(input) == 0 || gst_buffer_n_memory(output) == 0 ||
         self->device == nullptr ||
         (self->lut_view == nullptr && self->ocio_resources->views.empty() &&
@@ -686,6 +706,11 @@ void publish_gst_d3d11_ocio_shader(
         shader->function_name.empty()) return;
     std::scoped_lock lock(shaderRegistryMutex);
     shaderRegistry.insert_or_assign(std::move(id), std::move(shader));
+}
+
+std::shared_ptr<const OcioGpuShader> find_published_gst_d3d11_ocio_shader(
+    const std::string& id) {
+    return find_shader(id.c_str());
 }
 
 void remove_gst_d3d11_ocio_shader(const std::string& id) noexcept {

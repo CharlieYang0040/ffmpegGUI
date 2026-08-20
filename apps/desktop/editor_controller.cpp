@@ -480,7 +480,19 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     preview_update_timer_.setSingleShot(true);
     preview_update_timer_.setInterval(50);
     connect(&preview_update_timer_, &QTimer::timeout, this, [this] {
+#ifdef FFGUI_HAS_GES
+        const bool structural = !preview_applied_generation_.has_value() ||
+            preview_applied_generation_.value() != preview_generation_;
+        if (structural) preview_color_only_pending_ = false;
+        queuePreviewOperation(structural);
+#else
         queuePreviewOperation(true);
+#endif
+    });
+    grade_coalesce_timer_.setSingleShot(true);
+    grade_coalesce_timer_.setInterval(350);
+    connect(&grade_coalesce_timer_, &QTimer::timeout, this, [this] {
+        endCoalescedGradeEdit();
     });
     float_playback_timer_.setTimerType(Qt::PreciseTimer);
     float_playback_timer_.setInterval(8);
@@ -502,6 +514,8 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 if (result.rebuilt) {
                     preview_applied_generation_ = result.generation;
                     ++preview_rebuild_count_;
+                } else if (result.color_only) {
+                    ++preview_color_update_count_;
                 }
             } else {
                 if (retryPending) {
@@ -1137,6 +1151,7 @@ QVariantList EditorController::selectedGradeNodes() const {
 
 void EditorController::addGradeNode(int type) {
     if (selected_clip_id_.isEmpty()) return;
+    endCoalescedGradeEdit();
     type = std::clamp(type, 0, static_cast<int>(ffgui::GradeNodeType::color_warper));
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
@@ -1147,7 +1162,7 @@ void EditorController::addGradeNode(int type) {
             static_cast<ffgui::GradeNodeType>(type),
             makeUniqueGradeNodeId()));
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishTimeline();
+        publishColorPreview();
         setStatus("컬러 노드를 추가했습니다");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -1163,11 +1178,12 @@ void EditorController::commitGradeNodeEdit(
     } else {
         timeline_.set_shared_grade_node(node->shared_id, *node);
     }
-    publishTimeline();
+    publishColorPreview();
 }
 
 void EditorController::addGradeLutUrl(const QUrl& url) {
     if (selected_clip_id_.isEmpty() || !url.isLocalFile()) return;
+    endCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1186,7 +1202,7 @@ void EditorController::addGradeLutUrl(const QUrl& url) {
             : "LUT · " + displayName.toUtf8().toStdString();
         graph.add(std::move(node));
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishTimeline();
+        publishColorPreview();
         setStatus("LUT / Look을 검증하고 컬러 노드에 추가했습니다");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -1195,6 +1211,7 @@ void EditorController::addGradeLutUrl(const QUrl& url) {
 
 void EditorController::removeGradeNode(const QString& nodeId) {
     if (selected_clip_id_.isEmpty()) return;
+    endCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1202,7 +1219,7 @@ void EditorController::removeGradeNode(const QString& nodeId) {
         auto graph = clip->grade;
         graph.remove(nodeId.toStdString());
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishTimeline();
+        publishColorPreview();
         setStatus("컬러 노드를 삭제했습니다");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -1224,7 +1241,7 @@ void EditorController::moveGradeNode(const QString& nodeId, int direction) {
     graph.move(nodeId.toStdString(), direction > 0
         ? static_cast<std::size_t>(target + 1) : static_cast<std::size_t>(target));
     timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-    publishTimeline();
+    publishColorPreview();
 }
 
 void EditorController::copyGradeNode(const QString& nodeId) {
@@ -1254,7 +1271,7 @@ void EditorController::pasteGradeNode() {
         node.validate();
         graph.add(std::move(node));
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishTimeline();
+        publishColorPreview();
         setStatus("복사한 컬러 노드를 붙여넣었습니다");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -1292,7 +1309,7 @@ void EditorController::makeGradeNodeShared(const QString& nodeId) {
     if (node == nullptr || !node->shared_id.empty()) return;
     node->shared_id = makeUniqueSharedGradeId();
     timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-    publishTimeline();
+    publishColorPreview();
     setStatus("공유 그레이드로 전환했습니다. 다른 클립에 복사해 연결할 수 있습니다");
 }
 
@@ -1306,12 +1323,13 @@ void EditorController::unlinkGradeNode(const QString& nodeId) {
     if (node == nullptr || node->shared_id.empty()) return;
     node->shared_id.clear();
     timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-    publishTimeline();
+    publishColorPreview();
     setStatus("이 노드를 공유 그레이드에서 분리했습니다");
 }
 
 void EditorController::setGradeNodeEnabled(const QString& nodeId, bool enabled) {
     if (selected_clip_id_.isEmpty()) return;
+    touchCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1340,6 +1358,7 @@ void EditorController::setGradeNodeName(const QString& nodeId, const QString& na
 
 void EditorController::setGradeNodeMix(const QString& nodeId, int percent) {
     if (selected_clip_id_.isEmpty()) return;
+    touchCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1354,6 +1373,7 @@ void EditorController::setGradeNodeMix(const QString& nodeId, int percent) {
 void EditorController::setGradeParameter(
     const QString& nodeId, const QString& parameter, double value) {
     if (selected_clip_id_.isEmpty() || parameter.isEmpty() || !std::isfinite(value)) return;
+    touchCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1382,7 +1402,7 @@ void EditorController::setGradeParameter(
     node->validate();
     if (editsAnimation) {
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishTimeline();
+        publishColorPreview();
     } else {
         commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString());
     }
@@ -1412,12 +1432,13 @@ void EditorController::toggleGradeParameterKeyframe(
     }
     node->validate();
     timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-    publishTimeline();
+    publishColorPreview();
 }
 
 void EditorController::setGradeCurveMidpoint(
     const QString& nodeId, const QString& curveName, int adjustmentPercent) {
     if (selected_clip_id_.isEmpty() || curveName.isEmpty()) return;
+    touchCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -2707,6 +2728,7 @@ void EditorController::setSelectedClipSpeedPercent(int percent) {
 
 void EditorController::setSelectedClipBrightness(int percent) {
     if (selected_clip_ids_.isEmpty()) return;
+    touchCoalescedGradeEdit();
     auto color = ffgui::ClipColor{
         static_cast<double>(std::clamp(percent, -100, 100)) / 100.0,
         static_cast<double>(selectedClipContrast()) / 100.0,
@@ -2715,13 +2737,14 @@ void EditorController::setSelectedClipBrightness(int percent) {
         std::vector<std::string> ids;
         for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
         timeline_.set_clips_color(ids, color);
-        publishTimeline();
+        publishColorPreview();
         setStatus(QStringLiteral("밝기 · %1").arg(percent));
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
 
 void EditorController::setSelectedClipContrast(int percent) {
     if (selected_clip_ids_.isEmpty()) return;
+    touchCoalescedGradeEdit();
     auto color = ffgui::ClipColor{
         static_cast<double>(selectedClipBrightness()) / 100.0,
         static_cast<double>(std::clamp(percent, 0, 200)) / 100.0,
@@ -2730,13 +2753,14 @@ void EditorController::setSelectedClipContrast(int percent) {
         std::vector<std::string> ids;
         for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
         timeline_.set_clips_color(ids, color);
-        publishTimeline();
+        publishColorPreview();
         setStatus(QStringLiteral("대비 · %1%").arg(percent));
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
 
 void EditorController::setSelectedClipSaturation(int percent) {
     if (selected_clip_ids_.isEmpty()) return;
+    touchCoalescedGradeEdit();
     auto color = ffgui::ClipColor{
         static_cast<double>(selectedClipBrightness()) / 100.0,
         static_cast<double>(selectedClipContrast()) / 100.0,
@@ -2745,7 +2769,7 @@ void EditorController::setSelectedClipSaturation(int percent) {
         std::vector<std::string> ids;
         for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
         timeline_.set_clips_color(ids, color);
-        publishTimeline();
+        publishColorPreview();
         setStatus(QStringLiteral("채도 · %1%").arg(percent));
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
@@ -4321,63 +4345,96 @@ void EditorController::startPreviewOperation() {
     const auto generation = preview_generation_;
     const bool rebuild = !preview_applied_generation_.has_value() ||
         preview_applied_generation_.value() != generation;
-    auto spans = rebuild ? preview_snapshot_ : std::vector<ffgui::TimelineSpan>{};
+    const bool colorOnly = !rebuild && preview_color_only_pending_;
+    preview_color_only_pending_ = false;
+    auto spans = (rebuild || colorOnly) ? preview_snapshot_ : std::vector<ffgui::TimelineSpan>{};
     // Caption overlay operations can invalidate the NLE composition during an accurate seek.
     // Keep the core editing preview video/audio-only until the overlay path has its own
     // gap-safe composition and regression suite.
     auto captions = std::vector<ffgui::CaptionCue>{};
     const auto seekTarget = pending_preview_seek_;
+    const auto fallbackSeek = playhead_ns_;
     const bool shouldPlay = preview_should_play_;
     const bool shouldStop = preview_stop_requested_;
     const auto colorSettings = color_pipeline_;
     pending_preview_seek_.reset();
     preview_stop_requested_ = false;
     preview_operation_pending_ = false;
-    if (!preview_busy_) {
-        preview_busy_ = true;
-        emit previewBusyChanged();
+    if (!colorOnly) {
+        if (!preview_busy_) {
+            preview_busy_ = true;
+            emit previewBusyChanged();
+        }
+        if (preview_failed_) {
+            preview_failed_ = false;
+            emit previewFailedChanged();
+        }
+        setStatus(rebuild
+            ? QStringLiteral("미리보기 타임라인 준비 중…")
+            : QStringLiteral("미리보기 위치 이동 중…"));
     }
-    if (preview_failed_) {
-        preview_failed_ = false;
-        emit previewFailedChanged();
-    }
-    setStatus(rebuild
-        ? QStringLiteral("미리보기 타임라인 준비 중…")
-        : QStringLiteral("미리보기 위치 이동 중…"));
 
     auto* player = player_.get();
     preview_watcher_.setFuture(QtConcurrent::run(
         [player,
          generation,
          rebuild,
+         colorOnly,
          spans = std::move(spans),
          captions = std::move(captions),
          seekTarget,
+         fallbackSeek,
          shouldPlay,
          shouldStop,
          colorSettings]() mutable {
             PreviewOperationResult result;
             result.generation = generation;
             result.rebuilt = rebuild;
+            result.color_only = colorOnly;
             QElapsedTimer elapsed;
             elapsed.start();
             qInfo().noquote() << "preview operation started"
                               << "generation=" << generation
                               << "rebuild=" << rebuild
+                              << "color_only=" << colorOnly
                               << "seek=" << seekTarget.value_or(-1)
                               << "play=" << shouldPlay;
             try {
-                if (rebuild && colorSettings.mode != ffgui::ColorPipelineMode::legacy) {
+                if (colorOnly) {
+                    const auto outputSpace = colorSettings.mode == ffgui::ColorPipelineMode::legacy
+                        ? std::string{}
+                        : colorSettings.output_space.empty()
+                            ? std::string{"sRGB - Display"} : colorSettings.output_space;
+                    player->set_color_pipeline(colorSettings, outputSpace);
+                    if (player->update_source_color(spans)) {
+                        result.success = true;
+                        qInfo().noquote() << "preview color updated in place"
+                                          << "generation=" << generation
+                                          << "elapsed_ms=" << elapsed.elapsed();
+                        return result;
+                    }
+                    result.color_only = false;
+                    result.rebuilt = true;
+                    qInfo().noquote() << "preview color live update unavailable; rebuilding";
+                }
+                if ((rebuild || result.rebuilt) &&
+                    colorSettings.mode != ffgui::ColorPipelineMode::legacy) {
                     ffgui::OcioEngine warmColorCache(colorSettings);
                     static_cast<void>(warmColorCache.managed());
                 }
-                if (rebuild) player->set_timeline(std::move(spans), std::move(captions));
+                if (rebuild || result.rebuilt) {
+                    player->set_timeline(std::move(spans), std::move(captions));
+                }
                 if (shouldStop) {
                     player->stop();
                 } else {
-                    if (seekTarget.has_value() && player->duration() > 0) {
+                    const auto seek = seekTarget.has_value()
+                        ? seekTarget
+                        : (result.rebuilt && !rebuild
+                            ? std::optional<qint64>(fallbackSeek) : std::optional<qint64>{});
+                    if (seek.has_value() && player->duration() > 0) {
                         const auto target = std::clamp<qint64>(
-                            seekTarget.value(), 0, static_cast<qint64>(player->duration()));
+                            seek.value(), 0, static_cast<qint64>(player->duration()));
                         player->seek(target);
                     }
                     if (shouldPlay) {
@@ -4393,6 +4450,8 @@ void EditorController::startPreviewOperation() {
             qInfo().noquote() << "preview operation finished"
                               << "generation=" << generation
                               << "success=" << result.success
+                              << "rebuilt=" << result.rebuilt
+                              << "color_only=" << result.color_only
                               << "elapsed_ms=" << elapsed.elapsed()
                               << "error=" << result.error;
             return result;
@@ -4403,10 +4462,13 @@ void EditorController::startPreviewOperation() {
 void EditorController::publishTimeline(bool resetPlayhead) {
     QElapsedTimer publishElapsed;
     publishElapsed.start();
+    endCoalescedGradeEdit();
 #ifdef FFGUI_HAS_GES
+    const bool keepPlaying = playing_ || preview_should_play_;
     stopFloatPlayback();
-    preview_should_play_ = false;
+    preview_should_play_ = keepPlaying;
     pending_float_video_frame_.reset();
+    preview_color_only_pending_ = false;
     player_->set_legacy_source_color_enabled(
         color_pipeline_.mode == ffgui::ColorPipelineMode::legacy);
     player_->set_color_pipeline(
@@ -4461,6 +4523,42 @@ void EditorController::publishTimeline(bool resetPlayhead) {
                              << "elapsed_ms=" << publishElapsed.elapsed()
                              << "clips=" << timeline_.clips().size();
     }
+}
+
+void EditorController::publishColorPreview() {
+    QElapsedTimer publishElapsed;
+    publishElapsed.start();
+    preview_snapshot_ = timeline_.snapshot();
+    preview_revision_ = timeline_.revision();
+    clips_cache_.reset();
+    emit selectedClipChanged();
+    emit historyChanged();
+    emit gradeUiChanged();
+#ifdef FFGUI_HAS_GES
+    if (requiresFloatVideoPreview()) {
+        if (!float_playback_running_) startFloatScrubFrame(playhead_ns_);
+    }
+    preview_color_only_pending_ = true;
+    preview_update_timer_.start();
+    if (!preview_busy_) setStatus(QStringLiteral("컬러 미리보기 갱신 중"));
+#else
+    setStatus(QStringLiteral("컬러 변경 적용"));
+#endif
+    if (publishElapsed.elapsed() >= 50) {
+        qWarning().noquote() << "color preview publish blocked the UI"
+                             << "elapsed_ms=" << publishElapsed.elapsed()
+                             << "clips=" << timeline_.clips().size();
+    }
+}
+
+void EditorController::touchCoalescedGradeEdit() {
+    if (!timeline_.coalescing()) timeline_.begin_coalesced_edit();
+    grade_coalesce_timer_.start();
+}
+
+void EditorController::endCoalescedGradeEdit() {
+    grade_coalesce_timer_.stop();
+    timeline_.end_coalesced_edit();
 }
 
 void EditorController::setStatus(QString status) {

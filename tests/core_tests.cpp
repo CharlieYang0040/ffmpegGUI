@@ -418,6 +418,35 @@ void test_shared_grade_node_updates_all_clips_as_one_undoable_edit() {
             "one redo must reapply the complete shared grade edit");
 }
 
+void test_coalesced_grade_parameter_edits_are_one_undo_step() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"a", "asset-a", 0, seconds(4)});
+    auto graph = timeline.clips()[0].grade;
+    graph.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary"));
+    timeline.set_clip_grade_graph("a", graph);
+    const auto committed = timeline.revision();
+    timeline.begin_coalesced_edit();
+    auto live = timeline.clips()[0].grade;
+    require(live.node("primary") != nullptr, "coalesced grade edit needs the committed primary node");
+    live.node("primary")->parameters["exposure"] = 0.25;
+    timeline.set_clip_grade_graph("a", live);
+    live.node("primary")->parameters["exposure"] = 0.75;
+    timeline.set_clip_grade_graph("a", live);
+    live.node("primary")->parameters["exposure"] = 1.25;
+    timeline.set_clip_grade_graph("a", live);
+    timeline.end_coalesced_edit();
+    require(timeline.clips()[0].grade.nodes().front().parameters.at("exposure") == 1.25,
+            "coalesced grade drags must keep the last previewed value");
+    require(timeline.revision() > committed,
+            "live grade preview must still advance the model revision");
+    require(timeline.undo() &&
+                timeline.clips()[0].grade.nodes().front().parameters.at("exposure") == 0.0,
+            "one undo must restore the grade from before the coalesced gesture");
+    require(timeline.redo() &&
+                timeline.clips()[0].grade.nodes().front().parameters.at("exposure") == 1.25,
+            "one redo must restore the final coalesced grade");
+}
+
 void test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope() {
     const std::array<std::uint8_t, 16> pixels{
         0, 0, 255, 255, 0, 255, 0, 255,
@@ -1535,6 +1564,7 @@ int main() {
         {"external_lut_node_uses_ocio_and_preserves_mix_and_alpha", test_external_lut_node_uses_ocio_and_preserves_mix_and_alpha},
         {"grade_parameter_keyframes_evaluate_in_source_time", test_grade_parameter_keyframes_evaluate_in_source_time},
         {"shared_grade_node_updates_all_clips_as_one_undoable_edit", test_shared_grade_node_updates_all_clips_as_one_undoable_edit},
+        {"coalesced_grade_parameter_edits_are_one_undo_step", test_coalesced_grade_parameter_edits_are_one_undo_step},
         {"scope_analyzer_builds_histogram_waveform_parade_and_vectorscope", test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope},
         {"oiio_probe_reports_exr_layers_alpha_and_color_space", test_oiio_probe_reports_exr_layers_alpha_and_color_space},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},

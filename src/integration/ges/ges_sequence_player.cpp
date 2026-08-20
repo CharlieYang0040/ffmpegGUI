@@ -26,6 +26,8 @@
 #include <cmath>
 #include <iomanip>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -569,6 +571,103 @@ GESTimeline* create_preview_timeline(bool direct_d3d_compositor) {
     return timeline;
 }
 
+[[nodiscard]] std::string source_color_lut_id(const std::string& clip_id) {
+    return "clip-lut-" + clip_id;
+}
+
+[[nodiscard]] std::string source_color_shader_id(const std::string& clip_id) {
+    return "clip-ocio-" + clip_id;
+}
+
+[[nodiscard]] bool preview_structure_matches(
+    const TimelineSpan& left, const TimelineSpan& right) {
+    return left.clip.id == right.clip.id &&
+        left.clip.asset_id == right.clip.asset_id &&
+        left.clip.source_in == right.clip.source_in &&
+        left.clip.duration == right.clip.duration &&
+        left.clip.playback_rate == right.clip.playback_rate &&
+        left.clip.audio == right.clip.audio &&
+        left.clip.transition_in == right.clip.transition_in &&
+        left.source_path == right.source_path &&
+        left.timeline_in == right.timeline_in &&
+        left.timeline_out == right.timeline_out &&
+        left.has_audio == right.has_audio;
+}
+
+[[nodiscard]] bool needs_source_color(
+    const TimelineSpan& span,
+    const ColorPipelineSettings& pipeline,
+    bool legacy_source_color,
+    bool direct_d3d) {
+    const auto managed = pipeline.mode != ColorPipelineMode::legacy;
+    const auto directLegacyColor = direct_d3d && legacy_source_color &&
+        span.clip.color != ClipColor{};
+    return managed || !span.clip.grade.nodes().empty() || directLegacyColor;
+}
+
+struct PreparedSourceColor final {
+    std::string clip_id;
+    std::string lut_id;
+    std::string shader_id;
+    std::shared_ptr<const ColorCube> cube;
+    std::shared_ptr<const OcioGpuShader> shader;
+};
+
+[[nodiscard]] std::optional<PreparedSourceColor> prepare_source_color(
+    const TimelineSpan& span,
+    const ColorPipelineSettings& pipeline,
+    const std::string& output_space,
+    bool legacy_source_color,
+    bool direct_d3d,
+    bool d3d11_lut_available) {
+    if (!needs_source_color(span, pipeline, legacy_source_color, direct_d3d)) {
+        return std::nullopt;
+    }
+    const auto managed = pipeline.mode != ColorPipelineMode::legacy;
+    const auto grade = (managed || direct_d3d)
+        ? compose_clip_grade(span.clip) : span.clip.grade;
+    const auto outputSpace = managed ? output_space : std::string{};
+    PreparedSourceColor prepared;
+    prepared.clip_id = span.clip.id;
+    if (managed && d3d11_lut_available) {
+        prepared.shader_id = source_color_shader_id(span.clip.id);
+        prepared.shader = std::make_shared<const OcioGpuShader>(
+            build_managed_gpu_shader(
+                span.source_color, pipeline, grade, outputSpace));
+    } else {
+        prepared.lut_id = source_color_lut_id(span.clip.id);
+        prepared.cube = std::make_shared<const ColorCube>(build_color_cube(
+            span.source_color, pipeline, grade, outputSpace, 33));
+    }
+    return prepared;
+}
+
+[[nodiscard]] std::vector<std::optional<PreparedSourceColor>> prepare_source_colors(
+    const std::vector<TimelineSpan>& spans,
+    const ColorPipelineSettings& pipeline,
+    const std::string& output_space,
+    bool legacy_source_color,
+    bool direct_d3d,
+    bool d3d11_lut_available) {
+    std::vector<std::optional<PreparedSourceColor>> prepared;
+    prepared.reserve(spans.size());
+    for (const auto& span : spans) {
+        prepared.push_back(prepare_source_color(
+            span, pipeline, output_space, legacy_source_color, direct_d3d,
+            d3d11_lut_available));
+    }
+    return prepared;
+}
+
+void publish_prepared_source_color(const PreparedSourceColor& prepared) {
+    if (prepared.shader != nullptr) {
+        publish_gst_d3d11_ocio_shader(prepared.shader_id, prepared.shader);
+    }
+    if (prepared.cube != nullptr) {
+        publish_gst_color_lut(prepared.lut_id, prepared.cube);
+    }
+}
+
 }  // namespace
 
 GesSequencePlayer::GesSequencePlayer(
@@ -646,9 +745,29 @@ void GesSequencePlayer::set_timeline(std::vector<TimelineSpan> timeline) {
 void GesSequencePlayer::set_timeline(
     std::vector<TimelineSpan> timeline,
     std::vector<CaptionCue> captions) {
+    ColorPipelineSettings colorPipeline;
+    std::string colorOutputSpace;
+    {
+        std::scoped_lock colorLock(color_settings_mutex_);
+        colorPipeline = color_pipeline_;
+        colorOutputSpace = color_output_space_;
+    }
+    auto prepared = std::make_shared<const std::vector<std::optional<PreparedSourceColor>>>(
+        prepare_source_colors(
+            timeline, colorPipeline, colorOutputSpace,
+            legacy_source_color_enabled_.load(std::memory_order_acquire),
+            direct_d3d_compositor_enabled_, d3d11_color_lut_available_));
     {
         std::scoped_lock lock(mutex_);
-        rebuild_pipeline_locked(timeline, captions);
+        source_color_bake_ = prepared;
+        try {
+            rebuild_pipeline_locked(timeline, captions);
+        } catch (...) {
+            source_color_bake_.reset();
+            throw;
+        }
+        source_color_bake_.reset();
+        preview_spans_ = std::move(timeline);
     }
     position_ns_.store(0);
     state_.store(PlaybackState::stopped);
@@ -841,6 +960,48 @@ void GesSequencePlayer::set_color_pipeline(
     color_output_space_ = std::move(output_space);
 }
 
+bool GesSequencePlayer::can_live_update_source_color_locked(
+    const std::vector<TimelineSpan>& timeline) const {
+    if (pipeline_ == nullptr || preview_spans_.size() != timeline.size()) return false;
+    ColorPipelineSettings pipeline;
+    {
+        std::scoped_lock colorLock(color_settings_mutex_);
+        pipeline = color_pipeline_;
+    }
+    const auto legacy = legacy_source_color_enabled_.load(std::memory_order_acquire);
+    for (std::size_t index = 0; index < timeline.size(); ++index) {
+        if (!preview_structure_matches(preview_spans_[index], timeline[index])) return false;
+        if (needs_source_color(
+                preview_spans_[index], pipeline, legacy, direct_d3d_compositor_enabled_) !=
+            needs_source_color(
+                timeline[index], pipeline, legacy, direct_d3d_compositor_enabled_)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool GesSequencePlayer::update_source_color(const std::vector<TimelineSpan>& timeline) {
+    ColorPipelineSettings colorPipeline;
+    std::string colorOutputSpace;
+    {
+        std::scoped_lock colorLock(color_settings_mutex_);
+        colorPipeline = color_pipeline_;
+        colorOutputSpace = color_output_space_;
+    }
+    auto prepared = prepare_source_colors(
+        timeline, colorPipeline, colorOutputSpace,
+        legacy_source_color_enabled_.load(std::memory_order_acquire),
+        direct_d3d_compositor_enabled_, d3d11_color_lut_available_);
+    std::scoped_lock lock(mutex_);
+    if (!can_live_update_source_color_locked(timeline)) return false;
+    for (const auto& color : prepared) {
+        if (color.has_value()) publish_prepared_source_color(*color);
+    }
+    preview_spans_ = timeline;
+    return true;
+}
+
 TimeNs GesSequencePlayer::duration() const noexcept {
     return duration_ns_.load();
 }
@@ -1008,6 +1169,17 @@ void GesSequencePlayer::rebuild_pipeline_locked(
     d3d_composition_frames_.store(0);
     d3d_composition_meta_frames_.store(0);
     d3d_blended_frames_.store(0);
+    const auto* pending_source_colors =
+        static_cast<const std::vector<std::optional<PreparedSourceColor>>*>(
+            source_color_bake_.get());
+    if (pending_source_colors != nullptr) {
+        for (const auto& color : *pending_source_colors) {
+            if (!color.has_value()) continue;
+            publish_prepared_source_color(*color);
+            if (!color->lut_id.empty()) registered_lut_ids_.push_back(color->lut_id);
+            if (!color->shader_id.empty()) registered_ocio_shader_ids_.push_back(color->shader_id);
+        }
+    }
     if (spans.empty()) {
         duration_ns_.store(0);
         std::scoped_lock cutLock(cut_points_mutex_);
@@ -1105,35 +1277,30 @@ void GesSequencePlayer::rebuild_pipeline_locked(
             if (legacySourceColor && !direct_d3d_compositor_enabled_) {
                 add_legacy_color_effect(uri_clip, span.clip.color);
             }
-            const auto managed = colorPipeline.mode != ColorPipelineMode::legacy;
-            const auto directLegacyColor = direct_d3d_compositor_enabled_ &&
-                legacySourceColor && span.clip.color != ClipColor{};
-            if (managed || !span.clip.grade.nodes().empty() || directLegacyColor) {
-                const auto grade = (managed || direct_d3d_compositor_enabled_)
-                    ? compose_clip_grade(span.clip) : span.clip.grade;
-                const auto outputSpace = managed
-                    ? (colorOutputSpace.empty() ? std::string{"sRGB - Display"}
-                                                : colorOutputSpace)
-                    : std::string{};
-                const auto managedGpu = managed && d3d11_color_lut_available_;
-                if (managedGpu) {
-                    auto shader = std::make_shared<const OcioGpuShader>(
-                        build_managed_gpu_shader(
-                            span.source_color, colorPipeline, grade, outputSpace));
-                    const auto shaderId = "ocio" + std::to_string(++lut_generation_);
-                    publish_gst_d3d11_ocio_shader(shaderId, std::move(shader));
-                    registered_ocio_shader_ids_.push_back(shaderId);
+            const auto preparedIndex = uriClips.size() - 1;
+            const auto prepared = pending_source_colors != nullptr &&
+                    preparedIndex < pending_source_colors->size()
+                ? (*pending_source_colors)[preparedIndex]
+                : prepare_source_color(
+                    span, colorPipeline, colorOutputSpace, legacySourceColor,
+                    direct_d3d_compositor_enabled_, d3d11_color_lut_available_);
+            if (prepared.has_value()) {
+                if (pending_source_colors == nullptr) {
+                    publish_prepared_source_color(*prepared);
+                    if (!prepared->lut_id.empty()) {
+                        registered_lut_ids_.push_back(prepared->lut_id);
+                    }
+                    if (!prepared->shader_id.empty()) {
+                        registered_ocio_shader_ids_.push_back(prepared->shader_id);
+                    }
+                }
+                if (prepared->shader != nullptr) {
                     add_ocio_shader_effect(
-                        uri_clip, shaderId, direct_d3d_compositor_enabled_);
+                        uri_clip, prepared->shader_id, direct_d3d_compositor_enabled_);
                     source_gpu_ocio_shader_bindings_.fetch_add(1);
                 } else {
-                    auto cube = std::make_shared<const ColorCube>(build_color_cube(
-                        span.source_color, colorPipeline, grade, outputSpace, 33));
-                    const auto lutId = "lut" + std::to_string(++lut_generation_);
-                    publish_gst_color_lut(lutId, std::move(cube));
-                    registered_lut_ids_.push_back(lutId);
                     add_color_lut_effect(
-                        uri_clip, lutId, d3d11_color_lut_available_,
+                        uri_clip, prepared->lut_id, d3d11_color_lut_available_,
                         direct_d3d_compositor_enabled_);
                 }
                 source_color_lut_bindings_.fetch_add(1);
@@ -1335,6 +1502,7 @@ void GesSequencePlayer::destroy_pipeline_locked() noexcept {
     registered_lut_ids_.clear();
     for (const auto& id : registered_ocio_shader_ids_) remove_gst_d3d11_ocio_shader(id);
     registered_ocio_shader_ids_.clear();
+    preview_spans_.clear();
     duration_ns_.store(0);
     position_ns_.store(0);
 }

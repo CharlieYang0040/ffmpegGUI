@@ -123,7 +123,11 @@ void sample_cube(const ffgui::ColorCube& cube, const float input[3], float outpu
 
 GstFlowReturn gst_ffgui_lut3d_transform_ip(GstBaseTransform* transform, GstBuffer* buffer) {
     auto* self = reinterpret_cast<GstFfguiLut3d*>(transform);
-    if (self->cube == nullptr || !*self->cube) return GST_FLOW_NOT_NEGOTIATED;
+    const auto cube = find_cube(self->lut_id);
+    if (cube == nullptr || cube->size < 2 ||
+        cube->rgb.size() != static_cast<std::size_t>(cube->size) * cube->size * cube->size * 3) {
+        return GST_FLOW_NOT_NEGOTIATED;
+    }
     GstVideoFrame frame;
     if (!gst_video_frame_map(&frame, &self->info, buffer, GST_MAP_READWRITE)) {
         return GST_FLOW_ERROR;
@@ -141,7 +145,7 @@ GstFlowReturn gst_ffgui_lut3d_transform_ip(GstBaseTransform* transform, GstBuffe
                 static_cast<float>(rgba[1]) / 65535.0F,
                 static_cast<float>(rgba[2]) / 65535.0F};
             float output[3]{};
-            sample_cube(**self->cube, input, output);
+            sample_cube(*cube, input, output);
             for (int channel = 0; channel < 3; ++channel) {
                 rgba[channel] = static_cast<std::uint16_t>(std::lround(
                     std::clamp(std::isfinite(output[channel]) ? output[channel] : 0.0F,

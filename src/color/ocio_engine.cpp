@@ -44,6 +44,8 @@ OCIO::ConstConfigRcPtr cached_config(const ColorPipelineSettings& settings) {
 struct OcioEngine::Impl final {
     ColorPipelineSettings settings;
     OCIO::ConstConfigRcPtr config;
+    mutable std::mutex processor_mutex;
+    mutable std::unordered_map<std::string, OCIO::ConstCPUProcessorRcPtr> cpu_processors;
 };
 
 OcioEngine::OcioEngine(const ColorPipelineSettings& settings)
@@ -87,8 +89,19 @@ void OcioEngine::transform_rgba32f(float* pixels, std::size_t width, std::size_t
         throw std::invalid_argument("OCIO image transform request is invalid");
     }
     try {
-        const auto processor = impl_->config->getProcessor(input_space.c_str(), output_space.c_str());
-        const auto cpu = processor->getDefaultCPUProcessor();
+        OCIO::ConstCPUProcessorRcPtr cpu;
+        const auto cacheKey = input_space + '>' + output_space;
+        {
+            std::scoped_lock lock(impl_->processor_mutex);
+            if (const auto found = impl_->cpu_processors.find(cacheKey);
+                found != impl_->cpu_processors.end()) {
+                cpu = found->second;
+            } else {
+                cpu = impl_->config->getProcessor(input_space.c_str(), output_space.c_str())
+                          ->getDefaultCPUProcessor();
+                impl_->cpu_processors.emplace(cacheKey, cpu);
+            }
+        }
         OCIO::PackedImageDesc image(pixels, static_cast<long>(width), static_cast<long>(height),
                                     4, OCIO::BIT_DEPTH_F32, sizeof(float),
                                     4 * sizeof(float),
