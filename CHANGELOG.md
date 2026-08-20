@@ -22,6 +22,11 @@
 - HDR 모니터가 있으면 창 색공간을 scRGB 우선, 실패 시 Rec.2020 PQ로 맞추고 모니터 ICC를
   SDR 표시에 연결한다. HDR 출력은 Rec.2100 PQ·mastering display·MaxCLL/MaxFALL을 FFmpeg
   HEVC 인코더와 ffprobe 검증에 넣는다.
+- 창작 Look을 33³/65³ Cube와 Unreal OCIO 2.2 `.ocioz`(CLF, manifest, 차트, 설정 안내)로
+  내보낸다. 공간 노드·키프레임·이중 톤맵은 내보내기 전에 거부한다.
+- Qualifier와 power window는 이미지 시퀀스 float 미리보기·출력에 연결되고, 일반 영상 출력은
+  사전 검사에서 차단한다. 샷 스틸, wipe/split 비교, 평균 매칭은 프로젝트에 저장되며 매칭은
+  기존 grade undo를 쓴다.
 
 ## 0.1.1 Preview - 2026-08-12
 

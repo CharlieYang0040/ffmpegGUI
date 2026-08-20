@@ -631,8 +631,9 @@ struct PreparedSourceColor final {
     PreparedSourceColor prepared;
     prepared.clip_id = span.clip.id;
     prepared.lut_id = source_color_lut_id(span.clip.id);
-    const auto animated = grade.has_keyframes();
-    if (managed && d3d11_lut_available) {
+    const auto animated = grade.has_non_spatial_keyframes();
+    const auto spatial = grade.has_spatial_nodes();
+    if (managed && d3d11_lut_available && !spatial) {
         prepared.shader_id = source_color_shader_id(span.clip.id);
         prepared.shader = std::make_shared<const OcioGpuShader>(
             build_managed_gpu_shader(
@@ -641,7 +642,7 @@ struct PreparedSourceColor final {
         prepared.cube = std::make_shared<const ColorCube>(build_color_cube(
             span.source_color, pipeline, grade, outputSpace, 33, 0));
     }
-    if (animated) {
+    if (animated || spatial) {
         ColorLutRecipe recipe;
         recipe.source_color = span.source_color;
         recipe.settings = pipeline;
@@ -651,7 +652,7 @@ struct PreparedSourceColor final {
         recipe.source_in = span.clip.source_in;
         recipe.timeline_in = span.timeline_in;
         recipe.playback_rate = span.clip.playback_rate;
-        recipe.animated = true;
+        recipe.animated = animated;
         recipe.working_space_grade_only = prepared.shader != nullptr;
         prepared.recipe = std::make_shared<const ColorLutRecipe>(std::move(recipe));
     }

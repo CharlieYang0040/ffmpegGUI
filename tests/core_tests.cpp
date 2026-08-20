@@ -5,7 +5,8 @@
 #include "color/grade_processor.hpp"
 #include "color/color_frame_processor.hpp"
 #include "color/scope_analyzer.hpp"
-#include "color/review_tools.hpp"
+#include "color/look_export.hpp"
+#include "color/shot_matching.hpp"
 #include "media/oiio_probe.hpp"
 #include "media/oiio_frame_source.hpp"
 #include "render/timeline_frame_server.hpp"
@@ -137,6 +138,20 @@ void test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_no
     require_throws<std::invalid_argument>([&] {
         ffgui::LutExportRequest{"ACEScct", "ACEScg", ffgui::LutEncoding::acescct, 33}.validate(graph);
     }, "LUT export must reject graphs that cannot be represented by a global RGB transform");
+    ffgui::GradeGraph animated;
+    auto keyed = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "keyed");
+    keyed.parameter_keyframes["exposure"] = {{0, 0.0}, {1, 1.0}};
+    animated.add(std::move(keyed));
+    require_throws<std::invalid_argument>([&] {
+        ffgui::LutExportRequest{"ACEScg", "ACEScg", ffgui::LutEncoding::working_space, 33}
+            .validate(animated);
+    }, "LUT export must reject time-varying grades");
+    ffgui::LutExportRequest dual{"ACEScg", "ACEScg", ffgui::LutEncoding::working_space, 33};
+    dual.unreal_ocio_bundle = true;
+    dual.include_display_transform = true;
+    require_throws<std::invalid_argument>([&] {
+        dual.validate({});
+    }, "Unreal packages must refuse a stacked display transform");
     require(ffgui::resolved_color_output_space({}).empty(),
             "legacy output space must stay empty");
     ffgui::ColorPipelineSettings bypassed;
@@ -246,9 +261,24 @@ void test_float_grade_pipeline_preserves_alpha_and_node_mix() {
 
     ffgui::GradeGraph unsupported;
     unsupported.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::qualifier, "qualifier"));
-    require_throws<std::invalid_argument>([&] {
-        ffgui::apply_grade_graph_rgba32f(pixel, 1, unsupported);
-    }, "spatial grade nodes must never be silently ignored by the reference renderer");
+    require(unsupported.nodes().front().render_supported(),
+            "qualifier nodes must be part of the float reference renderer");
+    float keyed[]{0.8F, 0.05F, 0.05F, 1.0F};
+    auto qualifier = ffgui::make_default_grade_node(ffgui::GradeNodeType::qualifier, "qualifier-red");
+    qualifier.parameters["hueCenter"] = 0.0;
+    qualifier.parameters["hueWidth"] = 35.0;
+    qualifier.parameters["insideExposure"] = 1.0;
+    ffgui::GradeGraph keyedGraph;
+    keyedGraph.add(qualifier);
+    const auto originalRed = keyed[0];
+    ffgui::apply_grade_graph_rgba32f(keyed, 1, keyedGraph);
+    require(keyed[0] > originalRed * 1.4F,
+            "qualifier must grade inside the hue key instead of ignoring the node");
+    float blue[]{0.05F, 0.05F, 0.8F, 1.0F};
+    const auto originalBlue = blue[2];
+    ffgui::apply_grade_graph_rgba32f(blue, 1, keyedGraph);
+    require(std::abs(blue[2] - originalBlue) < 0.02F,
+            "qualifier must leave out-of-key pixels nearly unchanged");
 
     const auto cube = ffgui::bake_color_cube({}, {}, fullGrade, {}, 2);
     require(cube.contains("LUT_3D_SIZE 2") && std::ranges::count(cube, '\n') == 12,
@@ -1853,7 +1883,126 @@ void test_render_preflight_blocks_offline_and_unresolved_managed_media() {
                     return issue.code == "animated-grade-frame-server-required";
                 }),
             "ordinary video keyframes must export through the time-varying color path");
+    auto spatialClip = Clip{"spatial-clip", "animated", 0, seconds(2)};
+    spatialClip.grade.add(
+        ffgui::make_default_grade_node(ffgui::GradeNodeType::power_window, "window"));
+    TimelineModel spatialVideo;
+    spatialVideo.add_asset(MediaAsset{"animated", path, seconds(2)});
+    spatialVideo.append_clip(std::move(spatialClip));
+    report = ffgui::build_render_preflight(spatialVideo, {});
+    require(!report.can_render() &&
+                std::ranges::any_of(report.issues, [](const auto& issue) {
+                    return issue.code == "spatial-grade-requires-float-frame-server";
+                }),
+            "ordinary video spatial grades must block LUT export");
+    auto spatialSequenceClip = Clip{"spatial-sequence", "sequence", 0, seconds(1)};
+    spatialSequenceClip.grade.add(
+        ffgui::make_default_grade_node(ffgui::GradeNodeType::qualifier, "qualifier"));
+    TimelineModel spatialSequence;
+    spatialSequence.add_asset(MediaAsset{
+        "sequence", path, seconds(1), {0}, {}, {}, ffgui::MediaKind::image_sequence,
+        renderableSequence, {}, path, path});
+    spatialSequence.append_clip(std::move(spatialSequenceClip));
+    require(ffgui::build_render_preflight(spatialSequence, {}).can_render(),
+            "image sequence spatial grades must use the float frame server");
     std::filesystem::remove(path);
+}
+
+void test_look_export_bakes_creative_cube_and_unreal_ocioz() {
+    ffgui::GradeGraph grade;
+    auto primary = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "look-primary");
+    primary.parameters["exposure"] = 0.5;
+    grade.add(std::move(primary));
+    ffgui::LutExportRequest request;
+    request.input_space = "ACEScg";
+    request.output_space = "ACEScg";
+    request.encoding = ffgui::LutEncoding::working_space;
+    request.cube_size = 33;
+    request.unreal_ocio_bundle = true;
+    request.include_display_transform = false;
+    const auto package = ffgui::compile_look_export({}, grade, request);
+    require(package.cube.contains("LUT_3D_SIZE 33") && package.cube.contains("TITLE"),
+            "look export must write a Resolve Cube");
+    require(package.ocioz.size() > 4 && package.ocioz[0] == 'P' && package.ocioz[1] == 'K',
+            "Unreal packages must be store-only zip archives");
+    require(std::ranges::any_of(package.files, [](const auto& file) {
+                return file.relative_path == "config.ocio" &&
+                    file.text.contains("ocio_profile_version: 2.2") &&
+                    file.text.contains("ffmpegGUI_look");
+            }),
+            "Unreal OCIO 2.2 config must name the creative look");
+    require(std::ranges::any_of(package.files, [](const auto& file) {
+                return file.relative_path == "charts/expected.json" &&
+                    file.text.contains("mid_grey");
+            }),
+            "look packages must include verification patches");
+    const auto identity = ffgui::bake_look_cube({}, {}, request);
+    require(identity.contains("LUT_3D_SIZE 33"),
+            "identity look cubes must still honor the requested size");
+
+    const auto root = std::filesystem::temp_directory_path() / "ffgui-look-export";
+    std::filesystem::remove_all(root);
+    ffgui::write_look_export(package, root);
+    require(std::filesystem::is_regular_file(root / "luts" / "ffmpegGUI_look.cube") &&
+                std::filesystem::is_regular_file(root / "ffmpegGUI_look.ocioz") &&
+                std::filesystem::is_regular_file(root / "UNREAL.md"),
+            "look export must write the cube, ocioz archive and Unreal guide");
+    std::filesystem::remove_all(root);
+}
+
+void test_power_window_and_cube_bake_keep_spatial_out_of_luts() {
+    auto window = ffgui::make_default_grade_node(ffgui::GradeNodeType::power_window, "window");
+    window.parameters["centerX"] = 0.25;
+    window.parameters["centerY"] = 0.25;
+    window.parameters["sizeX"] = 0.5;
+    window.parameters["sizeY"] = 0.5;
+    window.parameters["insideExposure"] = 1.0;
+    ffgui::GradeGraph graph;
+    graph.add(window);
+    std::vector<float> pixels{
+        0.2F, 0.2F, 0.2F, 1.0F,
+        0.2F, 0.2F, 0.2F, 1.0F,
+        0.2F, 0.2F, 0.2F, 1.0F,
+        0.2F, 0.2F, 0.2F, 1.0F};
+    ffgui::apply_grade_graph_rgba32f(pixels.data(), 4, graph, 0, 2, 2);
+    require(pixels[0] > 0.35F && std::abs(pixels[12] - 0.2F) < 0.02F,
+            "power windows must grade inside the mask and leave the opposite corner");
+    auto primary = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary");
+    primary.parameters["exposure"] = 0.25;
+    ffgui::GradeGraph withWindow;
+    withWindow.add(primary);
+    withWindow.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::power_window, "mask"));
+    ffgui::GradeGraph primaryOnly;
+    primaryOnly.add(primary);
+    const auto spatialCube = ffgui::bake_color_cube({}, {}, withWindow, {}, 2);
+    const auto primaryCube = ffgui::bake_color_cube({}, {}, primaryOnly, {}, 2);
+    require(spatialCube == primaryCube,
+            "cube baking must exclude spatial nodes so lattice coordinates stay RGB-only");
+}
+
+void test_shot_match_offsets_primary_from_still_means() {
+    const float still[]{0.36F, 0.36F, 0.36F, 1.0F};
+    const float current[]{0.18F, 0.18F, 0.18F, 1.0F};
+    const auto offset = ffgui::match_mean_rgb(still, current, 1);
+    require(std::abs(offset.exposure - 1.0) < 0.0001,
+            "matching a 0.18 mean to 0.36 must be one stop of exposure");
+    ffgui::GradeGraph graph;
+    ffgui::apply_shot_match(graph, offset);
+    require(!graph.nodes().empty() &&
+                std::abs(graph.nodes().front().parameters.at("exposure") - 1.0) < 0.0001,
+            "shot matching must create or update a primary node");
+    const auto root = std::filesystem::temp_directory_path() / "ffgui-shot-still.png";
+    ffgui::write_rgba32f_png(root, 1, 1, still);
+    const auto loaded = ffgui::read_rgba32f_image(root);
+    require(loaded.width == 1 && loaded.height == 1 &&
+                std::abs(loaded.rgba[0] - 0.36F) < 0.01F,
+            "shot stills must round-trip through a float PNG");
+    std::vector<float> left{0.1F, 0.1F, 0.1F, 1.0F, 0.9F, 0.9F, 0.9F, 1.0F};
+    const float right[]{0.5F, 0.5F, 0.5F, 1.0F, 0.5F, 0.5F, 0.5F, 1.0F};
+    ffgui::compose_shot_compare_rgba32f(left.data(), right, 2, 1, ffgui::ShotCompareMode::still_wipe);
+    require(std::abs(left[0] - 0.5F) < 0.0001F && std::abs(left[4] - 0.9F) < 0.0001F,
+            "still wipe must copy the still onto the left half");
+    std::filesystem::remove(root);
 }
 
 }  // namespace
@@ -1916,6 +2065,9 @@ int main() {
         {"ffmpeg_export_plan_compiles_video_and_audio_dissolve", test_ffmpeg_export_plan_compiles_video_and_audio_dissolve},
         {"ffmpeg_export_plan_builds_palette_optimized_gif_without_audio", test_ffmpeg_export_plan_builds_palette_optimized_gif_without_audio},
         {"render_preflight_blocks_offline_and_unresolved_managed_media", test_render_preflight_blocks_offline_and_unresolved_managed_media},
+        {"look_export_bakes_creative_cube_and_unreal_ocioz", test_look_export_bakes_creative_cube_and_unreal_ocioz},
+        {"power_window_and_cube_bake_keep_spatial_out_of_luts", test_power_window_and_cube_bake_keep_spatial_out_of_luts},
+        {"shot_match_offsets_primary_from_still_means", test_shot_match_offsets_primary_from_still_means},
     };
 
     int failed = 0;

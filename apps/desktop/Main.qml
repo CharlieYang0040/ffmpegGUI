@@ -232,6 +232,19 @@ ApplicationWindow {
         onAccepted: EditorController.addGradeLutUrl(selectedFile)
     }
     FileDialog {
+        id: lookCubeDialog
+        title: "Look Cube 내보내기"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "cube"
+        nameFilters: ["Resolve Cube (*.cube)"]
+        onAccepted: EditorController.exportLookUrl(selectedFile)
+    }
+    FolderDialog {
+        id: lookPackageDialog
+        title: "Unreal Look 패키지 폴더"
+        onAccepted: EditorController.exportLookUrl(selectedFolder)
+    }
+    FileDialog {
         id: importSrtDialog
         title: "SRT 자막 가져오기"
         fileMode: FileDialog.OpenFile
@@ -759,9 +772,14 @@ ApplicationWindow {
                             anchors.top: parent.top
                             anchors.margins: 10
                             z: 30
-                            visible: EditorController.previewCompareEnabled &&
-                                     EditorController.colorPipelineMode !== 0
-                            text: "왼쪽 그레이드 후  ·  오른쪽 표시 변환"
+                            visible: (EditorController.previewCompareEnabled &&
+                                     EditorController.colorPipelineMode !== 0) ||
+                                     EditorController.shotCompareMode > 0
+                            text: EditorController.shotCompareMode === 1
+                                  ? "왼쪽 샷 스틸  ·  오른쪽 현재"
+                                  : EditorController.shotCompareMode === 2
+                                    ? "위 샷 스틸  ·  아래 현재"
+                                    : "왼쪽 그레이드 후  ·  오른쪽 표시 변환"
                             color: "#d6deea"
                             font.pixelSize: 10
                             padding: 5
@@ -1194,6 +1212,16 @@ ApplicationWindow {
                                 onClicked: gradeLutDialog.open()
                             }
                             AppButton {
+                                text: "Qualifier"
+                                Layout.fillWidth: true
+                                onClicked: EditorController.addGradeNode(8)
+                            }
+                            AppButton {
+                                text: "Window"
+                                Layout.fillWidth: true
+                                onClicked: EditorController.addGradeNode(9)
+                            }
+                            AppButton {
                                 text: "붙여넣기"
                                 Layout.fillWidth: true
                                 enabled: EditorController.gradeClipboardAvailable
@@ -1251,6 +1279,30 @@ ApplicationWindow {
                                         { label: "하이라이트 노출", key: "highlightExposure", scale: 10, from: -100, to: 100 },
                                         { label: "스페큘러 노출", key: "specularExposure", scale: 10, from: -100, to: 100 },
                                         { label: "존 폭", key: "zoneWidth", scale: 10, from: 1, to: 80 }
+                                    ]
+                                    if (type === 8) return [
+                                        { label: "색조 중심", key: "hueCenter", scale: 1, from: 0, to: 360 },
+                                        { label: "색조 폭", key: "hueWidth", scale: 1, from: 1, to: 180 },
+                                        { label: "색조 소프트", key: "hueSoft", scale: 1, from: 0, to: 90 },
+                                        { label: "채도 하한", key: "satLow", scale: 100, from: 0, to: 100 },
+                                        { label: "채도 상한", key: "satHigh", scale: 100, from: 0, to: 100 },
+                                        { label: "루마 하한", key: "lumaLow", scale: 100, from: 0, to: 100 },
+                                        { label: "루마 상한", key: "lumaHigh", scale: 100, from: 0, to: 100 },
+                                        { label: "내부 노출", key: "insideExposure", scale: 10, from: -100, to: 100 },
+                                        { label: "내부 채도", key: "insideSaturation", scale: 100, from: 0, to: 400 },
+                                        { label: "반전", key: "invert", scale: 1, from: 0, to: 1 }
+                                    ]
+                                    if (type === 9) return [
+                                        { label: "중심 X", key: "centerX", scale: 1000, from: 0, to: 1000 },
+                                        { label: "중심 Y", key: "centerY", scale: 1000, from: 0, to: 1000 },
+                                        { label: "크기 X", key: "sizeX", scale: 1000, from: 20, to: 1500 },
+                                        { label: "크기 Y", key: "sizeY", scale: 1000, from: 20, to: 1500 },
+                                        { label: "회전", key: "rotation", scale: 1, from: -180, to: 180 },
+                                        { label: "소프트", key: "softness", scale: 100, from: 0, to: 100 },
+                                        { label: "사각", key: "shape", scale: 1, from: 0, to: 1 },
+                                        { label: "내부 노출", key: "insideExposure", scale: 10, from: -100, to: 100 },
+                                        { label: "내부 채도", key: "insideSaturation", scale: 100, from: 0, to: 400 },
+                                        { label: "반전", key: "invert", scale: 1, from: 0, to: 1 }
                                     ]
                                     return []
                                 }
@@ -1873,6 +1925,67 @@ ApplicationWindow {
                             color: "#7f8c9c"
                             font.pixelSize: 10
                             text: "모니터 ICC · " + EditorController.monitorIccPath
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: "#7f8c9c"
+                            font.pixelSize: 11
+                            text: "창작 Look만 Cube/OCIO 패키지로 내보냅니다. 공간·키프레임 노드는 차단됩니다."
+                        }
+                        Label { text: "Cube 크기"; color: "#b4bdc8" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["33³ 실시간", "65³ 전달"]
+                            currentIndex: EditorController.lookExportCubeSize >= 49 ? 1 : 0
+                            onActivated: EditorController.setLookExportCubeSize(currentIndex === 1 ? 65 : 33)
+                        }
+                        Label { text: "Shaper"; color: "#b4bdc8" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["ACEScct", "log2 ±8 stop", "작업 색공간"]
+                            currentIndex: EditorController.lookExportEncoding
+                            onActivated: EditorController.setLookExportEncoding(currentIndex)
+                        }
+                        Switch {
+                            text: "Unreal OCIO 패키지"
+                            checked: EditorController.lookExportUnrealBundle
+                            onToggled: EditorController.setLookExportUnrealBundle(checked)
+                        }
+                        AppButton {
+                            Layout.fillWidth: true
+                            text: EditorController.lookExportUnrealBundle
+                                  ? "Look 패키지 내보내기" : "Look Cube 내보내기"
+                            onClicked: EditorController.lookExportUnrealBundle
+                                       ? lookPackageDialog.open() : lookCubeDialog.open()
+                        }
+                        Label { text: "샷 스틸"; color: "#b4bdc8" }
+                        Label {
+                            Layout.fillWidth: true
+                            elide: Text.ElideMiddle
+                            color: "#8796a8"
+                            font.pixelSize: 10
+                            text: EditorController.shotStillPath.length > 0
+                                  ? EditorController.shotStillPath : "저장된 스틸 없음"
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            AppButton { text: "스틸 캡처"; Layout.fillWidth: true; onClicked: EditorController.captureShotStill() }
+                            AppButton { text: "지우기"; Layout.fillWidth: true; enabled: EditorController.shotStillPath.length > 0; onClicked: EditorController.clearShotStill() }
+                        }
+                        AppButton {
+                            Layout.fillWidth: true
+                            text: "스틸에 샷 매칭"
+                            enabled: EditorController.shotStillPath.length > 0 &&
+                                     EditorController.selectedClipIds.length === 1
+                            onClicked: EditorController.matchSelectedGradeToStill()
+                        }
+                        Label { text: "스틸 비교"; color: "#b4bdc8" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["끄기", "좌우 wipe", "상하 split"]
+                            currentIndex: EditorController.shotCompareMode
+                            onActivated: EditorController.setShotCompareMode(currentIndex)
                         }
                     }
 

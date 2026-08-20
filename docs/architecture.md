@@ -158,8 +158,9 @@ source shader에 게시한다. 외부 Cube/3DL/CLF/CTF Look도 OCIO `FileTransfo
 바뀌면 다시 컴파일한다. 파일 경로는 UTF-8로 프로젝트에 저장하고, 누락·손상된 Look은 렌더
 사전 검사에서 `offline-grade-lut` blocker로 보고한다. 노드 복사·붙여넣기와 초기화는 모두
 `TimelineModel::set_clip_grade_graph()` 한 단계 편집이므로 기존 undo/redo와 리비전 계약을 따른다.
-qualifier와 power window는 공간 마스크 계약이 생기기 전까지
-명시적으로 render unsupported 상태를 유지한다.
+  qualifier와 power window는 이미지 시퀀스 float 경로에서 노드 순서대로 실행한다. 일반 영상
+  3D LUT는 공간을 표현하지 못하므로 출력 사전 검사가 차단하고, CPU 미리보기는 큐브 뒤에
+  공간 노드만 적용한다.
 
 구조 편집은 `TimelineModel`과 Scene Graph 화면에 즉시 반영하지만 GES 파이프라인은
 각 마우스 동작마다 다시 만들지 않는다. 50ms 단일 타이머가 연속 편집을 최신 스냅샷

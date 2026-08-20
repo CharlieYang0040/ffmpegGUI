@@ -22,7 +22,8 @@ FloatImageFrame process_color_frame(
     const GradeGraph& grade,
     const std::string& output_space,
     std::int64_t source_time,
-    ColorProcessStage stage) {
+    ColorProcessStage stage,
+    GradeSpatialMode spatial_mode) {
     if (source.rgba.size() != static_cast<std::size_t>(source.width) * source.height * 4) {
         throw std::invalid_argument("source float frame storage is invalid");
     }
@@ -47,7 +48,10 @@ FloatImageFrame process_color_frame(
                                inputSpace, settings.working_space);
         result.color_space = settings.working_space;
         if (stage != ColorProcessStage::pre_grade) {
-            apply_grade_graph_rgba32f(result.rgba.data(), pixels, grade, source_time);
+            apply_grade_graph_rgba32f(
+                result.rgba.data(), pixels, grade, source_time,
+                static_cast<std::size_t>(source.width),
+                static_cast<std::size_t>(source.height), spatial_mode);
         }
         if (stage == ColorProcessStage::post_display && !settings.display_transform_bypassed) {
             if (uses_display_view(settings)) {
@@ -67,7 +71,10 @@ FloatImageFrame process_color_frame(
             }
         }
     } else if (stage != ColorProcessStage::pre_grade) {
-        apply_grade_graph_rgba32f(result.rgba.data(), pixels, grade, source_time);
+        apply_grade_graph_rgba32f(
+            result.rgba.data(), pixels, grade, source_time,
+            static_cast<std::size_t>(source.width),
+            static_cast<std::size_t>(source.height), spatial_mode);
     }
     if (source.premultiplied) {
         for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
@@ -111,7 +118,8 @@ ColorCube build_color_cube(
         }
     }
     const auto processed = process_color_frame(
-        lattice, source_color, settings, grade, output_space, source_time);
+        lattice, source_color, settings, grade, output_space, source_time,
+        ColorProcessStage::post_display, GradeSpatialMode::exclude);
 
     ColorCube result;
     result.size = cube_size;
@@ -329,7 +337,8 @@ HaldClutImage build_hald_clut(
         }
     }
     const auto processed = process_color_frame(
-        lattice, source_color, settings, grade, output_space, source_time);
+        lattice, source_color, settings, grade, output_space, source_time,
+        ColorProcessStage::post_display, GradeSpatialMode::exclude);
     HaldClutImage result;
     result.level = level;
     result.width = width;

@@ -10,6 +10,8 @@
 #include "color/ocio_engine.hpp"
 #include "color/review_tools.hpp"
 #include "color/scope_analyzer.hpp"
+#include "color/look_export.hpp"
+#include "color/shot_matching.hpp"
 
 #include <QFile>
 #include <QCoreApplication>
@@ -1246,7 +1248,8 @@ QVariantList EditorController::selectedGradeNodes() const {
 void EditorController::addGradeNode(int type) {
     if (selected_clip_id_.isEmpty()) return;
     endCoalescedGradeEdit();
-    type = std::clamp(type, 0, static_cast<int>(ffgui::GradeNodeType::color_warper));
+    type = std::clamp(type, 0, static_cast<int>(ffgui::GradeNodeType::power_window));
+    if (type == static_cast<int>(ffgui::GradeNodeType::lut)) return;
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1298,6 +1301,215 @@ void EditorController::addGradeLutUrl(const QUrl& url) {
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
         publishColorPreview();
         setStatus("LUT / Look을 검증하고 컬러 노드에 추가했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::setLookExportCubeSize(int size) {
+    size = size >= 49 ? 65 : 33;
+    if (look_export_cube_size_ == size) return;
+    look_export_cube_size_ = size;
+    emit lookExportChanged();
+}
+
+void EditorController::setLookExportEncoding(int encoding) {
+    encoding = std::clamp(encoding, 0, 2);
+    if (look_export_encoding_ == encoding) return;
+    look_export_encoding_ = encoding;
+    emit lookExportChanged();
+}
+
+void EditorController::setLookExportUnrealBundle(bool enabled) {
+    if (look_export_unreal_bundle_ == enabled) return;
+    look_export_unreal_bundle_ = enabled;
+    emit lookExportChanged();
+}
+
+void EditorController::exportLookUrl(const QUrl& url) {
+    if (!url.isLocalFile()) return;
+    const auto local = QDir::toNativeSeparators(url.toLocalFile());
+    try {
+        ffgui::LutExportRequest request;
+        request.cube_size = look_export_cube_size_ >= 49 ? 65 : 33;
+        request.encoding = static_cast<ffgui::LutEncoding>(std::clamp(look_export_encoding_, 0, 2));
+        request.unreal_ocio_bundle = look_export_unreal_bundle_;
+        request.include_display_transform = false;
+        switch (request.encoding) {
+        case ffgui::LutEncoding::acescct:
+            request.input_space = "ACEScct";
+            request.output_space = "ACEScct";
+            break;
+        case ffgui::LutEncoding::log2:
+            request.input_space = "log2";
+            request.output_space = "log2";
+            break;
+        case ffgui::LutEncoding::working_space:
+            request.input_space = color_pipeline_.working_space.empty()
+                ? "ACEScg" : color_pipeline_.working_space;
+            request.output_space = request.input_space;
+            break;
+        }
+        ffgui::GradeGraph grade;
+        std::int64_t sourceTime = 0;
+        if (!selected_clip_id_.isEmpty()) {
+            const auto selectedId = selected_clip_id_.toStdString();
+            const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+            if (clip != timeline_.clips().end()) {
+                grade = clip->grade;
+                sourceTime = selectedClipSourceTime().value_or(clip->source_in);
+            }
+        }
+        const auto package = ffgui::compile_look_export(
+            color_pipeline_, grade, request, sourceTime);
+        const QFileInfo info(local);
+        if (look_export_unreal_bundle_ || info.isDir()) {
+            const auto directory = info.isDir() ? local : info.absolutePath();
+            ffgui::write_look_export(
+                package, std::filesystem::path(directory.toStdString()));
+            setStatus(QStringLiteral("Look 패키지를 내보냈습니다 · %1").arg(directory));
+        } else {
+            QSaveFile file(local);
+            if (!file.open(QIODevice::WriteOnly) ||
+                file.write(QByteArray::fromStdString(package.cube)) < 0 || !file.commit()) {
+                throw std::runtime_error("look cube could not be written");
+            }
+            setStatus(QStringLiteral("Look Cube를 내보냈습니다 · %1").arg(info.fileName()));
+        }
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::setShotCompareMode(int mode) {
+    mode = std::clamp(mode, 0, 2);
+    if (shot_compare_mode_ == mode) return;
+    shot_compare_mode_ = mode;
+    emit shotLibraryChanged();
+    publishColorPreview();
+}
+
+void EditorController::clearShotStill() {
+    if (shot_still_path_.isEmpty() && shot_compare_mode_ == 0) return;
+    shot_still_path_.clear();
+    shot_still_clip_id_.clear();
+    shot_still_source_time_ = 0;
+    shot_still_frame_.reset();
+    emit shotLibraryChanged();
+    setStatus("샷 스틸을 지웠습니다");
+    publishColorPreview();
+}
+
+void EditorController::captureShotStill() {
+    std::vector<float> rgba;
+    int width = 0;
+    int height = 0;
+    {
+        std::scoped_lock lock(inspect_mutex_);
+        width = static_cast<int>(inspect_width_);
+        height = static_cast<int>(inspect_height_);
+        if (!inspect_rgba_.empty() && width > 0 && height > 0) {
+            rgba = inspect_rgba_;
+        } else if (inspect_bgra_ != nullptr && width > 0 && height > 0) {
+            rgba.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
+            for (int y = 0; y < height; ++y) {
+                const auto* row = inspect_bgra_->data() +
+                    static_cast<std::size_t>(y) * inspect_stride_;
+                for (int x = 0; x < width; ++x) {
+                    const auto* bgra = row + static_cast<std::size_t>(x) * 4;
+                    auto* pixel = rgba.data() + (static_cast<std::size_t>(y) *
+                        static_cast<std::size_t>(width) + static_cast<std::size_t>(x)) * 4;
+                    pixel[0] = bgra[2] / 255.0F;
+                    pixel[1] = bgra[1] / 255.0F;
+                    pixel[2] = bgra[0] / 255.0F;
+                    pixel[3] = bgra[3] / 255.0F;
+                }
+            }
+        }
+    }
+    if (rgba.empty()) {
+        setStatus("미리보기 프레임이 없어 샷 스틸을 저장할 수 없습니다");
+        return;
+    }
+    try {
+        const auto directory = current_project_path_.isEmpty()
+            ? QDir::temp().filePath(QStringLiteral("ffgui-shots"))
+            : QFileInfo(current_project_path_).absolutePath() + QStringLiteral("/shots");
+        QDir().mkpath(directory);
+        const auto sourceTime = selectedClipSourceTime().value_or(playhead_ns_);
+        const auto fileName = QStringLiteral("%1_%2.png")
+            .arg(selected_clip_id_.isEmpty() ? QStringLiteral("timeline") : selected_clip_id_)
+            .arg(sourceTime);
+        const auto path = QDir(directory).filePath(fileName);
+        ffgui::write_rgba32f_png(
+            std::filesystem::path(path.toStdString()), width, height, rgba.data());
+        ffgui::FloatImageFrame frame;
+        frame.width = width;
+        frame.height = height;
+        frame.rgba = std::move(rgba);
+        shot_still_frame_ = std::move(frame);
+        shot_still_path_ = QDir::toNativeSeparators(path);
+        shot_still_clip_id_ = selected_clip_id_;
+        shot_still_source_time_ = sourceTime;
+        emit shotLibraryChanged();
+        setStatus(QStringLiteral("샷 스틸을 저장했습니다 · %1").arg(QFileInfo(path).fileName()));
+        publishColorPreview();
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::matchSelectedGradeToStill() {
+    if (selected_clip_id_.isEmpty()) return;
+    if (shot_still_path_.isEmpty()) {
+        setStatus("비교할 샷 스틸이 없습니다");
+        return;
+    }
+    try {
+        if (!shot_still_frame_.has_value()) {
+            shot_still_frame_ = ffgui::read_rgba32f_image(
+                std::filesystem::path(shot_still_path_.toStdString()));
+        }
+        std::vector<float> current;
+        {
+            std::scoped_lock lock(inspect_mutex_);
+            if (!inspect_rgba_.empty()) current = inspect_rgba_;
+            else if (inspect_bgra_ != nullptr && inspect_width_ > 0 && inspect_height_ > 0) {
+                current.resize(static_cast<std::size_t>(inspect_width_) *
+                    static_cast<std::size_t>(inspect_height_) * 4);
+                for (std::uint32_t y = 0; y < inspect_height_; ++y) {
+                    const auto* row = inspect_bgra_->data() +
+                        static_cast<std::size_t>(y) * inspect_stride_;
+                    for (std::uint32_t x = 0; x < inspect_width_; ++x) {
+                        const auto* bgra = row + static_cast<std::size_t>(x) * 4;
+                        auto* pixel = current.data() + (static_cast<std::size_t>(y) *
+                            inspect_width_ + x) * 4;
+                        pixel[0] = bgra[2] / 255.0F;
+                        pixel[1] = bgra[1] / 255.0F;
+                        pixel[2] = bgra[0] / 255.0F;
+                        pixel[3] = bgra[3] / 255.0F;
+                    }
+                }
+            }
+        }
+        if (current.empty() || !shot_still_frame_.has_value()) {
+            throw std::runtime_error("shot match requires a current preview frame and a still");
+        }
+        const auto pixels = std::min(
+            current.size() / 4, shot_still_frame_->rgba.size() / 4);
+        const auto offset = ffgui::match_mean_rgb(
+            shot_still_frame_->rgba.data(), current.data(), pixels);
+        endCoalescedGradeEdit();
+        const auto selectedId = selected_clip_id_.toStdString();
+        const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+        if (clip == timeline_.clips().end()) return;
+        auto graph = clip->grade;
+        ffgui::apply_shot_match(graph, offset);
+        timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+        publishColorPreview();
+        setStatus(QStringLiteral("스틸 평균에 맞춰 노출 %1, 채도 %2를 적용했습니다")
+            .arg(offset.exposure, 0, 'f', 2)
+            .arg(offset.saturation, 0, 'f', 2));
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
     }
@@ -1927,10 +2139,13 @@ void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
     const auto compare = preview_compare_enabled_ &&
         settings.mode != ffgui::ColorPipelineMode::legacy &&
         !settings.display_transform_bypassed;
+    const auto shotCompare = static_cast<ffgui::ShotCompareMode>(shot_compare_mode_);
+    const auto shotStill = shot_still_frame_;
     const auto generation = ++float_scrub_generation_;
     float_scrub_active_ = true;
     float_scrub_watcher_.setFuture(QtConcurrent::run(
-        [this, timeline, settings, outputSpace, timelinePosition, generation, compare] {
+        [this, timeline, settings, outputSpace, timelinePosition, generation, compare,
+         shotCompare, shotStill] {
             FloatScrubResult result;
             result.generation = generation;
             QElapsedTimer elapsed;
@@ -1946,6 +2161,15 @@ void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
                         rendered.processed.rgba.data(), graded.processed.rgba.data(),
                         static_cast<std::size_t>(rendered.processed.width),
                         static_cast<std::size_t>(rendered.processed.height));
+                }
+                if (shotCompare != ffgui::ShotCompareMode::off && shotStill.has_value() &&
+                    shotStill->width == rendered.processed.width &&
+                    shotStill->height == rendered.processed.height &&
+                    shotStill->rgba.size() == rendered.processed.rgba.size()) {
+                    ffgui::compose_shot_compare_rgba32f(
+                        rendered.processed.rgba.data(), shotStill->rgba.data(),
+                        static_cast<std::size_t>(rendered.processed.width),
+                        static_cast<std::size_t>(rendered.processed.height), shotCompare);
                 }
                 result.requested_frame = rendered.requested_sequence_frame;
                 result.resolved_frame = rendered.resolved_sequence_frame;
@@ -3509,7 +3733,15 @@ void EditorController::saveProject(const QString& path) {
             {"sdrWhiteNits", color_pipeline_.sdr_white_nits},
             {"maxCll", color_pipeline_.max_cll},
             {"maxFall", color_pipeline_.max_fall},
-            {"monitorIccPath", QString::fromStdString(color_pipeline_.monitor_icc_path)}};
+            {"monitorIccPath", QString::fromStdString(color_pipeline_.monitor_icc_path)},
+            {"lookExportCubeSize", look_export_cube_size_},
+            {"lookExportEncoding", look_export_encoding_},
+            {"lookExportUnrealBundle", look_export_unreal_bundle_}};
+        const QJsonObject shotLibrary{
+            {"stillPath", shot_still_path_},
+            {"clipId", shot_still_clip_id_},
+            {"sourceTimeNs", QString::number(shot_still_source_time_)},
+            {"compareMode", shot_compare_mode_}};
         const QJsonDocument document(QJsonObject{
             {"format", "ffmpegGUI-next"},
             {"version", 4},
@@ -3518,6 +3750,7 @@ void EditorController::saveProject(const QString& path) {
             {"captions", captions},
             {"stamp", stamp},
             {"colorPipeline", colorPipeline},
+            {"shotLibrary", shotLibrary},
             {"outputSettings", outputSettings}});
 
         QSaveFile file(path);
@@ -3742,7 +3975,24 @@ void EditorController::loadProject(const QString& path) {
             color_pipeline_.max_fall = colorPipeline.value("maxFall").toInt(400);
             color_pipeline_.monitor_icc_path =
                 colorPipeline.value("monitorIccPath").toString().toStdString();
+            look_export_cube_size_ = colorPipeline.value("lookExportCubeSize").toInt(33) >= 49 ? 65 : 33;
+            look_export_encoding_ = std::clamp(colorPipeline.value("lookExportEncoding").toInt(2), 0, 2);
+            look_export_unreal_bundle_ = colorPipeline.value("lookExportUnrealBundle").toBool(true);
             color_pipeline_.validate();
+        }
+        const auto shotLibrary = root.value("shotLibrary").toObject();
+        shot_still_path_ = shotLibrary.value("stillPath").toString();
+        shot_still_clip_id_ = shotLibrary.value("clipId").toString();
+        shot_still_source_time_ = shotLibrary.value("sourceTimeNs").toString().toLongLong();
+        shot_compare_mode_ = std::clamp(shotLibrary.value("compareMode").toInt(0), 0, 2);
+        shot_still_frame_.reset();
+        if (!shot_still_path_.isEmpty() && QFileInfo::exists(shot_still_path_)) {
+            try {
+                shot_still_frame_ = ffgui::read_rgba32f_image(
+                    std::filesystem::path(shot_still_path_.toStdString()));
+            } catch (const std::exception&) {
+                shot_still_frame_.reset();
+            }
         }
         current_project_path_ = QFileInfo(path).absoluteFilePath();
         QSettings().setValue(QStringLiteral("output/lastDirectory"), output_directory_);
@@ -3753,6 +4003,8 @@ void EditorController::loadProject(const QString& path) {
         emit graphicsChanged();
         emit exportSettingsChanged();
         emit colorPipelineChanged();
+        emit lookExportChanged();
+        emit shotLibraryChanged();
         emit gifEstimateChanged();
         refreshHdrDisplay();
         setStatus("프로젝트 불러오기 완료");

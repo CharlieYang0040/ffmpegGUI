@@ -369,6 +369,87 @@ float circular_parameter(const GradeNode& node, const char* prefix, int count, f
         amount);
 }
 
+void apply_inside_grade(float* rgb, float exposure, float saturation) {
+    const auto scale = std::exp2(exposure);
+    for (std::size_t channel = 0; channel < 3; ++channel) rgb[channel] *= scale;
+    const auto luma = luminance(rgb);
+    for (std::size_t channel = 0; channel < 3; ++channel) {
+        rgb[channel] = luma + (rgb[channel] - luma) * saturation;
+    }
+}
+
+float circular_hue_distance(float left, float right) {
+    const auto delta = std::abs(left - right);
+    return std::min(delta, 1.0F - delta);
+}
+
+float qualifier_key(const float* rgb, const GradeNode& node) {
+    const auto hsv = rgb_to_hsv(rgb);
+    const auto hueCenter = static_cast<float>(parameter(node, "hueCenter", 0.0) / 360.0);
+    const auto hueWidth = std::max(
+        0.0F, static_cast<float>(parameter(node, "hueWidth", 40.0) / 360.0));
+    const auto hueSoft = std::max(
+        0.0F, static_cast<float>(parameter(node, "hueSoft", 10.0) / 360.0));
+    const auto satLow = static_cast<float>(parameter(node, "satLow", 0.15));
+    const auto satHigh = static_cast<float>(parameter(node, "satHigh", 1.0));
+    const auto satSoft = std::max(0.0F, static_cast<float>(parameter(node, "satSoft", 0.05)));
+    const auto lumaLow = static_cast<float>(parameter(node, "lumaLow", 0.0));
+    const auto lumaHigh = static_cast<float>(parameter(node, "lumaHigh", 1.0));
+    const auto lumaSoft = std::max(0.0F, static_cast<float>(parameter(node, "lumaSoft", 0.05)));
+    const auto hueKey = 1.0F - smoothstep(hueWidth, hueWidth + hueSoft,
+        circular_hue_distance(hsv.hue, hueCenter));
+    const auto satKey = smoothstep(satLow - satSoft, satLow, hsv.saturation) *
+        (1.0F - smoothstep(satHigh, satHigh + satSoft, hsv.saturation));
+    const auto luma = luminance(rgb);
+    const auto lumaKey = smoothstep(lumaLow - lumaSoft, lumaLow, luma) *
+        (1.0F - smoothstep(lumaHigh, lumaHigh + lumaSoft, luma));
+    auto key = hueKey * satKey * lumaKey;
+    if (parameter(node, "invert", 0.0) >= 0.5) key = 1.0F - key;
+    return std::clamp(key, 0.0F, 1.0F);
+}
+
+float power_window_key(
+    std::size_t x, std::size_t y, std::size_t width, std::size_t height, const GradeNode& node) {
+    if (width == 0 || height == 0) return 1.0F;
+    const auto centerX = static_cast<float>(parameter(node, "centerX", 0.5));
+    const auto centerY = static_cast<float>(parameter(node, "centerY", 0.5));
+    const auto sizeX = std::max(1.0e-4F, static_cast<float>(parameter(node, "sizeX", 0.45)));
+    const auto sizeY = std::max(1.0e-4F, static_cast<float>(parameter(node, "sizeY", 0.45)));
+    const auto rotation = static_cast<float>(parameter(node, "rotation", 0.0) * 3.14159265358979323846 / 180.0);
+    const auto softness = std::max(0.0F, static_cast<float>(parameter(node, "softness", 0.12)));
+    const auto nx = (static_cast<float>(x) + 0.5F) / static_cast<float>(width);
+    const auto ny = (static_cast<float>(y) + 0.5F) / static_cast<float>(height);
+    const auto dx = nx - centerX;
+    const auto dy = ny - centerY;
+    const auto cosine = std::cos(-rotation);
+    const auto sine = std::sin(-rotation);
+    const auto rx = dx * cosine - dy * sine;
+    const auto ry = dx * sine + dy * cosine;
+    float distance = 0.0F;
+    if (parameter(node, "shape", 0.0) >= 0.5) {
+        distance = std::max(std::abs(rx) / (sizeX * 0.5F), std::abs(ry) / (sizeY * 0.5F));
+    } else {
+        const auto ex = rx / (sizeX * 0.5F);
+        const auto ey = ry / (sizeY * 0.5F);
+        distance = std::sqrt(ex * ex + ey * ey);
+    }
+    auto key = 1.0F - smoothstep(1.0F, 1.0F + softness, distance);
+    if (parameter(node, "invert", 0.0) >= 0.5) key = 1.0F - key;
+    return std::clamp(key, 0.0F, 1.0F);
+}
+
+void apply_masked_inside(float* rgb, float key, const GradeNode& node) {
+    if (key <= 0.0F) return;
+    const std::array<float, 3> original{rgb[0], rgb[1], rgb[2]};
+    apply_inside_grade(
+        rgb,
+        static_cast<float>(parameter(node, "insideExposure", 0.0)),
+        static_cast<float>(parameter(node, "insideSaturation", 1.0)));
+    for (std::size_t channel = 0; channel < 3; ++channel) {
+        rgb[channel] = std::lerp(original[channel], rgb[channel], key);
+    }
+}
+
 void apply_color_warper(float* rgb, const GradeNode& node) {
     auto hsv = rgb_to_hsv(rgb);
     const auto hueShift = circular_parameter(node, "hueShift", 12, hsv.hue, 0.0F);
@@ -391,11 +472,22 @@ void apply_color_warper(float* rgb, const GradeNode& node) {
 
 void apply_grade_graph_rgba32f(
     float* pixels, std::size_t pixel_count, const GradeGraph& graph,
-    std::int64_t source_time) {
+    std::int64_t source_time, std::size_t width, std::size_t height,
+    GradeSpatialMode spatial_mode) {
     if (pixels == nullptr && pixel_count != 0) throw std::invalid_argument("grade pixels are null");
     const auto unsupported = graph.render_unsupported_nodes();
     if (!unsupported.empty()) throw std::invalid_argument("grade graph contains an unsupported render node");
+    if (width == 0 || height == 0) {
+        width = pixel_count;
+        height = pixel_count == 0 ? 0 : 1;
+    }
+    if (width * height != pixel_count && pixel_count != 0) {
+        throw std::invalid_argument("grade pixel count does not match frame dimensions");
+    }
     for (const auto& storedNode : graph.nodes()) {
+        const auto spatial = !storedNode.lut_representable();
+        if (spatial && spatial_mode == GradeSpatialMode::exclude) continue;
+        if (!spatial && spatial_mode == GradeSpatialMode::only) continue;
         auto evaluatedNode = storedNode;
         for (const auto& [name, keyframes] : storedNode.parameter_keyframes) {
             if (!keyframes.empty()) {
@@ -429,6 +521,14 @@ void apply_grade_graph_rgba32f(
             else if (node.type == GradeNodeType::hdr_zones) apply_hdr_zones(rgba, node);
             else if (node.type == GradeNodeType::color_warper) apply_color_warper(rgba, node);
             else if (lut) lut->applyRGBA(rgba);
+            else if (node.type == GradeNodeType::qualifier) {
+                apply_masked_inside(rgba, qualifier_key(rgba, node), node);
+            }
+            else if (node.type == GradeNodeType::power_window) {
+                const auto x = height == 0 ? 0 : pixel % width;
+                const auto y = height == 0 ? 0 : pixel / width;
+                apply_masked_inside(rgba, power_window_key(x, y, width, height, node), node);
+            }
             for (std::size_t channel = 0; channel < 3; ++channel) {
                 rgba[channel] = std::lerp(original[channel], rgba[channel], static_cast<float>(node.mix));
             }

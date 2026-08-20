@@ -1,5 +1,7 @@
 #include "integration/ges/gst_color_lut_filter.hpp"
 
+#include "color/grade_processor.hpp"
+
 #include <gst/base/gstbasetransform.h>
 #include <gst/video/video.h>
 
@@ -9,6 +11,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -137,6 +140,13 @@ GstFlowReturn gst_ffgui_lut3d_transform_ip(GstBaseTransform* transform, GstBuffe
     const auto height = GST_VIDEO_FRAME_HEIGHT(&frame);
     auto* base = static_cast<std::uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
     const auto stride = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
+    auto recipe = self->recipe != nullptr ? *self->recipe : std::shared_ptr<const ffgui::ColorLutRecipe>{};
+    if (recipe == nullptr) recipe = find_recipe(self->lut_id);
+    const auto spatial = recipe != nullptr && recipe->grade.has_spatial_nodes();
+    std::vector<float> spatialPixels;
+    if (spatial) {
+        spatialPixels.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
+    }
     for (gint row = 0; row < height; ++row) {
         auto* pixels = reinterpret_cast<std::uint16_t*>(base + static_cast<gssize>(row) * stride);
         for (gint column = 0; column < width; ++column) {
@@ -147,10 +157,43 @@ GstFlowReturn gst_ffgui_lut3d_transform_ip(GstBaseTransform* transform, GstBuffe
                 static_cast<float>(rgba[2]) / 65535.0F};
             float output[3]{};
             ffgui::sample_color_cube(*cube, input, output);
-            for (int channel = 0; channel < 3; ++channel) {
-                rgba[channel] = static_cast<std::uint16_t>(std::lround(
-                    std::clamp(std::isfinite(output[channel]) ? output[channel] : 0.0F,
-                               0.0F, 1.0F) * 65535.0F));
+            if (spatial) {
+                const auto index = (static_cast<std::size_t>(row) *
+                    static_cast<std::size_t>(width) + static_cast<std::size_t>(column)) * 4;
+                spatialPixels[index] = output[0];
+                spatialPixels[index + 1] = output[1];
+                spatialPixels[index + 2] = output[2];
+                spatialPixels[index + 3] = static_cast<float>(rgba[3]) / 65535.0F;
+            } else {
+                for (int channel = 0; channel < 3; ++channel) {
+                    rgba[channel] = static_cast<std::uint16_t>(std::lround(
+                        std::clamp(std::isfinite(output[channel]) ? output[channel] : 0.0F,
+                                   0.0F, 1.0F) * 65535.0F));
+                }
+            }
+        }
+    }
+    if (spatial) {
+        const auto pts = GST_BUFFER_PTS_IS_VALID(buffer)
+            ? static_cast<ffgui::TimeNs>(GST_BUFFER_PTS(buffer)) : ffgui::TimeNs{0};
+        const auto sourceTime = ffgui::source_time_for_recipe(*recipe, pts);
+        ffgui::apply_grade_graph_rgba32f(
+            spatialPixels.data(),
+            static_cast<std::size_t>(width) * static_cast<std::size_t>(height),
+            recipe->grade, sourceTime,
+            static_cast<std::size_t>(width), static_cast<std::size_t>(height),
+            ffgui::GradeSpatialMode::only);
+        for (gint row = 0; row < height; ++row) {
+            auto* pixels = reinterpret_cast<std::uint16_t*>(base + static_cast<gssize>(row) * stride);
+            for (gint column = 0; column < width; ++column) {
+                auto* rgba = pixels + static_cast<std::size_t>(column) * 4;
+                const auto index = (static_cast<std::size_t>(row) *
+                    static_cast<std::size_t>(width) + static_cast<std::size_t>(column)) * 4;
+                for (int channel = 0; channel < 3; ++channel) {
+                    const auto value = spatialPixels[index + static_cast<std::size_t>(channel)];
+                    rgba[channel] = static_cast<std::uint16_t>(std::lround(
+                        std::clamp(std::isfinite(value) ? value : 0.0F, 0.0F, 1.0F) * 65535.0F));
+                }
             }
         }
     }

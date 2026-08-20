@@ -105,6 +105,11 @@ class EditorController final : public QObject {
     Q_PROPERTY(QStringList viewOptions READ viewOptions NOTIFY colorPipelineChanged)
     Q_PROPERTY(bool displayTransformBypassed READ displayTransformBypassed WRITE setDisplayTransformBypassed NOTIFY colorPipelineChanged)
     Q_PROPERTY(bool previewCompareEnabled READ previewCompareEnabled WRITE setPreviewCompareEnabled NOTIFY colorPipelineChanged)
+    Q_PROPERTY(int lookExportCubeSize READ lookExportCubeSize WRITE setLookExportCubeSize NOTIFY lookExportChanged)
+    Q_PROPERTY(int lookExportEncoding READ lookExportEncoding WRITE setLookExportEncoding NOTIFY lookExportChanged)
+    Q_PROPERTY(bool lookExportUnrealBundle READ lookExportUnrealBundle WRITE setLookExportUnrealBundle NOTIFY lookExportChanged)
+    Q_PROPERTY(QString shotStillPath READ shotStillPath NOTIFY shotLibraryChanged)
+    Q_PROPERTY(int shotCompareMode READ shotCompareMode WRITE setShotCompareMode NOTIFY shotLibraryChanged)
     Q_PROPERTY(QVariantList selectedGradeNodes READ selectedGradeNodes NOTIFY gradeUiChanged)
     Q_PROPERTY(bool gradeClipboardAvailable READ gradeClipboardAvailable NOTIFY gradeClipboardChanged)
     Q_PROPERTY(bool scopesVisible READ scopesVisible WRITE setScopesVisible NOTIFY scopeSettingsChanged)
@@ -210,6 +215,11 @@ public:
         return color_pipeline_.display_transform_bypassed;
     }
     [[nodiscard]] bool previewCompareEnabled() const noexcept { return preview_compare_enabled_; }
+    [[nodiscard]] int lookExportCubeSize() const noexcept { return look_export_cube_size_; }
+    [[nodiscard]] int lookExportEncoding() const noexcept { return look_export_encoding_; }
+    [[nodiscard]] bool lookExportUnrealBundle() const noexcept { return look_export_unreal_bundle_; }
+    [[nodiscard]] QString shotStillPath() const { return shot_still_path_; }
+    [[nodiscard]] int shotCompareMode() const noexcept { return shot_compare_mode_; }
     [[nodiscard]] QVariantList selectedGradeNodes() const;
     [[nodiscard]] bool gradeClipboardAvailable() const noexcept {
         return grade_node_clipboard_.has_value();
@@ -349,6 +359,14 @@ public slots:
     Q_INVOKABLE void refreshHdrDisplay();
     void addGradeNode(int type);
     void addGradeLutUrl(const QUrl& url);
+    void exportLookUrl(const QUrl& url);
+    void setLookExportCubeSize(int size);
+    void setLookExportEncoding(int encoding);
+    void setLookExportUnrealBundle(bool enabled);
+    void captureShotStill();
+    void clearShotStill();
+    void matchSelectedGradeToStill();
+    void setShotCompareMode(int mode);
     void removeGradeNode(const QString& nodeId);
     void moveGradeNode(const QString& nodeId, int direction);
     void copyGradeNode(const QString& nodeId);
@@ -418,6 +436,8 @@ signals:
     void exportProgressChanged();
     void exportSettingsChanged();
     void colorPipelineChanged();
+    void lookExportChanged();
+    void shotLibraryChanged();
     void previewPathChanged();
     void scopeSettingsChanged();
     void scopeFrameChanged();
@@ -564,6 +584,14 @@ private:
     int scope_reference_stage_{2};
     ffgui::ReviewOverlayMode review_overlay_mode_{ffgui::ReviewOverlayMode::off};
     bool preview_compare_enabled_{};
+    int look_export_cube_size_{33};
+    int look_export_encoding_{2};
+    bool look_export_unreal_bundle_{true};
+    QString shot_still_path_;
+    QString shot_still_clip_id_;
+    qint64 shot_still_source_time_{};
+    int shot_compare_mode_{};
+    std::optional<ffgui::FloatImageFrame> shot_still_frame_;
     QString pixel_inspector_text_;
     qreal out_of_gamut_percent_{};
     bool last_scope_approximate_{};

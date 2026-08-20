@@ -5,6 +5,7 @@
 #include "core/time.hpp"
 #include "media/oiio_frame_source.hpp"
 #include "color/ocio_engine.hpp"
+#include "color/grade_processor.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -45,7 +46,8 @@ struct HaldClutImage final {
     const GradeGraph& grade,
     const std::string& output_space,
     std::int64_t source_time = 0,
-    ColorProcessStage stage = ColorProcessStage::post_display);
+    ColorProcessStage stage = ColorProcessStage::post_display,
+    GradeSpatialMode spatial_mode = GradeSpatialMode::include);
 
 // Bake the exact CPU color path used by preview and float export into a .cube payload.
 // The resulting LUT can be attached to ordinary video/image inputs before timeline

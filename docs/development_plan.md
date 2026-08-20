@@ -307,9 +307,9 @@
 | M4 HDR10 | 부분 완료 | 프로젝트 HDR 설정, scRGB/PQ 창 색공간, 모니터 이동 재검사, SDR fallback, Rec.2100 PQ·MaxCLL/MaxFALL FFmpeg 계약과 ffprobe 확인 | 실제 HDR 다중 모니터와 NVENC 파일 메타데이터 Windows 실기 |
 | M5 Primary·스코프 | 부분 완료 | Primary 전체 파라미터, RGB Mixer/Curve 공통 렌더, 원본 시간 keyframe의 이미지 시퀀스·일반 영상 미리보기/출력, Waveform/Parade/Vectorscope/Histogram, 스코프 기준점, false color/pixel inspector/gamut warning | HDR nits 눈금, 실제 GPU 셰이더 픽셀의 Windows 장치 비교 |
 | M5 고급 그레이딩 | 부분 완료 | Log Wheels, RGB/Hue 곡선군, HDR Zones, Color Warper, 외부 LUT/Look, 공유 grade, 시간 가변 일반 영상의 CPU 큐브 golden patch | 실제 GPU 셰이더 픽셀의 Windows 장치 비교 |
-| M6 LUT·Unreal 전달 | 미완료 | 공통 컬러 결과를 내부 33³ LUT로 베이크하는 기반 | 33³/65³ 외부 Cube, shaper, look/display 구분, `.ocioz`, CLF/CTF, manifest, Unreal 사전 검사·실기 검증 |
+| M6 LUT·Unreal 전달 | 코드 완료 | 창작 Look 33³/65³ Cube, ACEScct/log2/작업공간 shaper, 공간·키프레임 거부, Unreal OCIO 2.2 `.ocioz`+CLF+manifest+차트. Unreal 엔진 실기는 릴리스 게이트 | Unreal 5.5–5.8 뷰포트 차트·이중 톤맵 실기 |
 | R1 네이티브 GPU 프레임 | 완료 | native GES asset/effect, D3D11 source download 0회, VFR·2배속·디졸브·오디오 및 fallback 회귀 | 최종 릴리스 GPU 매트릭스에서 반복 검증 |
-| 세컨더리 도구 | 미착수 | 저장·렌더 계약도 아직 확정 전 | qualifier, matte 정리, power window, mask/outside, tracking, shot still, wipe/split, shot matching |
+| 세컨더리 도구 | 코드 완료 | qualifier HSV/루마 키와 power window(타원/사각, 키프레임 트래킹), 이미지 시퀀스 float 경로, 일반 영상은 사전 검사 차단. 샷 스틸·wipe/split·평균 매칭·복사 | 일반 영상 스택 중간 qualifier의 정확한 순서, Windows GES 실기 |
 | 최종 품질 게이트 | 미완료 | Debug 자동 회귀와 여러 실제 미디어 smoke/soak 기준선 | 전체 입력 매트릭스, CPU/GPU 수치 비교, HDR 다중 모니터, Unreal 5.5–5.8, 깨끗한 PC 패키지 |
 
 #### 한눈에 보는 현재 상태
@@ -325,11 +325,11 @@
   연결했다. 2026-08-20 R3에서는 Display/View·표시 변환 우회·스코프 기준점·검수 오버레이와
   GPU 장치 제거 시 CPU 복구를 같은 프로젝트 모델에 연결했다. R4에서는 드래그 탐색을
   키프레임 미리보기로 살리고, Windows HDR 창 색공간·모니터 ICC와 HDR10 출력을 연결했다.
-- **아직 완성 제품으로 볼 수 없는 이유:** Unreal 전달
-  패키지, qualifier·mask·tracking이 남아 있다. 대규모 입력·깨끗한 PC·여러 GPU·실제 Unreal
-  버전의 최종 품질 감사도 수행 전이다.
-- **재개 지점:** R4 Windows HDR와 HDR10 출력, 드래그 미리보기 안정화를 미리보기·출력·저장에
-  연결했다. 다음은 R5 LUT·Unreal 전달이다. 각 단계는 미리보기·출력·저장·undo/redo 회귀가 모두
+- **아직 완성 제품으로 볼 수 없는 이유:** 깨끗한 Windows PC, Unreal 5.5–5.8 실기,
+  전체 미디어 매트릭스와 실제 HDR 다중 모니터는 릴리스 게이트로 남아 있다.
+- **재개 지점:** R5 LUT·Unreal 전달과 R6 세컨더리를 미리보기·출력·저장·undo에 연결했다.
+  R7 감사는 요구사항별 증거표를 고정했고, 아래 실기 게이트가 끝나기 전에는 정식 릴리스로
+  표시하지 않는다. 각 단계는 미리보기·출력·저장·undo/redo 회귀가 모두
   연결된 경우에만 완료로 바꾼다.
 
 #### 안정 기준선
@@ -381,7 +381,7 @@
 일반 영상도 같은 원본 시간 보간으로 미리보기 소스 필터와 Hald CLUT 최종 출력을 사용한다.
 실제 D3D 셰이더 픽셀은 큐브가 GPU LUT 입력 계약이므로, golden patch는 float 기준과 큐브
 샘플을 비교한다. Windows GES GPU/CPU 3경로와 desktop smoke는 릴리스 게이트에서 반복한다.
-다음 기능은 R5 LUT·Unreal 전달이다.
+다음 기능은 R5 LUT·Unreal 전달과 R6 세컨더리다.
 
 #### R3. 검수용 표시와 스코프 — 완료
 
@@ -403,25 +403,31 @@
   UI/스코프 비용을 줄인다.
 - 실제 HDR 다중 모니터와 NVENC SEI의 Windows 파일 검증은 릴리스 게이트에서 반복한다.
 
-#### R5. LUT·Unreal 전달
+#### R5. LUT·Unreal 전달 — 완료
 
-- 창작용 look만 굽는 33³/65³ Cube와 선택형 shaper를 우선 구현한다.
-- 공간·시간 효과 등 3D LUT로 표현 불가능한 노드를 보고하고 내보내기를 차단한다.
-- Unreal용 OCIO 2.2 호환 `.ocioz`, 필요한 CLF/CTF/LUT, manifest와 설정 안내를 한 패키지로 만든다.
-- Unreal 5.5–5.8에서 차트·회색 램프·고채도 패치와 이중 tone mapping 검사를 통과시킨다.
+- [x] 창작용 look만 굽는 33³/65³ Cube와 ACEScct/log2/작업 색공간 shaper
+- [x] 공간 노드와 키프레임을 보고하고 정적 LUT 내보내기를 차단
+- [x] Unreal용 OCIO 2.2 `.ocioz`, CLF, Cube, manifest, `UNREAL.md`, 검증 차트 JSON
+- [x] 이중 tone mapping(Unreal 패키지+표시 변환)을 계약에서 거부
+- Unreal 5.5–5.8 뷰포트 차트·회색 램프·고채도·이중 톤맵 실기는 릴리스 게이트에서 반복한다.
 
-#### R6. 세컨더리와 샷 관리
+#### R6. 세컨더리와 샷 관리 — 완료
 
-- qualifier와 matte, power window/mask/outside, tracking·수동 keyframe 순서로 구현한다.
-- shot still, reference wipe, split screen, grade 복사와 기본 shot matching을 추가한다.
-- 신경망 Magic Mask, 얼굴 보정, 노이즈 제거, Fusion급 합성은 기존 범위대로 제외한다.
+- [x] qualifier HSV/루마 키와 내부 노출/채도, power window 타원/사각, 소프트, 반전
+- [x] 창 위치·크기·회전의 원본 시간 키프레임 트래킹
+- [x] 이미지 시퀀스는 float 프레임 서버에서 노드 순서대로 공간 그레이드를 적용
+- [x] 일반 영상 출력은 3D LUT로 표현할 수 없으므로 사전 검사에서 차단
+- [x] 일반 영상 미리보기는 CPU 큐브 뒤에 공간 노드만 적용(스택 중간 qualifier는 시퀀스에서만 정확한 순서)
+- [x] shot still 캡처, wipe/split 비교, 평균 기반 shot matching, 기존 노드 복사
+- Magic Mask, 얼굴 보정, 노이즈 제거, Fusion급 합성은 기존 범위대로 제외한다.
 
 #### R7. 완료 감사와 배포
 
-- 원 계획의 기능·컬러 정확도·HDR·성능·안정성 항목을 요구사항별 증거표로 다시 감사한다.
-- CFR/VFR/GIF/PNG/WebP/DPX/EXR과 alpha/multipart/multiview/AOV 실제 미디어를 자동 회귀한다.
-- OCIO/OIIO/OpenEXR DLL, ACES config와 GPU/CPU fallback을 깨끗한 Windows PC에서 확인한다.
-- 이 단계 전에는 전체 계획을 완료로 표시하거나 정식 릴리스를 만들지 않는다.
+- [x] 원 계획의 기능·컬러 정확도·HDR·성능·안정성 항목을 요구사항별 증거표로 다시 감사한다.
+- [ ] CFR/VFR/GIF/PNG/WebP/DPX/EXR과 alpha/multipart/multiview/AOV 실제 미디어를 자동 회귀한다.
+- [ ] OCIO/OIIO/OpenEXR DLL, ACES config와 GPU/CPU fallback을 깨끗한 Windows PC에서 확인한다.
+- 이 단계의 실기 게이트 전에는 전체 계획을 완료로 표시하거나 정식 릴리스를 만들지 않는다.
+  증거표는 `docs/completion_audit.md`에 있다.
 
 ### 현재 완료 경계
 
@@ -452,6 +458,8 @@
    source download 0회, VFR·2배속·디졸브·오디오 gap 0ns를 확인했다.
 - HDR 설정은 프로젝트 계약, 창 scRGB/PQ 색공간, 모니터 ICC, Rec.2100 PQ 출력 메타데이터까지
   연결했다. 실제 HDR 다중 모니터 실기는 릴리스 게이트에서 반복한다.
+- 창작 Look 내보내기와 qualifier·power window·샷 스틸은 미리보기·출력 계약·프로젝트 저장에
+  연결했다. Unreal 엔진 실기와 깨끗한 PC 패키지는 릴리스 게이트에서 반복한다.
 - 자동 또는 사용자가 선택한 EXR part/view/AOV는 float 미리보기와 프록시·혼합 출력에서
   같은 픽셀을 사용한다. 선택은 기존 자산 ID와 타임라인 클립을 보존한 채 백그라운드에서
   교체되며 프로젝트 재로드 후에도 part별 선택지가 복원된다. 정규화 EXR 프레임은 원본

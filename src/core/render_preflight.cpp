@@ -39,6 +39,11 @@ RenderPreflightReport build_render_preflight(
                 "Clip grade contains nodes that the render pipeline cannot evaluate",
                 clip.asset_id, {}});
         }
+        if (!clip.grade.lut_representable() && !asset->image_sequence().has_value()) {
+            report.issues.push_back({PreflightSeverity::blocker, "spatial-grade-requires-float-frame-server",
+                "Qualifier and power windows need the float frame server; ordinary video cannot bake them into a 3D LUT",
+                clip.asset_id, {}});
+        }
         for (const auto& node : clip.grade.nodes()) {
             if (!node.enabled || node.type != GradeNodeType::lut) continue;
             try {
