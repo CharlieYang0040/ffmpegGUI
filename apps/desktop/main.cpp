@@ -312,6 +312,20 @@ int main(int argc, char* argv[]) {
             advancedNodes.back().toMap().value("id").toString(),
             QStringLiteral("master"), 20);
         controller.setColorPipelineMode(1);
+        if (controller.displayOptions().isEmpty() || controller.viewOptions().isEmpty()) {
+            qCritical() << "color smoke: OCIO Display/View options were empty";
+            return EXIT_FAILURE;
+        }
+        controller.setDisplayName(controller.displayOptions().front());
+        controller.setViewName(controller.viewOptions().front());
+        controller.setDisplayTransformBypassed(true);
+        if (!controller.displayTransformBypassed()) return EXIT_FAILURE;
+        controller.setDisplayTransformBypassed(false);
+        controller.setPreviewCompareEnabled(true);
+        controller.setPreviewCompareEnabled(false);
+        controller.setScopeReferenceStage(1);
+        controller.setReviewOverlayMode(0);
+        if (controller.scopeReferenceStage() != 1) return EXIT_FAILURE;
         const auto deliveredBefore = controller.videoFramesDelivered();
         const auto processedBefore = controller.floatVideoFramesProcessed();
         QEventLoop previewLoop;

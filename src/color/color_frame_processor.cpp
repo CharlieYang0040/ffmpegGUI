@@ -21,7 +21,8 @@ FloatImageFrame process_color_frame(
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
     const std::string& output_space,
-    std::int64_t source_time) {
+    std::int64_t source_time,
+    ColorProcessStage stage) {
     if (source.rgba.size() != static_cast<std::size_t>(source.width) * source.height * 4) {
         throw std::invalid_argument("source float frame storage is invalid");
     }
@@ -38,17 +39,34 @@ FloatImageFrame process_color_frame(
     if (settings.mode != ColorPipelineMode::legacy) {
         const auto inputSpace = source_color.input_color_space.empty()
             ? source.color_space : source_color.input_color_space;
-        if (inputSpace.empty() || output_space.empty()) {
-            throw std::invalid_argument("managed color frame requires explicit input and output spaces");
+        if (inputSpace.empty()) {
+            throw std::invalid_argument("managed color frame requires an explicit input space");
         }
         OcioEngine ocio(settings);
         ocio.transform_rgba32f(result.rgba.data(), source.width, source.height,
                                inputSpace, settings.working_space);
-        apply_grade_graph_rgba32f(result.rgba.data(), pixels, grade, source_time);
-        ocio.transform_rgba32f(result.rgba.data(), source.width, source.height,
-                               settings.working_space, output_space);
-        result.color_space = output_space;
-    } else {
+        result.color_space = settings.working_space;
+        if (stage != ColorProcessStage::pre_grade) {
+            apply_grade_graph_rgba32f(result.rgba.data(), pixels, grade, source_time);
+        }
+        if (stage == ColorProcessStage::post_display && !settings.display_transform_bypassed) {
+            if (uses_display_view(settings)) {
+                ocio.transform_display_view_rgba32f(
+                    result.rgba.data(), source.width, source.height,
+                    settings.working_space, settings.display, settings.view);
+                const auto named = ocio.display_view_color_space(settings.display, settings.view);
+                result.color_space = named.empty() ? output_space : named;
+            } else {
+                if (output_space.empty()) {
+                    throw std::invalid_argument(
+                        "managed color frame requires an explicit output space");
+                }
+                ocio.transform_rgba32f(result.rgba.data(), source.width, source.height,
+                                       settings.working_space, output_space);
+                result.color_space = output_space;
+            }
+        }
+    } else if (stage != ColorProcessStage::pre_grade) {
         apply_grade_graph_rgba32f(result.rgba.data(), pixels, grade, source_time);
     }
     if (source.premultiplied) {
@@ -123,17 +141,28 @@ OcioGpuShader build_managed_gpu_shader(
     auto input = engine.gpu_shader_hlsl(
         source_color.input_color_space, settings.working_space,
         "ffgui_input_transform", "ffgui_input_");
-    auto output = engine.gpu_shader_hlsl(
-        settings.working_space, output_space,
-        "ffgui_output_transform", "ffgui_output_");
+    OcioGpuShader output;
+    const auto skipDisplay = settings.display_transform_bypassed;
+    if (!skipDisplay && uses_display_view(settings)) {
+        output = engine.gpu_shader_display_view_hlsl(
+            settings.working_space, settings.display, settings.view,
+            "ffgui_output_transform", "ffgui_output_");
+    } else if (!skipDisplay) {
+        output = engine.gpu_shader_hlsl(
+            settings.working_space, output_space,
+            "ffgui_output_transform", "ffgui_output_");
+    }
     OcioGpuShader result;
-    result.cache_id = input.cache_id + ':' + output.cache_id;
+    result.cache_id = input.cache_id + ':' + (skipDisplay ? std::string{"bypass"} : output.cache_id);
     result.function_name = "ffgui_managed_transform";
-    result.source = input.source + '\n' + output.source + '\n';
+    result.source = input.source + '\n';
+    if (!skipDisplay) result.source += output.source + '\n';
     result.textures = std::move(input.textures);
-    result.textures.insert(result.textures.end(),
-                           std::make_move_iterator(output.textures.begin()),
-                           std::make_move_iterator(output.textures.end()));
+    if (!skipDisplay) {
+        result.textures.insert(result.textures.end(),
+                               std::make_move_iterator(output.textures.begin()),
+                               std::make_move_iterator(output.textures.end()));
+    }
     const auto graded = !grade.nodes().empty();
     if (graded) {
         const auto cube = build_color_cube({}, {}, grade, {}, grade_cube_size, source_time);
@@ -160,8 +189,11 @@ OcioGpuShader build_managed_gpu_shader(
             "  pixel.rgb = ffgui_grade_lut.Sample(ffgui_grade_sampler, "
             "saturate(pixel.rgb)).rgb;\n";
     }
+    if (!skipDisplay) {
+        result.source +=
+            "  pixel = ffgui_output_transform(pixel);\n";
+    }
     result.source +=
-        "  pixel = ffgui_output_transform(pixel);\n"
         "  return pixel;\n"
         "}\n";
     return result;

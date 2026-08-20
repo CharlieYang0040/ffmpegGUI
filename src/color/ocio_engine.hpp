@@ -41,9 +41,19 @@ public:
     [[nodiscard]] bool managed() const noexcept;
     [[nodiscard]] std::string config_name() const;
     [[nodiscard]] std::vector<std::string> color_spaces() const;
+    [[nodiscard]] std::vector<std::string> displays() const;
+    [[nodiscard]] std::vector<std::string> views(const std::string& display) const;
+    [[nodiscard]] std::string default_display() const;
+    [[nodiscard]] std::string default_view(const std::string& display) const;
+    [[nodiscard]] std::string display_view_color_space(
+        const std::string& display, const std::string& view) const;
     void transform_rgba32f(float* pixels, std::size_t width, std::size_t height,
                            const std::string& input_space,
                            const std::string& output_space) const;
+    void transform_display_view_rgba32f(
+        float* pixels, std::size_t width, std::size_t height,
+        const std::string& source_space, const std::string& display, const std::string& view,
+        bool inverse = false) const;
     [[nodiscard]] std::string bake_cube(const std::string& input_space,
                                         const std::string& output_space,
                                         int cube_size) const;
@@ -51,6 +61,10 @@ public:
                                                 const std::string& output_space,
                                                 std::string function_name = "ffgui_ocio_transform",
                                                 std::string resource_prefix = "ffgui_ocio_") const;
+    [[nodiscard]] OcioGpuShader gpu_shader_display_view_hlsl(
+        const std::string& source_space, const std::string& display, const std::string& view,
+        std::string function_name = "ffgui_ocio_transform",
+        std::string resource_prefix = "ffgui_ocio_") const;
 
 private:
     struct Impl;

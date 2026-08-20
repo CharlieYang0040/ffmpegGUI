@@ -44,7 +44,8 @@ struct HaldClutImage final {
     const ColorPipelineSettings& settings,
     const GradeGraph& grade,
     const std::string& output_space,
-    std::int64_t source_time = 0);
+    std::int64_t source_time = 0,
+    ColorProcessStage stage = ColorProcessStage::post_display);
 
 // Bake the exact CPU color path used by preview and float export into a .cube payload.
 // The resulting LUT can be attached to ordinary video/image inputs before timeline

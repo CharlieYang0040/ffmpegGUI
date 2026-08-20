@@ -10,6 +10,7 @@
 
 #include <d3d11.h>
 #include <d3d11_4.h>
+#include <dxgi.h>
 
 #include <algorithm>
 #include <utility>
@@ -59,6 +60,52 @@ void VideoPreviewItem::submitFrame(ffgui::PreviewVideoFrame frame) {
     }
 }
 
+QPointF VideoPreviewItem::videoUvFromItem(qreal x, qreal y) const {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    {
+        std::scoped_lock lock(frame_mutex_);
+        width = render_frame_.width != 0 ? render_frame_.width : pending_frame_.width;
+        height = render_frame_.height != 0 ? render_frame_.height : pending_frame_.height;
+    }
+    const auto bounds = boundingRect();
+    if (width == 0 || height == 0 || bounds.width() <= 0 || bounds.height() <= 0) {
+        return {-1.0, -1.0};
+    }
+    QRectF target = bounds;
+    const auto sourceAspect = static_cast<qreal>(width) / static_cast<qreal>(height);
+    const auto targetAspect = target.width() / target.height();
+    if (sourceAspect > targetAspect) {
+        const auto fittedHeight = target.width() / sourceAspect;
+        target.setY((target.height() - fittedHeight) / 2.0);
+        target.setHeight(fittedHeight);
+    } else {
+        const auto fittedWidth = target.height() * sourceAspect;
+        target.setX((target.width() - fittedWidth) / 2.0);
+        target.setWidth(fittedWidth);
+    }
+    if (x < target.left() || y < target.top() || x >= target.right() || y >= target.bottom()) {
+        return {-1.0, -1.0};
+    }
+    return {
+        (x - target.left()) / target.width(),
+        (y - target.top()) / target.height()};
+}
+
+bool VideoPreviewItem::noteDeviceRemoved(long status) {
+    if (SUCCEEDED(static_cast<HRESULT>(status))) return false;
+    if (device_lost_) return true;
+    device_lost_ = true;
+    qWarning().noquote() << "D3D11 preview device removed"
+                         << Qt::hex << static_cast<quint32>(status);
+    QMetaObject::invokeMethod(this, [this] {
+        emit deviceLostChanged();
+        emit gpuDeviceRemoved();
+    }, Qt::QueuedConnection);
+    invalidateGraphics();
+    return true;
+}
+
 QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     auto* root = oldNode != nullptr ? oldNode : new QSGNode();
     auto* node = static_cast<QSGSimpleTextureNode*>(root->firstChild());
@@ -89,6 +136,10 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
             texture = window()->createTextureFromImage(image);
         } else if (next.texture != nullptr) {
             auto* qtDevice = reinterpret_cast<ID3D11Device*>(devicePointer());
+            if (qtDevice != nullptr &&
+                noteDeviceRemoved(static_cast<long>(qtDevice->GetDeviceRemovedReason()))) {
+                return root;
+            }
             if (next.device != qtDevice || qtDevice == nullptr) return root;
             auto* sourceTexture = static_cast<ID3D11Texture2D*>(next.texture);
             D3D11_TEXTURE2D_DESC sourceDescription{};
@@ -116,7 +167,8 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
                 displayDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
                 const auto created = qtDevice->CreateTexture2D(
                     &displayDescription, nullptr, &display_texture_);
-                if (FAILED(created) || display_texture_ == nullptr) {
+                if (noteDeviceRemoved(static_cast<long>(created)) ||
+                    FAILED(created) || display_texture_ == nullptr) {
                     qWarning().noquote() << "D3D11 preview bridge texture creation failed"
                                          << Qt::hex << created;
                     return root;
@@ -144,6 +196,9 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
                     next.texture_subresource,
                     nullptr);
                 context->Release();
+                if (noteDeviceRemoved(static_cast<long>(qtDevice->GetDeviceRemovedReason()))) {
+                    return root;
+                }
                 if (node == nullptr) {
                     texture = QNativeInterface::QSGD3D11Texture::fromNative(
                         display_texture_,

@@ -19,7 +19,11 @@ struct ScopeAnalysis final {
 
     std::uint64_t serial{};
     ScopeReferenceStage stage{ScopeReferenceStage::post_display};
+    bool scene_referred{};
+    bool approximate{};
     std::size_t sampled_pixels{};
+    std::size_t out_of_gamut_pixels{};
+    float peak_luma{};
     std::array<std::array<std::uint32_t, histogram_bins>, 4> histogram{};
     std::vector<std::uint16_t> waveform;
     std::array<std::vector<std::uint16_t>, 3> rgb_parade;

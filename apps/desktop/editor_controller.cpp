@@ -7,6 +7,8 @@
 #include "color/color_frame_processor.hpp"
 #include "color/grade_processor.hpp"
 #include "color/ocio_engine.hpp"
+#include "color/review_tools.hpp"
+#include "color/scope_analyzer.hpp"
 
 #include <QFile>
 #include <QCoreApplication>
@@ -19,6 +21,7 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QJSEngine>
+#include <QPointF>
 #include <QSaveFile>
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -34,8 +37,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <optional>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -70,6 +76,44 @@ ffgui::TimeNs parseTime(const QJsonValue& value, const char* field) {
         throw std::runtime_error(std::string("invalid project time field: ") + field);
     }
     return static_cast<ffgui::TimeNs>(parsed);
+}
+
+ffgui::FloatImageFrame packed_8bit_to_float(
+    const std::uint8_t* pixels, std::size_t width, std::size_t height, std::size_t stride,
+    bool bgra) {
+    ffgui::FloatImageFrame frame;
+    frame.width = static_cast<int>(width);
+    frame.height = static_cast<int>(height);
+    frame.rgba.resize(width * height * 4);
+    for (std::size_t y = 0; y < height; ++y) {
+        const auto* row = pixels + y * stride;
+        for (std::size_t x = 0; x < width; ++x) {
+            const auto* pixel = row + x * 4;
+            auto* output = frame.rgba.data() + (y * width + x) * 4;
+            output[0] = static_cast<float>(bgra ? pixel[2] : pixel[0]) / 255.0F;
+            output[1] = static_cast<float>(pixel[1]) / 255.0F;
+            output[2] = static_cast<float>(bgra ? pixel[0] : pixel[2]) / 255.0F;
+            output[3] = static_cast<float>(pixel[3]) / 255.0F;
+        }
+    }
+    return frame;
+}
+
+void invert_display_to_working(
+    ffgui::FloatImageFrame& frame, const ffgui::ColorPipelineSettings& settings,
+    const std::string& output_space) {
+    ffgui::OcioEngine ocio(settings);
+    if (ffgui::uses_display_view(settings)) {
+        ocio.transform_display_view_rgba32f(
+            frame.rgba.data(), static_cast<std::size_t>(frame.width),
+            static_cast<std::size_t>(frame.height), settings.working_space,
+            settings.display, settings.view, true);
+    } else if (!output_space.empty() && output_space != settings.working_space) {
+        ocio.transform_rgba32f(
+            frame.rgba.data(), static_cast<std::size_t>(frame.width),
+            static_cast<std::size_t>(frame.height), output_space, settings.working_space);
+    }
+    frame.color_space = settings.working_space;
 }
 
 QString mediaKindName(ffgui::MediaKind kind) {
@@ -408,15 +452,13 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 video_frame_delivery_queued_ = false;
             }
             if (!frame.has_value()) return;
-            if (auto* item = qobject_cast<VideoPreviewItem*>(video_item_)) {
-                ++video_frames_delivered_;
-                if (video_frames_delivered_ == 1) {
-                    qInfo().noquote() << "first preview frame delivered to Qt item"
-                                      << "cpu=" << (frame->cpu_pixels != nullptr)
-                                      << "size=" << frame->width << "x" << frame->height;
-                }
-                item->submitFrame(std::move(frame.value()));
+            ++video_frames_delivered_;
+            if (video_frames_delivered_ == 1) {
+                qInfo().noquote() << "first preview frame delivered to Qt item"
+                                  << "cpu=" << (frame->cpu_pixels != nullptr)
+                                  << "size=" << frame->width << "x" << frame->height;
             }
+            presentPreviewFrame(std::move(*frame));
         }, Qt::QueuedConnection);
     });
     player_->set_scope_frame_callback([this](ffgui::PreviewVideoFrame frame) {
@@ -576,18 +618,15 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 setStatus(result.error);
                 stopFloatPlayback();
             } else if (result.generation == float_scrub_generation_) {
-                auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
-                if (item != nullptr) {
-                    auto scopeFrame = result.frame;
-                    ++scrub_frames_submitted_;
-                    item->submitFrame(std::move(result.frame));
-                    if (scopes_visible_) submitScopeFrame(std::move(scopeFrame));
-                    if (result.requested_frame != result.resolved_frame) {
-                        setStatus(QStringLiteral("누락 프레임 %1 · %2 프레임으로 대체")
-                            .arg(result.requested_frame).arg(result.resolved_frame));
-                    } else if (!float_playback_running_) {
-                        setStatus(QStringLiteral("원본 float 프레임 표시 완료"));
-                    }
+                auto scopeFrame = result.frame;
+                ++scrub_frames_submitted_;
+                presentPreviewFrame(std::move(result.frame));
+                if (scopes_visible_) submitScopeFrame(std::move(scopeFrame));
+                if (result.requested_frame != result.resolved_frame) {
+                    setStatus(QStringLiteral("누락 프레임 %1 · %2 프레임으로 대체")
+                        .arg(result.requested_frame).arg(result.resolved_frame));
+                } else if (!float_playback_running_) {
+                    setStatus(QStringLiteral("원본 float 프레임 표시 완료"));
                 }
             }
             if (pending_float_scrub_ns_.has_value()) {
@@ -634,12 +673,10 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 return;
             } else if (result.generation == preview_generation_) {
                 ++float_video_frames_processed_;
-                if (auto* item = qobject_cast<VideoPreviewItem*>(video_item_)) {
-                    auto scopeFrame = result.frame;
-                    ++video_frames_delivered_;
-                    item->submitFrame(std::move(result.frame));
-                    if (scopes_visible_) submitScopeFrame(std::move(scopeFrame));
-                }
+                auto scopeFrame = result.frame;
+                ++video_frames_delivered_;
+                presentPreviewFrame(std::move(result.frame));
+                if (scopes_visible_) submitScopeFrame(std::move(scopeFrame));
                 if (float_video_frames_processed_ <= 2 || result.elapsed_ms >= 100) {
                     qInfo().noquote() << "float video frame completed"
                                       << "count=" << float_video_frames_processed_
@@ -663,6 +700,10 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 if (auto* item = qobject_cast<ColorScopeItem*>(scope_item_)) {
                     item->submitAnalysis(*result.analysis);
                     ++scope_frames_analyzed_;
+                    last_scope_approximate_ = result.analysis->approximate;
+                    out_of_gamut_percent_ = result.analysis->sampled_pixels == 0 ? 0.0
+                        : 100.0 * static_cast<qreal>(result.analysis->out_of_gamut_pixels) /
+                            static_cast<qreal>(result.analysis->sampled_pixels);
                     emit scopeFrameChanged();
                 }
             } else if (!result.error.isEmpty()) {
@@ -1501,6 +1542,9 @@ void EditorController::attachVideoItem(QObject* item) {
     connect(videoItem, &VideoPreviewItem::framePresented, this, [this](quint64) {
         ++video_frames_presented_;
     });
+    connect(videoItem, &VideoPreviewItem::gpuDeviceRemoved, this, [this] {
+        recoverCpuPreview();
+    });
 #ifdef FFGUI_HAS_GES
     if (use_d3d_scene_graph_) {
         connect(videoItem, &VideoPreviewItem::d3d11DeviceReady, this, [this](quintptr device) {
@@ -1546,6 +1590,46 @@ void EditorController::setScopeMode(int mode) {
     scope_mode_ = clamped;
     if (auto* item = qobject_cast<ColorScopeItem*>(scope_item_)) item->setMode(scope_mode_);
     emit scopeSettingsChanged();
+}
+
+void EditorController::setScopeReferenceStage(int stage) {
+    const auto clamped = std::clamp(stage, 0, 2);
+    if (scope_reference_stage_ == clamped) return;
+    scope_reference_stage_ = clamped;
+    emit scopeSettingsChanged();
+#ifdef FFGUI_HAS_GES
+    if (scopes_visible_ && !timeline_.clips().empty()) {
+        pending_preview_seek_ = playhead_ns_;
+        queuePreviewOperation(false);
+        if (!float_playback_running_) startFloatScrubFrame(playhead_ns_);
+    }
+#endif
+    emit scopeFrameChanged();
+}
+
+void EditorController::setReviewOverlayMode(int mode) {
+    const auto clamped = std::clamp(mode, 0, 2);
+    const auto value = static_cast<ffgui::ReviewOverlayMode>(clamped);
+    if (review_overlay_mode_ == value) return;
+    review_overlay_mode_ = value;
+    emit scopeSettingsChanged();
+#ifdef FFGUI_HAS_GES
+    if (!timeline_.clips().empty()) {
+        pending_preview_seek_ = playhead_ns_;
+        queuePreviewOperation(false);
+        if (!float_playback_running_) startFloatScrubFrame(playhead_ns_);
+    }
+#endif
+}
+
+QString EditorController::scopeStageHint() const {
+    if (last_scope_approximate_) {
+        return QStringLiteral("일반 영상 그레이드 전은 표시 변환만 되돌린 근사입니다");
+    }
+    if (scope_reference_stage_ != 2) {
+        return QStringLiteral("장면 참조 · ACEScct 인코딩");
+    }
+    return QStringLiteral("디스플레이 참조 · 코드 값");
 }
 
 void EditorController::loadFiles(const QStringList& paths) {
@@ -1771,13 +1855,14 @@ void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
     if (asset == nullptr || !asset->image_sequence().has_value()) return;
     const auto timeline = timeline_;
     const auto settings = color_pipeline_;
-    const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
-        ? std::string{}
-        : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
+    const auto outputSpace = ffgui::resolved_color_output_space(settings);
+    const auto compare = preview_compare_enabled_ &&
+        settings.mode != ffgui::ColorPipelineMode::legacy &&
+        !settings.display_transform_bypassed;
     const auto generation = ++float_scrub_generation_;
     float_scrub_active_ = true;
     float_scrub_watcher_.setFuture(QtConcurrent::run(
-        [this, timeline, settings, outputSpace, timelinePosition, generation] {
+        [this, timeline, settings, outputSpace, timelinePosition, generation, compare] {
             FloatScrubResult result;
             result.generation = generation;
             QElapsedTimer elapsed;
@@ -1785,6 +1870,15 @@ void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
             try {
                 auto rendered = timeline_frame_server_.render(
                     timeline, timelinePosition, settings, outputSpace);
+                if (compare) {
+                    auto graded = timeline_frame_server_.render(
+                        timeline, timelinePosition, settings, outputSpace,
+                        ffgui::ColorProcessStage::post_grade);
+                    ffgui::wipe_rgba32f(
+                        rendered.processed.rgba.data(), graded.processed.rgba.data(),
+                        static_cast<std::size_t>(rendered.processed.width),
+                        static_cast<std::size_t>(rendered.processed.height));
+                }
                 result.requested_frame = rendered.requested_sequence_frame;
                 result.resolved_frame = rendered.resolved_sequence_frame;
                 const auto& processed = rendered.processed;
@@ -1860,7 +1954,7 @@ void EditorController::submitCachedScrubFrame(qint64 timelinePosition) {
     frame.pts = timelinePosition;
     frame.serial = ++scrub_frame_serial_;
     ++scrub_frames_submitted_;
-    item->submitFrame(std::move(frame));
+    presentPreviewFrame(std::move(frame));
 #else
     static_cast<void>(timelinePosition);
 #endif
@@ -1991,9 +2085,7 @@ void EditorController::startFloatVideoFrame(ffgui::PreviewVideoFrame frame) {
     const auto settings = color_pipeline_;
     const auto grade = color_pipeline_.mode == ffgui::ColorPipelineMode::legacy
         ? clip->grade : ffgui::compose_clip_grade(*clip);
-    const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
-        ? std::string{}
-        : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
+    const auto outputSpace = ffgui::resolved_color_output_space(settings);
     const auto generation = preview_generation_;
     const auto sourceTime = mapped->source_time;
     float_video_active_ = true;
@@ -2062,6 +2154,84 @@ void EditorController::startFloatVideoFrame(ffgui::PreviewVideoFrame frame) {
 #endif
 }
 
+void EditorController::storeInspectableFrame(const ffgui::PreviewVideoFrame& frame) {
+    if (frame.cpu_pixels == nullptr || frame.cpu_format != ffgui::PreviewCpuFormat::bgra8) return;
+    std::scoped_lock lock(inspect_mutex_);
+    inspect_width_ = frame.width;
+    inspect_height_ = frame.height;
+    inspect_stride_ = frame.cpu_stride;
+    inspect_bgra_ = frame.cpu_pixels;
+    inspect_rgba_.clear();
+}
+
+void EditorController::presentPreviewFrame(ffgui::PreviewVideoFrame frame) {
+    storeInspectableFrame(frame);
+    auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
+    if (item == nullptr) return;
+    if (review_overlay_mode_ != ffgui::ReviewOverlayMode::off &&
+        frame.cpu_pixels != nullptr && frame.cpu_format == ffgui::PreviewCpuFormat::bgra8) {
+        auto overlay = frame;
+        overlay.cpu_pixels = std::make_shared<std::vector<std::uint8_t>>(*frame.cpu_pixels);
+        ffgui::apply_review_overlay_bgra8(
+            overlay.cpu_pixels->data(), overlay.width, overlay.height, overlay.cpu_stride,
+            review_overlay_mode_);
+        item->submitFrame(std::move(overlay));
+        return;
+    }
+    item->submitFrame(std::move(frame));
+}
+
+void EditorController::recoverCpuPreview() {
+    if (cpu_preview_fallback_ || !use_d3d_scene_graph_) return;
+    use_d3d_scene_graph_ = false;
+    cpu_preview_fallback_ = true;
+#ifdef FFGUI_HAS_GES
+    player_->set_d3d11_device(nullptr);
+    player_->set_video_sink_factory("cpu-appsink");
+    preview_applied_generation_.reset();
+    if (!preview_snapshot_.empty()) queuePreviewOperation(true);
+#endif
+    emit previewPathChanged();
+    setStatus(QStringLiteral("GPU 장치가 제거되어 CPU 미리보기로 복구했습니다"));
+}
+
+void EditorController::inspectPreviewPixel(qreal x, qreal y) {
+    auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
+    QPointF uv = item != nullptr
+        ? item->videoUvFromItem(x * item->width(), y * item->height())
+        : QPointF(x, y);
+    if (uv.x() < 0.0 || uv.y() < 0.0) {
+        if (!pixel_inspector_text_.isEmpty()) {
+            pixel_inspector_text_.clear();
+            emit scopeFrameChanged();
+        }
+        return;
+    }
+    ffgui::PixelInspection inspection;
+    {
+        std::scoped_lock lock(inspect_mutex_);
+        if (!inspect_rgba_.empty() && inspect_width_ > 0 && inspect_height_ > 0) {
+            inspection = ffgui::inspect_rgba32f(
+                inspect_rgba_.data(), inspect_width_, inspect_height_,
+                std::min(inspect_width_ - 1,
+                    static_cast<std::uint32_t>(uv.x() * inspect_width_)),
+                std::min(inspect_height_ - 1,
+                    static_cast<std::uint32_t>(uv.y() * inspect_height_)));
+        } else if (inspect_bgra_ != nullptr && inspect_width_ > 0 && inspect_height_ > 0) {
+            inspection = ffgui::inspect_bgra8(
+                inspect_bgra_->data(), inspect_width_, inspect_height_, inspect_stride_,
+                std::min(inspect_width_ - 1,
+                    static_cast<std::uint32_t>(uv.x() * inspect_width_)),
+                std::min(inspect_height_ - 1,
+                    static_cast<std::uint32_t>(uv.y() * inspect_height_)));
+        }
+    }
+    const auto text = QString::fromStdString(ffgui::format_pixel_inspection(inspection));
+    if (pixel_inspector_text_ == text) return;
+    pixel_inspector_text_ = text;
+    emit scopeFrameChanged();
+}
+
 void EditorController::submitScopeFrame(ffgui::PreviewVideoFrame frame) {
 #ifdef FFGUI_HAS_GES
     const bool cpuFrame = frame.cpu_format == ffgui::PreviewCpuFormat::bgra8 &&
@@ -2081,18 +2251,52 @@ void EditorController::submitScopeFrame(ffgui::PreviewVideoFrame frame) {
 void EditorController::startScopeFrame(ffgui::PreviewVideoFrame frame) {
 #ifdef FFGUI_HAS_GES
     scope_active_ = true;
-    scope_watcher_.setFuture(QtConcurrent::run([frame = std::move(frame)]() mutable {
+    const auto stage = static_cast<ffgui::ScopeReferenceStage>(scope_reference_stage_);
+    const auto processStage = static_cast<ffgui::ColorProcessStage>(scope_reference_stage_);
+    const auto settings = color_pipeline_;
+    const auto outputSpace = ffgui::resolved_color_output_space(settings);
+    const auto timeline = timeline_;
+    const auto playhead = playhead_ns_;
+    auto* server = &timeline_frame_server_;
+    scope_watcher_.setFuture(QtConcurrent::run(
+        [frame = std::move(frame), stage, processStage, settings, outputSpace, timeline, playhead,
+         server]() mutable {
         ScopeResult result;
         try {
+            const auto mapped = timeline.locate(playhead);
+            const auto* asset = mapped.has_value() ? timeline.asset(mapped->asset_id) : nullptr;
+            if (asset != nullptr && asset->image_sequence().has_value()) {
+                auto rendered = server->render(
+                    timeline, playhead, settings, outputSpace, processStage);
+                result.analysis = std::make_shared<ffgui::ScopeAnalysis>(
+                    ffgui::analyze_scope_float(rendered.processed, frame.serial, stage));
+                return result;
+            }
+
+            auto analyzeDisplayOrWorking = [&](
+                const std::uint8_t* pixels, std::size_t width, std::size_t height,
+                std::size_t stride, bool bgra) {
+                if (stage == ffgui::ScopeReferenceStage::post_display ||
+                    settings.mode == ffgui::ColorPipelineMode::legacy) {
+                    return bgra
+                        ? ffgui::analyze_scope_bgra8(pixels, width, height, stride, frame.serial, stage)
+                        : ffgui::analyze_scope_rgba8(pixels, width, height, stride, frame.serial, stage);
+                }
+                auto working = packed_8bit_to_float(pixels, width, height, stride, bgra);
+                invert_display_to_working(working, settings, outputSpace);
+                auto analysis = ffgui::analyze_scope_float(working, frame.serial, stage);
+                analysis.approximate = stage == ffgui::ScopeReferenceStage::pre_grade;
+                return analysis;
+            };
+
             if (frame.cpu_pixels != nullptr) {
                 const auto expected = static_cast<std::size_t>(frame.cpu_stride) * frame.height;
                 if (frame.cpu_pixels->size() < expected) {
                     throw std::invalid_argument("scope frame storage is invalid");
                 }
                 result.analysis = std::make_shared<ffgui::ScopeAnalysis>(
-                    ffgui::analyze_scope_bgra8(
-                        frame.cpu_pixels->data(), frame.width, frame.height, frame.cpu_stride,
-                        frame.serial, ffgui::ScopeReferenceStage::post_display));
+                    analyzeDisplayOrWorking(
+                        frame.cpu_pixels->data(), frame.width, frame.height, frame.cpu_stride, true));
             } else {
                 auto* sample = static_cast<GstSample*>(frame.sample.get());
                 auto* buffer = sample != nullptr ? gst_sample_get_buffer(sample) : nullptr;
@@ -2130,13 +2334,8 @@ void EditorController::startScopeFrame(ffgui::PreviewVideoFrame frame) {
                 }
                 std::optional<ffgui::ScopeAnalysis> analysis;
                 try {
-                    analysis = format == GST_VIDEO_FORMAT_RGBA
-                        ? ffgui::analyze_scope_rgba8(
-                            map.data, width, height, stride, frame.serial,
-                            ffgui::ScopeReferenceStage::post_display)
-                        : ffgui::analyze_scope_bgra8(
-                            map.data, width, height, stride, frame.serial,
-                            ffgui::ScopeReferenceStage::post_display);
+                    analysis = analyzeDisplayOrWorking(
+                        map.data, width, height, stride, format == GST_VIDEO_FORMAT_BGRA);
                 } catch (...) {
                     gst_buffer_unmap(buffer, &map);
                     throw;
@@ -2177,9 +2376,7 @@ void EditorController::startFloatExport() {
     const auto timeline = timeline_;
     const auto settings = color_pipeline_;
     const auto request = *export_request_;
-    const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
-        ? std::string{}
-        : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
+    const auto outputSpace = ffgui::resolved_color_output_space(settings);
     const auto* firstAsset = timeline.asset(timeline.clips().front().asset_id);
     const auto sourceRate = firstAsset->image_sequence()->frame_rate.value();
     const auto fps = request.gif.enabled
@@ -3624,6 +3821,16 @@ QString EditorController::colorPipelineSummary() const {
     if (color_pipeline_.mode == ffgui::ColorPipelineMode::legacy) {
         return QStringLiteral("현재 색 유지 · Legacy");
     }
+    if (color_pipeline_.display_transform_bypassed) {
+        return color_pipeline_.mode == ffgui::ColorPipelineMode::aces_managed
+            ? QStringLiteral("ACEScg · 표시 변환 우회")
+            : QStringLiteral("OCIO · 표시 변환 우회");
+    }
+    if (!color_pipeline_.display.empty() && !color_pipeline_.view.empty()) {
+        return QStringLiteral("%1 · %2")
+            .arg(QString::fromStdString(color_pipeline_.display),
+                 QString::fromStdString(color_pipeline_.view));
+    }
     if (color_pipeline_.mode == ffgui::ColorPipelineMode::aces_managed) {
         return color_pipeline_.hdr_monitoring
             ? QStringLiteral("ACEScg · HDR 모니터") : QStringLiteral("ACEScg · SDR 모니터");
@@ -3645,6 +3852,107 @@ QStringList EditorController::inputColorSpaceOptions() const {
     } catch (...) {
         return {};
     }
+}
+
+QStringList EditorController::displayOptions() const {
+    try {
+        auto settings = color_pipeline_;
+        if (settings.mode == ffgui::ColorPipelineMode::legacy) {
+            settings.mode = ffgui::ColorPipelineMode::aces_managed;
+        }
+        const auto values = ffgui::OcioEngine(settings).displays();
+        QStringList result;
+        result.reserve(static_cast<qsizetype>(values.size()));
+        for (const auto& value : values) result.push_back(QString::fromStdString(value));
+        return result;
+    } catch (...) {
+        return {};
+    }
+}
+
+QStringList EditorController::viewOptions() const {
+    try {
+        auto settings = color_pipeline_;
+        if (settings.mode == ffgui::ColorPipelineMode::legacy) {
+            settings.mode = ffgui::ColorPipelineMode::aces_managed;
+        }
+        ffgui::OcioEngine engine(settings);
+        auto display = color_pipeline_.display;
+        if (display.empty()) display = engine.default_display();
+        const auto values = engine.views(display);
+        QStringList result;
+        result.reserve(static_cast<qsizetype>(values.size()));
+        for (const auto& value : values) result.push_back(QString::fromStdString(value));
+        return result;
+    } catch (...) {
+        return {};
+    }
+}
+
+void EditorController::syncOutputSpaceFromDisplayView() {
+    if (color_pipeline_.mode == ffgui::ColorPipelineMode::legacy ||
+        color_pipeline_.display.empty() || color_pipeline_.view.empty()) {
+        return;
+    }
+    try {
+        const auto space = ffgui::OcioEngine(color_pipeline_).display_view_color_space(
+            color_pipeline_.display, color_pipeline_.view);
+        if (!space.empty()) color_pipeline_.output_space = space;
+    } catch (...) {
+    }
+}
+
+void EditorController::setDisplayName(const QString& name) {
+    const auto value = name.toStdString();
+    if (color_pipeline_.display == value) return;
+    color_pipeline_.display = value;
+    try {
+        ffgui::OcioEngine engine(color_pipeline_);
+        const auto views = engine.views(color_pipeline_.display);
+        if (std::ranges::find(views, color_pipeline_.view) == views.end()) {
+            color_pipeline_.view = engine.default_view(color_pipeline_.display);
+            if (color_pipeline_.view.empty() && !views.empty()) {
+                color_pipeline_.view = views.front();
+            }
+        }
+    } catch (...) {
+    }
+    syncOutputSpaceFromDisplayView();
+    emit colorPipelineChanged();
+    publishColorPreview();
+    setStatus(QStringLiteral("모니터 Display를 %1(으)로 설정했습니다").arg(name));
+}
+
+void EditorController::setViewName(const QString& name) {
+    const auto value = name.toStdString();
+    if (color_pipeline_.view == value) return;
+    color_pipeline_.view = value;
+    syncOutputSpaceFromDisplayView();
+    emit colorPipelineChanged();
+    publishColorPreview();
+    setStatus(QStringLiteral("모니터 View를 %1(으)로 설정했습니다").arg(name));
+}
+
+void EditorController::setDisplayTransformBypassed(bool bypassed) {
+    if (color_pipeline_.display_transform_bypassed == bypassed) return;
+    color_pipeline_.display_transform_bypassed = bypassed;
+    emit colorPipelineChanged();
+    publishColorPreview();
+    setStatus(bypassed
+        ? QStringLiteral("표시 변환을 우회합니다")
+        : QStringLiteral("표시 변환을 적용합니다"));
+}
+
+void EditorController::setPreviewCompareEnabled(bool enabled) {
+    if (preview_compare_enabled_ == enabled) return;
+    preview_compare_enabled_ = enabled;
+    emit colorPipelineChanged();
+#ifdef FFGUI_HAS_GES
+    if (!float_playback_running_) startFloatScrubFrame(playhead_ns_);
+#endif
+    setStatus(enabled
+        ? QStringLiteral("표시 변환 적용 전후를 좌우로 비교합니다")
+        : QStringLiteral("표시 변환 비교를 껐습니다"));
 }
 
 void EditorController::setColorPipelineMode(int mode) {
@@ -4092,10 +4400,7 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     }) && timeline_.captions().empty() && !stamp_enabled_;
     export_color_lut_paths_.clear();
     if (!floatOnly) {
-        const auto outputSpace = color_pipeline_.mode == ffgui::ColorPipelineMode::legacy
-            ? std::string{}
-            : color_pipeline_.output_space.empty()
-                ? std::string{"sRGB - Display"} : color_pipeline_.output_space;
+        const auto outputSpace = ffgui::resolved_color_output_space(color_pipeline_);
         try {
             const int clutFps = request.gif.enabled ? std::max(1, request.gif.fps) :
                 (request.output_fps > 0 ? request.output_fps : 30);
@@ -4448,10 +4753,7 @@ void EditorController::startPreviewOperation() {
                               << "play=" << shouldPlay;
             try {
                 if (colorOnly) {
-                    const auto outputSpace = colorSettings.mode == ffgui::ColorPipelineMode::legacy
-                        ? std::string{}
-                        : colorSettings.output_space.empty()
-                            ? std::string{"sRGB - Display"} : colorSettings.output_space;
+                    const auto outputSpace = ffgui::resolved_color_output_space(colorSettings);
                     player->set_color_pipeline(colorSettings, outputSpace);
                     if (player->update_source_color(spans)) {
                         result.success = true;
@@ -4519,11 +4821,7 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     player_->set_legacy_source_color_enabled(
         color_pipeline_.mode == ffgui::ColorPipelineMode::legacy);
     player_->set_color_pipeline(
-        color_pipeline_, color_pipeline_.mode == ffgui::ColorPipelineMode::legacy
-            ? std::string{}
-            : color_pipeline_.output_space.empty()
-                ? std::string{"sRGB - Display"}
-                : color_pipeline_.output_space);
+        color_pipeline_, ffgui::resolved_color_output_space(color_pipeline_));
     player_->set_float_output_enabled(requiresFloatVideoPreview());
 #endif
     if (resetPlayhead) {

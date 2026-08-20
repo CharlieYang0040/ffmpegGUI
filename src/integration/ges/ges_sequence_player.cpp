@@ -956,6 +956,12 @@ void GesSequencePlayer::set_d3d11_device(void* device) {
     d3d11_device_handle_.store(device, std::memory_order_release);
 }
 
+void GesSequencePlayer::set_video_sink_factory(std::string factory) {
+    if (factory.empty()) factory = "fakesink";
+    std::scoped_lock lock(mutex_);
+    video_sink_factory_ = std::move(factory);
+}
+
 void GesSequencePlayer::set_video_frame_callback(
     std::function<void(PreviewVideoFrame)> callback) {
     std::scoped_lock lock(callback_mutex_);

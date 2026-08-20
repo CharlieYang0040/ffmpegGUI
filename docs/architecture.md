@@ -114,7 +114,9 @@ D3D11 장치를 쓰고 멀티스레드 보호를 켠 상태에서 셰이더 리�
 표시 138프레임, 4K H.264/HEVC는 수신·전달·표시 122프레임을 확인했다.
 
 `FFGUI_FORCE_CPU_PREVIEW=1`은 드라이버·원격 데스크톱 호환성 진단을 위한 안전 경로다.
-이 모드도 실제 노출 창에서 CPU BGRA 프레임 표시를 별도로 회귀한다.
+이 모드도 실제 노출 창에서 CPU BGRA 프레임 표시를 별도로 회귀한다. 런타임에 D3D11 장치가
+제거되면 Scene Graph가 `GetDeviceRemovedReason`을 보고 CPU appsink로 파이프라인을 다시
+만들어 미리보기를 이어 간다.
 
 GradeGraph 또는 관리형 컬러가 필요한 일반 영상은 입력→working space→GradeGraph→표시 변환을
 소스별 `RGBA64_LE` top effect에서 수행한다. 관리형 GPU 경로는 OCIO 2.5가 생성한 입력·출력
@@ -311,14 +313,20 @@ FFmpeg 종료 코드 0 이후에도 FFprobe JSON으로 영상 스트림 존재 �
 
 ## 프로그램 모니터 컬러 스코프
 
-Waveform, RGB Parade, Vectorscope, Histogram은 프로그램 모니터에 실제로 전달된
-display-referred 프레임을 공통 `ScopeAnalyzer`로 분석한다. CPU BGRA, GPU RGBA와 float
-입력은 채널 순서만 정규화하고 같은 누적기를 사용하므로 같은 픽셀은 같은 결과를 만든다.
+Waveform, RGB Parade, Vectorscope, Histogram은 선택한 기준점의 픽셀을 공통
+`ScopeAnalyzer`로 분석한다. `디스플레이 변환 후`는 프로그램 모니터 표시 픽셀이고,
+`그레이드 후`/`그레이드 전`은 작업 색공간 값을 ACEScct로 인코딩한 장면 참조 눈금이다.
+이미지 시퀀스는 원본 float를 해당 단계에서 다시 처리한다. 일반 영상 합성 프레임의
+그레이드 전은 표시 변환만 되돌리므로 근사 표시다. CPU BGRA, GPU RGBA와 float 입력은
+채널 순서만 정규화하고 같은 누적기를 사용한다.
 D3D11 경로는 스코프용 `tee`나 보조 sink를 재생 그래프에 추가하지 않는다. Qt에 전달되는
 같은 `GstSample`의 수명을 공유하고 최대 10fps만 작업 스레드에서 system-memory map하여
 메인 appsink의 재생 시계, 프리롤과 프레임 전달률을 보존한다. 분석이 늦으면 대기열을
 쌓지 않고 최신 프레임 하나로 교체한다. CPU 및 float 프레임은 이미 독립 복사된 픽셀을
 재사용한다. 패널이 닫혀 있을 때는 GPU readback과 분석을 모두 중단한다.
+프로젝트 Display/View와 표시 변환 우회는 미리보기 LUT/셰이더와 최종 출력 큐브가 같은
+`resolved_color_output_space`를 쓰게 한다. 이미지 시퀀스 비교 모드는 그레이드 후 프레임을
+왼쪽 절반에 덮어 표시 변환 전후를 한 화면에서 본다.
 
 ## 편집 리비전과 작업 격리
 

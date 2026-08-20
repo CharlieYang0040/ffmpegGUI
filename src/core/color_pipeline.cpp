@@ -20,6 +20,19 @@ void ColorPipelineSettings::validate() const {
     }
 }
 
+bool uses_display_view(const ColorPipelineSettings& settings) noexcept {
+    return settings.mode != ColorPipelineMode::legacy &&
+        !settings.display_transform_bypassed &&
+        !settings.display.empty() && !settings.view.empty();
+}
+
+std::string resolved_color_output_space(const ColorPipelineSettings& settings) {
+    if (settings.mode == ColorPipelineMode::legacy) return {};
+    if (settings.display_transform_bypassed) return settings.working_space;
+    if (!settings.output_space.empty()) return settings.output_space;
+    return "sRGB - Display";
+}
+
 bool GradeNode::lut_representable() const noexcept {
     return type != GradeNodeType::qualifier && type != GradeNodeType::power_window;
 }

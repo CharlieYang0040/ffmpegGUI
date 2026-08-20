@@ -10,6 +10,10 @@ namespace ffgui {
 
 enum class ColorPipelineMode { legacy, aces_managed, custom_ocio };
 
+enum class ColorProcessStage { pre_grade, post_grade, post_display };
+
+enum class ReviewOverlayMode { off, gamut_warning, false_color };
+
 struct ColorPipelineSettings final {
     ColorPipelineMode mode{ColorPipelineMode::legacy};
     std::string ocio_config_path;
@@ -27,6 +31,9 @@ struct ColorPipelineSettings final {
     bool operator==(const ColorPipelineSettings&) const = default;
     void validate() const;
 };
+
+[[nodiscard]] bool uses_display_view(const ColorPipelineSettings& settings) noexcept;
+[[nodiscard]] std::string resolved_color_output_space(const ColorPipelineSettings& settings);
 
 enum class GradeNodeType {
     primary,

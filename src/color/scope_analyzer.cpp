@@ -1,4 +1,5 @@
 #include "color/scope_analyzer.hpp"
+#include "color/review_tools.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -47,12 +48,23 @@ public:
     [[nodiscard]] std::size_t step() const noexcept { return step_; }
 
     void add(std::size_t x, const std::array<float, 3>& rgb) {
-        const auto red = quantize(rgb[0]);
-        const auto green = quantize(rgb[1]);
-        const auto blue = quantize(rgb[2]);
-        const auto lumaValue = std::clamp(
-            rgb[0] * displayLuma[0] + rgb[1] * displayLuma[1] + rgb[2] * displayLuma[2],
-            0.0F, 1.0F);
+        const auto scene = result_.stage != ScopeReferenceStage::post_display;
+        result_.scene_referred = scene;
+        const auto encoded = scene
+            ? std::array<float, 3>{
+                encode_scene_scope_value(rgb[0]),
+                encode_scene_scope_value(rgb[1]),
+                encode_scene_scope_value(rgb[2])}
+            : rgb;
+        const auto lumaLinear = rec709_luma(rgb[0], rgb[1], rgb[2]);
+        result_.peak_luma = std::max(result_.peak_luma, lumaLinear);
+        if (display_out_of_gamut(rgb[0], rgb[1], rgb[2])) ++result_.out_of_gamut_pixels;
+        const auto red = quantize(encoded[0]);
+        const auto green = quantize(encoded[1]);
+        const auto blue = quantize(encoded[2]);
+        const auto lumaValue = scene
+            ? encode_scene_scope_value(lumaLinear)
+            : std::clamp(lumaLinear, 0.0F, 1.0F);
         const auto luma = quantize(lumaValue);
         ++result_.histogram[0][red];
         ++result_.histogram[1][green];
@@ -74,10 +86,10 @@ public:
         }
 
         const auto cb = std::clamp(
-            0.5F + (rgb[2] - lumaValue) / (2.0F * (1.0F - displayLuma[2])),
+            0.5F + (encoded[2] - lumaValue) / (2.0F * (1.0F - displayLuma[2])),
             0.0F, 1.0F);
         const auto cr = std::clamp(
-            0.5F + (rgb[0] - lumaValue) / (2.0F * (1.0F - displayLuma[0])),
+            0.5F + (encoded[0] - lumaValue) / (2.0F * (1.0F - displayLuma[0])),
             0.0F, 1.0F);
         const auto vectorX = static_cast<std::size_t>(std::lround(
             cb * static_cast<float>(ScopeAnalysis::vectorscope_size - 1)));

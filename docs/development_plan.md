@@ -303,10 +303,10 @@
 | M1 출력 워크플로 | 완료 | 프로젝트별 출력 폴더, 최근 경로 상속, 원자적 `v001` 증가, 즉시 출력, 진행률·취소·사전 검사 회귀 | 깨끗한 PC 배포 검증은 최종 릴리스 게이트에서 반복 |
 | M2 GIF·스틸·시퀀스 수집 | 부분 완료 | GIF VFR, 스틸·시퀀스, 음수/1001 시작, 누락 대체, EXR part/view/AOV 선택과 저장·복원 | 혼합 자리수·마지막 누락·대규모 드롭 가져오기 전체 매트릭스, ICC/영상 메타데이터 추정 UX |
 | M3 프록시·캐시 | 부분 완료 | content-addressed EXR 캐시, 48프레임 증분 프록시, 최신 스크럽 요청 병합 | 사용자 캐시 위치·예상 용량·삭제/재생성 UI, 알파 보존 10-bit 중간 코덱 정책, 4K 100ms 목표 측정 |
-| M4 ACES/OCIO | 부분 완료 | Legacy 기본값, OCIO 2.5.2/ACES 2.0, CPU 기준 float 변환, D3D11 OCIO shader와 LUT, 입력 공간 재지정 | 모니터 Display/View 선택, 변환 우회, gamut warning, ACES 적용 전후 비교와 기술 노드 UX |
+| M4 ACES/OCIO | 부분 완료 | Legacy 기본값, OCIO 2.5.2/ACES 2.0, CPU 기준 float 변환, D3D11 OCIO shader와 LUT, 입력 공간 재지정, Display/View·bypass·비교 | 모니터 ICC, ACES 기술 노드 UX 정리 |
 | M4 HDR10 | 미완료 | 프로젝트 HDR 설정과 메타데이터 저장 계약 | scRGB/PQ swapchain, 모니터 이동 재검사, SDR white 보정, HDR fallback, HDR10 파일 메타데이터 검증 |
-| M5 Primary·스코프 | 부분 완료 | Primary 전체 파라미터, RGB Mixer/Curve 공통 렌더, 원본 시간 keyframe의 이미지 시퀀스·일반 영상 미리보기/출력, Waveform/Parade/Vectorscope/Histogram | 스코프 기준점, false color/pixel inspector |
-| M5 고급 그레이딩 | 부분 완료 | Log Wheels, RGB/Hue 곡선군, HDR Zones, Color Warper, 외부 LUT/Look, 공유 grade, 시간 가변 일반 영상의 CPU 큐브 golden patch | 실제 GPU 셰이더 픽셀의 Windows 장치 비교, 스코프 기준점 |
+| M5 Primary·스코프 | 부분 완료 | Primary 전체 파라미터, RGB Mixer/Curve 공통 렌더, 원본 시간 keyframe의 이미지 시퀀스·일반 영상 미리보기/출력, Waveform/Parade/Vectorscope/Histogram, 스코프 기준점, false color/pixel inspector/gamut warning | HDR nits 눈금, 실제 GPU 셰이더 픽셀의 Windows 장치 비교 |
+| M5 고급 그레이딩 | 부분 완료 | Log Wheels, RGB/Hue 곡선군, HDR Zones, Color Warper, 외부 LUT/Look, 공유 grade, 시간 가변 일반 영상의 CPU 큐브 golden patch | 실제 GPU 셰이더 픽셀의 Windows 장치 비교 |
 | M6 LUT·Unreal 전달 | 미완료 | 공통 컬러 결과를 내부 33³ LUT로 베이크하는 기반 | 33³/65³ 외부 Cube, shaper, look/display 구분, `.ocioz`, CLF/CTF, manifest, Unreal 사전 검사·실기 검증 |
 | R1 네이티브 GPU 프레임 | 완료 | native GES asset/effect, D3D11 source download 0회, VFR·2배속·디졸브·오디오 및 fallback 회귀 | 최종 릴리스 GPU 매트릭스에서 반복 검증 |
 | 세컨더리 도구 | 미착수 | 저장·렌더 계약도 아직 확정 전 | qualifier, matte 정리, power window, mask/outside, tracking, shot still, wipe/split, shot matching |
@@ -322,13 +322,14 @@
   Color Warper는 공통 float 기준 렌더와 일반 영상용 GPU LUT 경로를 공유한다.
   2026-08-20에는 그레이드 조절이 전체 GES 재구축과 재생 중단을 일으키던 경로를 제거했고,
   이어서 일반 영상 keyframe도 원본 PTS마다 같은 grade를 평가해 미리보기와 최종 출력에
-  연결했다.
-- **아직 완성 제품으로 볼 수 없는 이유:** Display/View 검수 도구, Windows HDR, Unreal 전달
+  연결했다. 2026-08-20 R3에서는 Display/View·표시 변환 우회·스코프 기준점·검수 오버레이와
+  GPU 장치 제거 시 CPU 복구를 같은 프로젝트 모델에 연결했다.
+- **아직 완성 제품으로 볼 수 없는 이유:** Windows HDR, 모니터 ICC, Unreal 전달
   패키지, qualifier·mask·tracking이 남아 있다. 대규모 입력·깨끗한 PC·여러 GPU·실제 Unreal
   버전의 최종 품질 감사도 수행 전이다.
-- **재개 지점:** R2의 일반 영상 시간 가변 grade는 미리보기·출력·저장·undo/redo와 CPU 큐브
-  golden patch까지 연결했다. 다음은 R3 검수용 표시와 스코프다. 각 단계는 미리보기·출력·
-  저장·undo/redo 회귀가 모두 연결된 경우에만 완료로 바꾼다.
+- **재개 지점:** R3의 검수용 표시와 스코프는 미리보기·출력·저장과 연결했다. 다음은
+  R4 Windows HDR와 HDR10 출력이다. 각 단계는 미리보기·출력·저장·undo/redo 회귀가 모두
+  연결된 경우에만 완료로 바꾼다.
 
 #### 안정 기준선
 
@@ -381,14 +382,16 @@
 샘플을 비교한다. Windows GES GPU/CPU 3경로와 desktop smoke는 릴리스 게이트에서 반복한다.
 다음 기능은 R3 검수용 표시와 스코프다.
 
-#### R3. 검수용 표시와 스코프
+#### R3. 검수용 표시와 스코프 — 완료
 
-- D3D11 장치 제거를 감지해 현재 GPU 자원을 폐기하고 CPU preview로 복구하며, 사용자에게
-  복구 상태를 표시한다. 연속 GPU 회귀 중 `DXGI_ERROR_DEVICE_REMOVED`가 한 차례 관측됐고
-  동일 표시 회귀 5회 연속 및 전체 desktop smoke 재실행은 통과했지만 런타임 복구는 아직 없다.
-- 스코프 입력을 `그레이드 전`, `그레이드 후`, `디스플레이 변환 후`로 명시적으로 선택한다.
-- gamut warning, false color, pixel inspector를 추가하고 SDR/HDR 단위를 분리한다.
-- OCIO Display/View, 모니터 ICC, 표시 변환 bypass와 적용 전후 비교를 프로그램 모니터에 연결한다.
+- [x] D3D11 장치 제거를 감지해 현재 GPU 자원을 폐기하고 CPU preview로 복구하며, 사용자에게
+  복구 상태를 표시한다.
+- [x] 스코프 입력을 `그레이드 전`, `그레이드 후`, `디스플레이 변환 후`로 명시적으로 선택한다.
+- [x] gamut warning, false color, pixel inspector를 추가하고 장면/디스플레이 단위를 분리한다.
+- [x] OCIO Display/View, 표시 변환 bypass와 적용 전후 비교를 프로그램 모니터에 연결한다.
+- 모니터 ICC 프로파일 연결은 R4 HDR 표시와 함께 이어간다. 일반 영상 그레이드 전 스코프는
+  합성된 표시 픽셀에서 표시 변환만 되돌리므로 근사이며, 이미지 시퀀스는 원본 float를 다시
+  처리한다. Windows GES GPU/CPU 경로와 desktop smoke는 릴리스 게이트에서 반복한다.
 
 #### R4. Windows HDR와 HDR10 출력
 

@@ -645,6 +645,19 @@ ApplicationWindow {
                                 font.bold: EditorController.previewBusy || EditorController.playing
                             }
                             Item { Layout.fillWidth: true }
+                            Label {
+                                visible: EditorController.cpuPreviewFallback
+                                text: "CPU 복구"
+                                color: "#f5b942"
+                                font.pixelSize: 10
+                            }
+                            ComboBox {
+                                implicitWidth: 118
+                                visible: EditorController.colorPipelineMode !== 0
+                                model: ["검수 끄기", "Gamut", "False color"]
+                                currentIndex: EditorController.reviewOverlayMode
+                                onActivated: EditorController.reviewOverlayMode = currentIndex
+                            }
                             AppButton {
                                 text: EditorController.scopesVisible ? "스코프 닫기" : "스코프"
                                 compact: true
@@ -684,6 +697,23 @@ ApplicationWindow {
                                 id: inProcessVideoPreview
                                 Component.onCompleted:
                                     EditorController.attachVideoItem(inProcessVideoPreview)
+                                MouseArea {
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    acceptedButtons: Qt.LeftButton
+                                    cursorShape: containsMouse ? Qt.CrossCursor : Qt.ArrowCursor
+                                    onPressed: function(mouse) {
+                                        EditorController.inspectPreviewPixel(
+                                            mouse.x / Math.max(1, width),
+                                            mouse.y / Math.max(1, height))
+                                    }
+                                    onPositionChanged: function(mouse) {
+                                        if (pressed)
+                                            EditorController.inspectPreviewPixel(
+                                                mouse.x / Math.max(1, width),
+                                                mouse.y / Math.max(1, height))
+                                    }
+                                }
                             }
                         }
                         WindowContainer {
@@ -703,6 +733,36 @@ ApplicationWindow {
                             text: EditorController.importing ? "미디어 분석 중…" : "미디어를 추가하세요"
                             color: "#718094"
                             font.pixelSize: 15
+                        }
+                        Label {
+                            anchors.left: parent.left
+                            anchors.bottom: parent.bottom
+                            anchors.margins: 10
+                            z: 30
+                            visible: EditorController.pixelInspectorText.length > 0
+                            text: EditorController.pixelInspectorText
+                            color: "#e8eef5"
+                            font.family: "Consolas"
+                            font.pixelSize: 11
+                            padding: 6
+                            background: Rectangle {
+                                color: "#c80b0e12"
+                                radius: 3
+                                border.color: "#3a4654"
+                            }
+                        }
+                        Label {
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 10
+                            z: 30
+                            visible: EditorController.previewCompareEnabled &&
+                                     EditorController.colorPipelineMode !== 0
+                            text: "왼쪽 그레이드 후  ·  오른쪽 표시 변환"
+                            color: "#d6deea"
+                            font.pixelSize: 10
+                            padding: 5
+                            background: Rectangle { color: "#990b0e12"; radius: 3 }
                         }
 
                         Item {
@@ -871,12 +931,25 @@ ApplicationWindow {
                                     font.pixelSize: 12
                                     font.bold: true
                                 }
+                                ComboBox {
+                                    implicitWidth: 148
+                                    model: ["그레이드 전", "그레이드 후", "디스플레이 변환 후"]
+                                    currentIndex: EditorController.scopeReferenceStage
+                                    onActivated: EditorController.scopeReferenceStage = currentIndex
+                                }
                                 Label {
-                                    text: "디스플레이 변환 후"
+                                    text: EditorController.scopeStageHint
                                     color: "#758292"
                                     font.pixelSize: 10
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
                                 }
-                                Item { Layout.fillWidth: true }
+                                Label {
+                                    visible: EditorController.outOfGamutPercent > 0
+                                    text: "범위 초과 " + EditorController.outOfGamutPercent.toFixed(1) + "%"
+                                    color: "#ef86c3"
+                                    font.pixelSize: 10
+                                }
                                 ComboBox {
                                     implicitWidth: 132
                                     model: ["Waveform", "RGB Parade", "Vectorscope", "Histogram"]
@@ -1687,9 +1760,54 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             visible: EditorController.colorPipelineMode !== 0
                             wrapMode: Text.WordWrap
-                            text: "입력 변환 → ACEScg 작업 → 표시 변환을 분리합니다. Legacy로 돌아가면 기존 색처리를 그대로 사용합니다."
+                            text: "입력 변환 → ACEScg 작업 → Display/View 표시 변환을 분리합니다. Legacy로 돌아가면 기존 색처리를 그대로 사용합니다."
                             color: "#7f8c9c"
                             font.pixelSize: 11
+                        }
+                        Label {
+                            visible: EditorController.colorPipelineMode !== 0
+                            text: "모니터 Display"
+                            color: "#b4bdc8"
+                        }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            visible: EditorController.colorPipelineMode !== 0
+                            model: EditorController.displayOptions
+                            displayText: EditorController.displayName.length > 0
+                                         ? EditorController.displayName
+                                         : "기본 출력 색공간"
+                            currentIndex: Math.max(
+                                0, EditorController.displayOptions.indexOf(EditorController.displayName))
+                            onActivated: EditorController.setDisplayName(currentText)
+                        }
+                        Label {
+                            visible: EditorController.colorPipelineMode !== 0
+                            text: "모니터 View"
+                            color: "#b4bdc8"
+                        }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            visible: EditorController.colorPipelineMode !== 0
+                            model: EditorController.viewOptions
+                            displayText: EditorController.viewName.length > 0
+                                         ? EditorController.viewName
+                                         : "기본 View"
+                            currentIndex: Math.max(
+                                0, EditorController.viewOptions.indexOf(EditorController.viewName))
+                            onActivated: EditorController.setViewName(currentText)
+                        }
+                        Switch {
+                            visible: EditorController.colorPipelineMode !== 0
+                            text: "표시 변환 우회"
+                            checked: EditorController.displayTransformBypassed
+                            onToggled: EditorController.setDisplayTransformBypassed(checked)
+                        }
+                        Switch {
+                            visible: EditorController.colorPipelineMode !== 0 &&
+                                     !EditorController.displayTransformBypassed
+                            text: "적용 전후 비교"
+                            checked: EditorController.previewCompareEnabled
+                            onToggled: EditorController.setPreviewCompareEnabled(checked)
                         }
                         Switch {
                             visible: EditorController.colorPipelineMode !== 0

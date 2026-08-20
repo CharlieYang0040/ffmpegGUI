@@ -5,6 +5,7 @@
 #include "color/grade_processor.hpp"
 #include "color/color_frame_processor.hpp"
 #include "color/scope_analyzer.hpp"
+#include "color/review_tools.hpp"
 #include "media/oiio_probe.hpp"
 #include "media/oiio_frame_source.hpp"
 #include "render/timeline_frame_server.hpp"
@@ -136,6 +137,15 @@ void test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_no
     require_throws<std::invalid_argument>([&] {
         ffgui::LutExportRequest{"ACEScct", "ACEScg", ffgui::LutEncoding::acescct, 33}.validate(graph);
     }, "LUT export must reject graphs that cannot be represented by a global RGB transform");
+    require(ffgui::resolved_color_output_space({}).empty(),
+            "legacy output space must stay empty");
+    ffgui::ColorPipelineSettings bypassed;
+    bypassed.mode = ffgui::ColorPipelineMode::aces_managed;
+    bypassed.display_transform_bypassed = true;
+    require(ffgui::resolved_color_output_space(bypassed) == "ACEScg",
+            "bypassed display transform must leave pixels in working space");
+    require(!ffgui::uses_display_view(bypassed),
+            "bypass must disable the Display/View output transform");
 }
 
 void test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube() {
@@ -144,6 +154,18 @@ void test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube() {
     ffgui::OcioEngine engine(settings);
     require(engine.managed() && !engine.color_spaces().empty(),
             "ACES managed mode must load the bundled OCIO configuration");
+    const auto displays = engine.displays();
+    const auto defaultDisplay = engine.default_display();
+    require(!displays.empty() && !defaultDisplay.empty() &&
+                std::ranges::find(displays, defaultDisplay) != displays.end(),
+            "ACES Studio config must expose at least one monitor display");
+    const auto views = engine.views(defaultDisplay);
+    const auto defaultView = engine.default_view(defaultDisplay);
+    require(!views.empty() && !defaultView.empty(),
+            "ACES Studio config must expose a default view for the default display");
+    const auto displaySpace = engine.display_view_color_space(defaultDisplay, defaultView);
+    require(!displaySpace.empty(),
+            "Display/View must resolve to an OCIO color space name");
     const auto spaces = engine.color_spaces();
     require(std::ranges::find(spaces, "ACEScg") != spaces.end(),
             "ACES Studio config must expose ACEScg");
@@ -231,6 +253,90 @@ void test_float_grade_pipeline_preserves_alpha_and_node_mix() {
     const auto cube = ffgui::bake_color_cube({}, {}, fullGrade, {}, 2);
     require(cube.contains("LUT_3D_SIZE 2") && std::ranges::count(cube, '\n') == 12,
             "clip color cube must contain every RGB lattice point from the reference path");
+
+    const auto preGrade = ffgui::process_color_frame(
+        premultiplied, {}, {}, fullGrade, {}, 0, ffgui::ColorProcessStage::pre_grade);
+    require(std::abs(preGrade.rgba[0] - 0.125F) < 0.00001F,
+            "legacy pre-grade must restore the original ungraded premultiplied pixel");
+}
+
+void test_review_display_stages_scopes_and_overlays() {
+    ffgui::ColorPipelineSettings settings;
+    settings.mode = ffgui::ColorPipelineMode::aces_managed;
+    ffgui::OcioEngine engine(settings);
+    settings.display = engine.default_display();
+    settings.view = engine.default_view(settings.display);
+    require(ffgui::uses_display_view(settings),
+            "selecting the default Display/View must enable the display transform");
+
+    ffgui::FloatImageFrame source;
+    source.width = 1;
+    source.height = 1;
+    source.color_space = "ACEScg";
+    source.rgba = {0.18F, 0.18F, 0.18F, 1.0F};
+    ffgui::SourceColorDescriptor descriptor;
+    descriptor.input_color_space = "ACEScg";
+    ffgui::GradeGraph grade;
+    auto primary = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary-1");
+    primary.parameters["exposure"] = 1.0;
+    grade.add(primary);
+
+    const auto pre = ffgui::process_color_frame(
+        source, descriptor, settings, grade, "sRGB - Display", 0,
+        ffgui::ColorProcessStage::pre_grade);
+    const auto postGrade = ffgui::process_color_frame(
+        source, descriptor, settings, grade, "sRGB - Display", 0,
+        ffgui::ColorProcessStage::post_grade);
+    const auto postDisplay = ffgui::process_color_frame(
+        source, descriptor, settings, grade, "sRGB - Display", 0,
+        ffgui::ColorProcessStage::post_display);
+    require(pre.color_space == "ACEScg" && std::abs(pre.rgba[0] - 0.18F) < 0.0001F,
+            "pre-grade must stop in working space before creative correction");
+    require(postGrade.color_space == "ACEScg" && postGrade.rgba[0] > pre.rgba[0] + 0.05F,
+            "post-grade must keep working-space pixels after exposure");
+    require(postDisplay.color_space != "ACEScg" &&
+                std::abs(postDisplay.rgba[0] - postGrade.rgba[0]) > 0.01F,
+            "post-display must apply the selected Display/View transform");
+
+    settings.display_transform_bypassed = true;
+    const auto bypassed = ffgui::process_color_frame(
+        source, descriptor, settings, grade, "sRGB - Display");
+    require(bypassed.color_space == "ACEScg" &&
+                std::abs(bypassed.rgba[0] - postGrade.rgba[0]) < 0.0001F,
+            "display bypass must match the post-grade working-space result");
+
+    ffgui::FloatImageFrame hot;
+    hot.width = 1;
+    hot.height = 1;
+    hot.rgba = {1.8F, -0.2F, 0.4F, 1.0F};
+    const auto displayScope = ffgui::analyze_scope_float(
+        hot, 7, ffgui::ScopeReferenceStage::post_display);
+    const auto sceneScope = ffgui::analyze_scope_float(
+        hot, 8, ffgui::ScopeReferenceStage::post_grade);
+    require(displayScope.histogram[0][255] == 1 && displayScope.out_of_gamut_pixels == 1 &&
+                displayScope.peak_luma > 1.0F,
+            "display-referred scopes must clip superwhite into the top code-value bin");
+    require(sceneScope.scene_referred && sceneScope.histogram[0][255] == 0 &&
+                sceneScope.out_of_gamut_pixels == 1,
+            "working-space scopes must use ACEScct encoding instead of clipping to code 255");
+
+    ffgui::apply_review_overlay_rgba32f(
+        hot.rgba.data(), 1, 1, ffgui::ReviewOverlayMode::gamut_warning);
+    require(hot.rgba[0] > 0.9F && hot.rgba[2] > 0.4F,
+            "gamut warning must paint out-of-range pixels magenta");
+    const auto inspected = ffgui::inspect_rgba32f(source.rgba.data(), 1, 1, 0, 0);
+    require(inspected.valid && std::abs(inspected.red - 0.18F) < 0.0001F &&
+                !inspected.out_of_gamut,
+            "pixel inspector must read the exact working-space sample");
+
+    ffgui::FloatImageFrame left;
+    left.width = 2;
+    left.height = 1;
+    left.rgba = {1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F};
+    const std::vector<float> right{0.0F, 1.0F, 0.0F, 1.0F, 0.0F, 1.0F, 0.0F, 1.0F};
+    ffgui::wipe_rgba32f(left.rgba.data(), right.data(), 2, 1, 0.5F);
+    require(std::abs(left.rgba[1] - 1.0F) < 0.0001F && std::abs(left.rgba[6] - 1.0F) < 0.0001F,
+            "display compare wipe must copy the bypassed half onto the left");
 }
 
 void test_advanced_grade_nodes_share_the_float_reference_contract() {
@@ -637,6 +743,9 @@ void test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope() {
     const auto floatScopes = ffgui::analyze_scope_float(frame, 43);
     require(floatScopes.serial == 43 && floatScopes.histogram == scopes.histogram,
             "float and BGRA scope inputs must agree for the same display-referred pixels");
+    require(scopes.stage == ffgui::ScopeReferenceStage::post_display &&
+                scopes.out_of_gamut_pixels == 0,
+            "in-gamut display pixels must keep a zero out-of-gamut count");
 }
 
 void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
@@ -1709,6 +1818,7 @@ int main() {
         {"color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes", test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes},
         {"ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube", test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube},
         {"float_grade_pipeline_preserves_alpha_and_node_mix", test_float_grade_pipeline_preserves_alpha_and_node_mix},
+        {"review_display_stages_scopes_and_overlays", test_review_display_stages_scopes_and_overlays},
         {"advanced_grade_nodes_share_the_float_reference_contract", test_advanced_grade_nodes_share_the_float_reference_contract},
         {"external_lut_node_uses_ocio_and_preserves_mix_and_alpha", test_external_lut_node_uses_ocio_and_preserves_mix_and_alpha},
         {"grade_parameter_keyframes_evaluate_in_source_time", test_grade_parameter_keyframes_evaluate_in_source_time},

@@ -23,6 +23,7 @@ add_library(ffgui_core STATIC
     src/color/ocio_engine.cpp
     src/color/grade_processor.cpp
     src/color/color_frame_processor.cpp
+    src/color/review_tools.cpp
     src/color/scope_analyzer.cpp
     src/core/color_pipeline.cpp
     src/core/ffprobe_parser.cpp
