@@ -29,7 +29,8 @@ public:
         const TimelineModel& timeline,
         TimeNs timeline_time,
         const ColorPipelineSettings& color_pipeline,
-        const std::string& output_space);
+        const std::string& output_space,
+        ColorProcessStage stage = ColorProcessStage::post_display);
 
     void invalidate(const std::filesystem::path& path) { cache_.invalidate(path); }
     void clear() { cache_.clear(); }

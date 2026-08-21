@@ -10,6 +10,10 @@ namespace ffgui {
 
 enum class ColorPipelineMode { legacy, aces_managed, custom_ocio };
 
+enum class ColorProcessStage { pre_grade, post_grade, post_display };
+
+enum class ReviewOverlayMode { off, gamut_warning, false_color };
+
 struct ColorPipelineSettings final {
     ColorPipelineMode mode{ColorPipelineMode::legacy};
     std::string ocio_config_path;
@@ -23,10 +27,14 @@ struct ColorPipelineSettings final {
     int sdr_white_nits{203};
     int max_cll{1000};
     int max_fall{400};
+    std::string monitor_icc_path;
 
     bool operator==(const ColorPipelineSettings&) const = default;
     void validate() const;
 };
+
+[[nodiscard]] bool uses_display_view(const ColorPipelineSettings& settings) noexcept;
+[[nodiscard]] std::string resolved_color_output_space(const ColorPipelineSettings& settings);
 
 enum class GradeNodeType {
     primary,
@@ -80,6 +88,9 @@ public:
     void remove(const std::string& id);
     void move(const std::string& id, std::size_t insertion_index);
     [[nodiscard]] bool lut_representable() const noexcept;
+    [[nodiscard]] bool has_keyframes() const noexcept;
+    [[nodiscard]] bool has_spatial_nodes() const noexcept;
+    [[nodiscard]] bool has_non_spatial_keyframes() const noexcept;
     [[nodiscard]] std::vector<std::string> lut_incompatible_nodes() const;
     [[nodiscard]] std::vector<std::string> render_unsupported_nodes() const;
 

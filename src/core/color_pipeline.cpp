@@ -20,6 +20,19 @@ void ColorPipelineSettings::validate() const {
     }
 }
 
+bool uses_display_view(const ColorPipelineSettings& settings) noexcept {
+    return settings.mode != ColorPipelineMode::legacy &&
+        !settings.display_transform_bypassed &&
+        !settings.display.empty() && !settings.view.empty();
+}
+
+std::string resolved_color_output_space(const ColorPipelineSettings& settings) {
+    if (settings.mode == ColorPipelineMode::legacy) return {};
+    if (settings.display_transform_bypassed) return settings.working_space;
+    if (!settings.output_space.empty()) return settings.output_space;
+    return "sRGB - Display";
+}
+
 bool GradeNode::lut_representable() const noexcept {
     return type != GradeNodeType::qualifier && type != GradeNodeType::power_window;
 }
@@ -28,7 +41,8 @@ bool GradeNode::render_supported() const noexcept {
     return type == GradeNodeType::primary || type == GradeNodeType::log_wheels ||
            type == GradeNodeType::rgb_mixer || type == GradeNodeType::rgb_curves ||
            type == GradeNodeType::hue_curves || type == GradeNodeType::hdr_zones ||
-           type == GradeNodeType::color_warper || type == GradeNodeType::lut;
+           type == GradeNodeType::color_warper || type == GradeNodeType::lut ||
+           type == GradeNodeType::qualifier || type == GradeNodeType::power_window;
 }
 
 void GradeNode::validate() const {
@@ -117,6 +131,28 @@ bool GradeGraph::lut_representable() const noexcept {
     return std::ranges::all_of(nodes_, &GradeNode::lut_representable);
 }
 
+bool GradeGraph::has_keyframes() const noexcept {
+    return std::ranges::any_of(nodes_, [](const GradeNode& node) {
+        return node.enabled && std::ranges::any_of(
+            node.parameter_keyframes, [](const auto& entry) {
+                return !entry.second.empty();
+            });
+    });
+}
+
+bool GradeGraph::has_spatial_nodes() const noexcept {
+    return !lut_representable();
+}
+
+bool GradeGraph::has_non_spatial_keyframes() const noexcept {
+    return std::ranges::any_of(nodes_, [](const GradeNode& node) {
+        return node.enabled && node.lut_representable() && std::ranges::any_of(
+            node.parameter_keyframes, [](const auto& entry) {
+                return !entry.second.empty();
+            });
+    });
+}
+
 std::vector<std::string> GradeGraph::lut_incompatible_nodes() const {
     std::vector<std::string> result;
     for (const auto& value : nodes_) {
@@ -139,6 +175,13 @@ void LutExportRequest::validate(const GradeGraph& graph) const {
     }
     if (!graph.lut_representable()) {
         throw std::invalid_argument("grade graph contains spatial nodes that cannot be baked into a LUT");
+    }
+    if (graph.has_keyframes()) {
+        throw std::invalid_argument("time-varying grade parameters cannot be baked into a static LUT");
+    }
+    if (unreal_ocio_bundle && include_display_transform) {
+        throw std::invalid_argument(
+            "Unreal OCIO packages cannot include a display transform; that is double tone mapping");
     }
 }
 
@@ -210,6 +253,17 @@ GradeNode make_default_grade_node(GradeNodeType type, std::string id) {
         for (int index = 0; index < 8; ++index) {
             node.parameters["lumScale" + std::to_string(index)] = 1.0;
         }
+    } else if (type == GradeNodeType::qualifier) {
+        node.parameters = {
+            {"hueCenter", 0.0}, {"hueWidth", 40.0}, {"hueSoft", 10.0},
+            {"satLow", 0.15}, {"satHigh", 1.0}, {"satSoft", 0.05},
+            {"lumaLow", 0.0}, {"lumaHigh", 1.0}, {"lumaSoft", 0.05},
+            {"invert", 0.0}, {"insideExposure", 0.0}, {"insideSaturation", 1.0}};
+    } else if (type == GradeNodeType::power_window) {
+        node.parameters = {
+            {"centerX", 0.5}, {"centerY", 0.5}, {"sizeX", 0.45}, {"sizeY", 0.45},
+            {"rotation", 0.0}, {"softness", 0.12}, {"shape", 0.0}, {"invert", 0.0},
+            {"insideExposure", 0.0}, {"insideSaturation", 1.0}};
     }
     return node;
 }

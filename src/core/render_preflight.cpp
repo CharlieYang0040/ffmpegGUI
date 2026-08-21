@@ -39,6 +39,11 @@ RenderPreflightReport build_render_preflight(
                 "Clip grade contains nodes that the render pipeline cannot evaluate",
                 clip.asset_id, {}});
         }
+        if (!clip.grade.lut_representable() && !asset->image_sequence().has_value()) {
+            report.issues.push_back({PreflightSeverity::blocker, "spatial-grade-requires-float-frame-server",
+                "Qualifier and power windows need the float frame server; ordinary video cannot bake them into a 3D LUT",
+                clip.asset_id, {}});
+        }
         for (const auto& node : clip.grade.nodes()) {
             if (!node.enabled || node.type != GradeNodeType::lut) continue;
             try {
@@ -48,19 +53,6 @@ RenderPreflightReport build_render_preflight(
                     std::string{"External LUT / Look cannot be loaded: "} + error.what(),
                     clip.asset_id, {}});
             }
-        }
-        const auto hasAnimatedGrade = std::ranges::any_of(
-            clip.grade.nodes(), [](const auto& node) {
-                return node.enabled && std::ranges::any_of(
-                    node.parameter_keyframes, [](const auto& entry) {
-                        return !entry.second.empty();
-                    });
-            });
-        if (hasAnimatedGrade && !asset->image_sequence().has_value()) {
-            report.issues.push_back({PreflightSeverity::blocker,
-                "animated-grade-frame-server-required",
-                "Animated grades on ordinary video require the time-varying frame server",
-                clip.asset_id, {}});
         }
         if (!inspected.insert(clip.asset_id).second) continue;
         if (!std::filesystem::is_regular_file(asset->export_path())) {

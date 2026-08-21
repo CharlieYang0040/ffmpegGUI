@@ -42,6 +42,8 @@ struct ExportClipInput final {
     double saturation{1.0};
     TimeNs transition_in{};
     std::filesystem::path color_lut_path;
+    std::filesystem::path color_clut_pattern;
+    int color_clut_fps{};
 
     [[nodiscard]] TimeNs timeline_duration() const {
         return static_cast<TimeNs>(std::llround(
@@ -92,6 +94,11 @@ struct ExportRequest final {
     int output_height{};
     int output_fps{};
     GifExportSettings gif;
+    bool hdr10{};
+    int hdr_peak_nits{1000};
+    int sdr_white_nits{203};
+    int max_cll{1000};
+    int max_fall{400};
 };
 
 struct FfmpegExportPlan final {

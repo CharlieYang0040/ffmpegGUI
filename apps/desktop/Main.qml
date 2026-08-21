@@ -30,6 +30,20 @@ ApplicationWindow {
     property bool showOutputSettingsNode: false
     property string expandedNode: ""
     property string expandedGradeNode: ""
+    property bool colorWorkspace: false
+    readonly property bool hasLegacyClipColor:
+        EditorController.selectedClipIds.length > 0 && (
+            EditorController.selectedClipBrightness !== 0 ||
+            EditorController.selectedClipContrast !== 100 ||
+            EditorController.selectedClipSaturation !== 100)
+
+    onColorWorkspaceChanged: {
+        if (colorWorkspace)
+            EditorController.scopesVisible = true
+    }
+
+    Component.onCompleted: EditorController.attachPreviewWindow(root)
+    onScreenChanged: EditorController.refreshHdrDisplay()
 
     function durationText(nanoseconds) {
         const totalSeconds = Math.max(0, Math.floor(nanoseconds / 1000000000))
@@ -104,7 +118,11 @@ ApplicationWindow {
         property string nodeKey
         property string title
         property string summary
-        readonly property bool expanded: root.expandedNode === nodeKey
+        property bool exclusive: true
+        property bool independentlyExpanded: true
+        property bool removable: true
+        readonly property bool expanded: exclusive
+            ? root.expandedNode === nodeKey : independentlyExpanded
         signal removeRequested()
         default property alias nodeContent: body.data
         Layout.fillWidth: true
@@ -141,6 +159,7 @@ ApplicationWindow {
                         }
                     }
                     AppButton {
+                        visible: node.removable
                         text: "×"
                         compact: true
                         implicitWidth: 28
@@ -151,7 +170,12 @@ ApplicationWindow {
                 }
                 HoverHandler { id: headerMouse }
                 TapHandler {
-                    onTapped: root.expandedNode = node.expanded ? "" : node.nodeKey
+                    onTapped: {
+                        if (node.exclusive)
+                            root.expandedNode = node.expanded ? "" : node.nodeKey
+                        else
+                            node.independentlyExpanded = !node.independentlyExpanded
+                    }
                 }
             }
             ColumnLayout {
@@ -181,6 +205,8 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.duplicateSelectedClip() }
     Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.deleteSelectedClip() }
     Shortcut { sequence: "M"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted) }
+    Shortcut { sequence: "Ctrl+1"; onActivated: root.colorWorkspace = false }
+    Shortcut { sequence: "Ctrl+2"; onActivated: root.colorWorkspace = true }
     FileDialog {
         id: mediaDialog
         title: "영상 추가"
@@ -227,6 +253,19 @@ ApplicationWindow {
         fileMode: FileDialog.OpenFile
         nameFilters: ["컬러 LUT / Look (*.cube *.3dl *.clf *.ctf)"]
         onAccepted: EditorController.addGradeLutUrl(selectedFile)
+    }
+    FileDialog {
+        id: lookCubeDialog
+        title: "Look Cube 내보내기"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "cube"
+        nameFilters: ["Resolve Cube (*.cube)"]
+        onAccepted: EditorController.exportLookUrl(selectedFile)
+    }
+    FolderDialog {
+        id: lookPackageDialog
+        title: "Unreal Look 패키지 폴더"
+        onAccepted: EditorController.exportLookUrl(selectedFolder)
     }
     FileDialog {
         id: importSrtDialog
@@ -313,6 +352,23 @@ ApplicationWindow {
                 anchors.leftMargin: 16
                 anchors.rightMargin: 16
                 Label { text: "ffmpegGUI"; font.pixelSize: 18; font.bold: true }
+                ToolDivider { }
+                AppButton {
+                    text: "편집"
+                    compact: true
+                    highlighted: !root.colorWorkspace
+                    onClicked: root.colorWorkspace = false
+                    ToolTip.visible: hovered
+                    ToolTip.text: "편집 작업 공간  Ctrl+1"
+                }
+                AppButton {
+                    text: "컬러"
+                    compact: true
+                    highlighted: root.colorWorkspace
+                    onClicked: root.colorWorkspace = true
+                    ToolTip.visible: hovered
+                    ToolTip.text: "컬러 작업 공간  Ctrl+2"
+                }
                 AppButton {
                     text: EditorController.importing ? "분석 중…" : "영상 추가"
                     enabled: !EditorController.importing
@@ -387,9 +443,16 @@ ApplicationWindow {
         }
 
         SplitView {
+            id: workspaceSplit
             Layout.fillWidth: true
             Layout.fillHeight: true
-            orientation: Qt.Horizontal
+            orientation: Qt.Vertical
+
+            SplitView {
+                id: upperSplit
+                SplitView.fillHeight: true
+                SplitView.minimumHeight: 280
+                orientation: Qt.Horizontal
 
             Frame {
                 SplitView.preferredWidth: 300
@@ -644,7 +707,27 @@ ApplicationWindow {
                                 font.pixelSize: 12
                                 font.bold: EditorController.previewBusy || EditorController.playing
                             }
-                            Item { Layout.fillWidth: true }
+                            Label {
+                                Layout.fillWidth: true
+                                text: EditorController.status
+                                elide: Text.ElideRight
+                                color: EditorController.previewFailed ? "#ff7780"
+                                     : EditorController.previewBusy ? "#f0bd58" : "#8994a3"
+                                font.pixelSize: 11
+                            }
+                            Label {
+                                visible: EditorController.cpuPreviewFallback
+                                text: "CPU 복구"
+                                color: "#f5b942"
+                                font.pixelSize: 10
+                            }
+                            ComboBox {
+                                implicitWidth: 118
+                                visible: EditorController.colorPipelineMode !== 0
+                                model: ["검수 끄기", "Gamut", "False color"]
+                                currentIndex: EditorController.reviewOverlayMode
+                                onActivated: EditorController.reviewOverlayMode = currentIndex
+                            }
                             AppButton {
                                 text: EditorController.scopesVisible ? "스코프 닫기" : "스코프"
                                 compact: true
@@ -684,6 +767,23 @@ ApplicationWindow {
                                 id: inProcessVideoPreview
                                 Component.onCompleted:
                                     EditorController.attachVideoItem(inProcessVideoPreview)
+                                MouseArea {
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    acceptedButtons: Qt.LeftButton
+                                    cursorShape: containsMouse ? Qt.CrossCursor : Qt.ArrowCursor
+                                    onPressed: function(mouse) {
+                                        EditorController.inspectPreviewPixel(
+                                            mouse.x / Math.max(1, width),
+                                            mouse.y / Math.max(1, height))
+                                    }
+                                    onPositionChanged: function(mouse) {
+                                        if (pressed)
+                                            EditorController.inspectPreviewPixel(
+                                                mouse.x / Math.max(1, width),
+                                                mouse.y / Math.max(1, height))
+                                    }
+                                }
                             }
                         }
                         WindowContainer {
@@ -703,6 +803,41 @@ ApplicationWindow {
                             text: EditorController.importing ? "미디어 분석 중…" : "미디어를 추가하세요"
                             color: "#718094"
                             font.pixelSize: 15
+                        }
+                        Label {
+                            anchors.left: parent.left
+                            anchors.bottom: parent.bottom
+                            anchors.margins: 10
+                            z: 30
+                            visible: EditorController.pixelInspectorText.length > 0
+                            text: EditorController.pixelInspectorText
+                            color: "#e8eef5"
+                            font.family: "Consolas"
+                            font.pixelSize: 11
+                            padding: 6
+                            background: Rectangle {
+                                color: "#c80b0e12"
+                                radius: 3
+                                border.color: "#3a4654"
+                            }
+                        }
+                        Label {
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 10
+                            z: 30
+                            visible: (EditorController.previewCompareEnabled &&
+                                     EditorController.colorPipelineMode !== 0) ||
+                                     EditorController.shotCompareMode > 0
+                            text: EditorController.shotCompareMode === 1
+                                  ? "왼쪽 샷 스틸  ·  오른쪽 현재"
+                                  : EditorController.shotCompareMode === 2
+                                    ? "위 샷 스틸  ·  아래 현재"
+                                    : "왼쪽 그레이드 후  ·  오른쪽 표시 변환"
+                            color: "#d6deea"
+                            font.pixelSize: 10
+                            padding: 5
+                            background: Rectangle { color: "#990b0e12"; radius: 3 }
                         }
 
                         Item {
@@ -871,12 +1006,25 @@ ApplicationWindow {
                                     font.pixelSize: 12
                                     font.bold: true
                                 }
+                                ComboBox {
+                                    implicitWidth: 148
+                                    model: ["그레이드 전", "그레이드 후", "디스플레이 변환 후"]
+                                    currentIndex: EditorController.scopeReferenceStage
+                                    onActivated: EditorController.scopeReferenceStage = currentIndex
+                                }
                                 Label {
-                                    text: "디스플레이 변환 후"
+                                    text: EditorController.scopeStageHint
                                     color: "#758292"
                                     font.pixelSize: 10
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
                                 }
-                                Item { Layout.fillWidth: true }
+                                Label {
+                                    visible: EditorController.outOfGamutPercent > 0
+                                    text: "범위 초과 " + EditorController.outOfGamutPercent.toFixed(1) + "%"
+                                    color: "#ef86c3"
+                                    font.pixelSize: 10
+                                }
                                 ComboBox {
                                     implicitWidth: 132
                                     model: ["Waveform", "RGB Parade", "Vectorscope", "Histogram"]
@@ -909,9 +1057,9 @@ ApplicationWindow {
             }
 
             Frame {
-                SplitView.preferredWidth: 320
-                SplitView.minimumWidth: 280
-                SplitView.maximumWidth: 380
+                SplitView.preferredWidth: root.colorWorkspace ? 520 : 320
+                SplitView.minimumWidth: root.colorWorkspace ? 420 : 280
+                SplitView.maximumWidth: root.colorWorkspace ? 640 : 380
                 ScrollView {
                     id: inspectorScroll
                     anchors.fill: parent
@@ -923,13 +1071,25 @@ ApplicationWindow {
                         y: 20
                         width: Math.max(0, inspectorScroll.availableWidth - 40)
                         spacing: 12
-                    Label { text: "작업 노드"; font.pixelSize: 18; font.bold: true }
+                    Label {
+                        visible: root.colorWorkspace
+                        text: "컬러"
+                        font.pixelSize: 18
+                        font.bold: true
+                    }
+                    Label {
+                        visible: !root.colorWorkspace
+                        text: "작업 노드"
+                        font.pixelSize: 18
+                        font.bold: true
+                    }
                     RowLayout {
+                        visible: !root.colorWorkspace
                         Layout.fillWidth: true
                         ComboBox {
                             id: nodePicker
                             Layout.fillWidth: true
-                            model: ["출력", "오디오", "이펙트", "문구·스탬프", "전체 트림", "컬러 관리", "출력 설정"]
+                            model: ["출력", "오디오", "이펙트", "문구·스탬프", "전체 트림", "출력 설정"]
                         }
                         AppButton {
                             text: "+ 추가"
@@ -940,14 +1100,13 @@ ApplicationWindow {
                                 else if (nodePicker.currentIndex === 2) root.showEffectsNode = true
                                 else if (nodePicker.currentIndex === 3) root.showGraphicsNode = true
                                 else if (nodePicker.currentIndex === 4) root.showGlobalTrimNode = true
-                                else if (nodePicker.currentIndex === 5) root.showColorManagementNode = true
                                 else root.showOutputSettingsNode = true
                             }
                         }
                     }
 
                     InspectorNode {
-                        visible: root.showOutputNode
+                        visible: !root.colorWorkspace && root.showOutputNode
                         nodeKey: "output"
                         title: "출력"
                         summary: EditorController.exporting
@@ -1013,7 +1172,7 @@ ApplicationWindow {
                     }
 
                     InspectorNode {
-                        visible: root.showAudioNode
+                        visible: !root.colorWorkspace && root.showAudioNode
                         nodeKey: "audio"
                         title: "오디오"
                         summary: EditorController.selectedClipIds.length > 0
@@ -1066,27 +1225,44 @@ ApplicationWindow {
                             highlighted: EditorController.selectedClipMuted
                             onClicked: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted)
                         }
+                        Label { text: "앞 클립과 디졸브"; color: "#b4bdc8" }
+                        SpinBox {
+                            Layout.fillWidth: true
+                            from: 0; to: 5000; stepSize: 100; editable: true
+                            enabled: EditorController.selectedClipIds.length === 1 &&
+                                     EditorController.clips.length > 0 &&
+                                     EditorController.selectedClipId !== EditorController.clips[0].id
+                            value: EditorController.selectedClipDissolveMs
+                            textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                            valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
+                            onValueModified: EditorController.setSelectedClipDissolveMs(value)
+                        }
                     }
 
                     InspectorNode {
-                        visible: root.showEffectsNode
+                        visible: !root.colorWorkspace && (root.showEffectsNode || root.hasLegacyClipColor)
                         nodeKey: "effects"
                         title: "이펙트"
-                        summary: "디졸브 · Color Grading"
+                        summary: root.hasLegacyClipColor ? "디졸브 · 레거시 클립 컬러" : "디졸브"
+                        removable: !root.hasLegacyClipColor
                         onRemoveRequested: {
                             root.showEffectsNode = false
                             if (root.expandedNode === nodeKey) root.expandedNode = ""
                         }
-                        Label { text: "클립 컬러 그레이드"; font.bold: true }
                         Label {
+                            visible: root.hasLegacyClipColor
+                            text: "레거시 클립 컬러"
+                            font.bold: true
+                        }
+                        Label {
+                            visible: root.hasLegacyClipColor
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
-                            text: EditorController.selectedClipIds.length === 1
-                                  ? "노드는 위에서 아래 순서로 적용됩니다."
-                                  : "컬러 노드를 편집할 클립 하나를 선택하세요."
+                            text: "밝기·대비·채도는 예전 클립 이펙트입니다. 새 보정은 컬러 작업 공간의 Primary를 사용하세요."
                             color: "#7f8c9c"; font.pixelSize: 11
                         }
                         GridLayout {
+                            visible: root.hasLegacyClipColor
                             Layout.fillWidth: true; columns: 2
                             enabled: EditorController.selectedClipIds.length > 0
                             Label { text: "밝기"; color: "#b4bdc8" }
@@ -1095,6 +1271,434 @@ ApplicationWindow {
                             SpinBox { Layout.fillWidth: true; from: 0; to: 200; value: EditorController.selectedClipContrast; onValueModified: EditorController.setSelectedClipContrast(value) }
                             Label { text: "채도"; color: "#b4bdc8" }
                             SpinBox { Layout.fillWidth: true; from: 0; to: 200; value: EditorController.selectedClipSaturation; onValueModified: EditorController.setSelectedClipSaturation(value) }
+                        }
+                        Label { text: "클립 사이 전환"; font.bold: true }
+                        GridLayout {
+                            Layout.fillWidth: true; columns: 2
+                            Label { text: "디졸브"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true
+                                from: 0; to: 5000; stepSize: 100; editable: true
+                                enabled: EditorController.selectedClipIds.length === 1 &&
+                                         EditorController.clips.length > 0 &&
+                                         EditorController.selectedClipId !== EditorController.clips[0].id
+                                value: EditorController.selectedClipDissolveMs
+                                textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                                valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
+                                onValueModified: EditorController.setSelectedClipDissolveMs(value)
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true; wrapMode: Text.WordWrap
+                            text: "선택 클립과 바로 앞 클립을 겹쳐 영상·오디오를 함께 전환합니다."
+                            color: "#7f8c9c"; font.pixelSize: 11
+                        }
+                    }
+
+                    InspectorNode {
+                        visible: !root.colorWorkspace && root.showGraphicsNode
+                        nodeKey: "graphics"
+                        title: "문구·스탬프"
+                        summary: EditorController.stampMode === 1
+                                 ? "문구 · 확장 스탬프" : "문구 · 오버레이 스탬프"
+                        onRemoveRequested: {
+                            root.showGraphicsNode = false
+                            if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
+
+                        Label { text: "자유 문구"; font.bold: true }
+                        TextField {
+                            id: newOverlayText
+                            Layout.fillWidth: true
+                            placeholderText: "화면에 넣을 문구"
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            SpinBox {
+                                id: newOverlayDuration
+                                Layout.fillWidth: true
+                                from: 500; to: 60000; stepSize: 500; value: 3000
+                                textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                                valueFromText: function(text) { return Math.round((parseFloat(text) || 3) * 1000) }
+                            }
+                            AppButton {
+                                text: "+ 문구"
+                                compact: true
+                                enabled: EditorController.durationNs > 0 && newOverlayText.text.trim().length > 0
+                                onClicked: {
+                                    EditorController.addTextOverlay(newOverlayText.text, newOverlayDuration.value)
+                                    newOverlayText.clear()
+                                }
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: EditorController.selectedCaptionId.length > 0
+                            Label { text: "선택 문구"; color: "#b4bdc8" }
+                            TextField {
+                                Layout.fillWidth: true
+                                text: EditorController.selectedCaptionText
+                                onEditingFinished: EditorController.updateSelectedCaption(
+                                    text, selectedOverlayDuration.value)
+                            }
+                            GridLayout {
+                                Layout.fillWidth: true; columns: 2
+                                Label { text: "표시 시간"; color: "#b4bdc8" }
+                                SpinBox {
+                                    id: selectedOverlayDuration
+                                    Layout.fillWidth: true
+                                    from: 100; to: 60000; stepSize: 100
+                                    value: EditorController.selectedCaptionDurationMs
+                                    textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
+                                    valueFromText: function(text) { return Math.round((parseFloat(text) || 1) * 1000) }
+                                    onValueModified: EditorController.updateSelectedCaption(
+                                        EditorController.selectedCaptionText, value)
+                                }
+                                Label { text: "글자 크기"; color: "#b4bdc8" }
+                                SpinBox {
+                                    Layout.fillWidth: true
+                                    from: 12; to: 160; stepSize: 2
+                                    value: EditorController.selectedCaptionFontSize
+                                    onValueModified: EditorController.setSelectedCaptionFontSize(value)
+                                }
+                                Label { text: "배경 불투명도"; color: "#b4bdc8" }
+                                SpinBox {
+                                    Layout.fillWidth: true
+                                    from: 0; to: 100; stepSize: 5
+                                    value: EditorController.selectedCaptionBackgroundOpacity
+                                    textFromValue: function(value) {
+                                        return value === 0 ? "없음" : value + "%"
+                                    }
+                                    valueFromText: function(text) { return parseInt(text) || 0 }
+                                    onValueModified:
+                                        EditorController.setSelectedCaptionBackgroundOpacity(value)
+                                }
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: "프로그램 모니터에서 직접 끌어 배치합니다. 배경 0%는 없음, 100%는 불투명입니다."
+                                wrapMode: Text.WordWrap
+                                color: "#7f8c9c"; font.pixelSize: 11
+                            }
+                            AppButton {
+                                Layout.fillWidth: true
+                                text: "선택 문구 삭제"
+                                onClicked: EditorController.deleteSelectedCaption()
+                            }
+                        }
+
+                        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#303844" }
+                        Switch {
+                            text: "상·하단 스탬프 표시"
+                            checked: EditorController.stampEnabled
+                            onToggled: EditorController.setStampEnabled(checked)
+                        }
+                        GridLayout {
+                            Layout.fillWidth: true; columns: 2
+                            enabled: EditorController.stampEnabled
+                            Label { text: "배치 방식"; color: "#b4bdc8" }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: ["영상 위에 겹치기", "캔버스 높이 확장"]
+                                currentIndex: EditorController.stampMode
+                                onActivated: EditorController.setStampMode(currentIndex)
+                            }
+                            Label { text: "작업자"; color: "#b4bdc8" }
+                            TextField {
+                                Layout.fillWidth: true
+                                text: EditorController.stampWorker
+                                placeholderText: "이름"
+                                onEditingFinished: EditorController.setStampWorker(text)
+                            }
+                            Label { text: "영상 정보"; color: "#b4bdc8" }
+                            TextField {
+                                Layout.fillWidth: true
+                                text: EditorController.stampInformation
+                                placeholderText: "프로젝트·버전·샷 정보"
+                                onEditingFinished: EditorController.setStampInformation(text)
+                            }
+                            Label { text: "바 높이"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true
+                                from: 4; to: 25; value: EditorController.stampBarPercent
+                                textFromValue: function(value) { return value + "%" }
+                                valueFromText: function(text) { return parseInt(text) || 9 }
+                                onValueModified: EditorController.setStampBarPercent(value)
+                            }
+                            Label { text: "바 불투명도"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true
+                                from: 0; to: 100; stepSize: 5
+                                value: EditorController.stampOpacity
+                                textFromValue: function(value) {
+                                    return value === 0 ? "투명" : value + "%"
+                                }
+                                valueFromText: function(text) { return parseInt(text) || 0 }
+                                onValueModified: EditorController.setStampOpacity(value)
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: EditorController.stampMode === 0
+                                  ? "영상 위에 바를 겹칩니다. 출력 해상도는 바뀌지 않습니다."
+                                  : "원본 영상은 축소하지 않고 위·아래 픽셀을 추가해 출력 높이를 늘립니다."
+                            wrapMode: Text.WordWrap
+                            color: "#7f8c9c"; font.pixelSize: 11
+                        }
+                    }
+
+                    InspectorNode {
+                        visible: !root.colorWorkspace && root.showGlobalTrimNode
+                        nodeKey: "globalTrim"
+                        title: "전체 트림"
+                        summary: "모든 클립의 앞·뒤를 프레임 단위로 정리"
+                        onRemoveRequested: {
+                            root.showGlobalTrimNode = false
+                            if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
+                        GridLayout {
+                            Layout.fillWidth: true; columns: 2
+                            Label { text: "앞 프레임"; color: "#b4bdc8" }
+                            SpinBox { id: globalFrontFrames; Layout.fillWidth: true; from: 0; to: 999; editable: true }
+                            Label { text: "뒤 프레임"; color: "#b4bdc8" }
+                            SpinBox { id: globalBackFrames; Layout.fillWidth: true; from: 0; to: 999; editable: true }
+                        }
+                        AppButton {
+                            Layout.fillWidth: true
+                            text: "모든 클립에 적용"
+                            enabled: globalFrontFrames.value > 0 || globalBackFrames.value > 0
+                            onClicked: EditorController.trimAllClipEdges(
+                                globalFrontFrames.value, globalBackFrames.value)
+                        }
+                    }
+
+                    InspectorNode {
+                        visible: root.colorWorkspace
+                        nodeKey: "colorManagement"
+                        title: "컬러 관리"
+                        summary: EditorController.colorPipelineSummary
+                        exclusive: false
+                        independentlyExpanded: false
+                        removable: false
+                        onRemoveRequested: {
+                            root.showColorManagementNode = false
+                            if (root.expandedNode === nodeKey) root.expandedNode = ""
+                        }
+                        Label { text: "프로젝트 컬러 파이프라인"; color: "#b4bdc8" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["현재 색 유지 · Legacy", "ACES 2.0 · ACEScg", "사용자 OpenColorIO"]
+                            currentIndex: EditorController.colorPipelineMode
+                            onActivated: {
+                                if (currentIndex === 2 && EditorController.customOcioPath.length === 0)
+                                    ocioConfigDialog.open()
+                                else
+                                    EditorController.setColorPipelineMode(currentIndex)
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: EditorController.colorPipelineMode === 2
+                            Label {
+                                Layout.fillWidth: true
+                                text: EditorController.customOcioPath
+                                elide: Text.ElideMiddle
+                                color: "#8796a8"
+                                font.pixelSize: 10
+                            }
+                            AppButton { text: "변경"; compact: true; onClicked: ocioConfigDialog.open() }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: EditorController.colorPipelineMode !== 0
+                            wrapMode: Text.WordWrap
+                            text: "입력 변환 → ACEScg 작업 → Display/View 표시 변환을 분리합니다. Legacy로 돌아가면 기존 색처리를 그대로 사용합니다."
+                            color: "#7f8c9c"
+                            font.pixelSize: 11
+                        }
+                        Label {
+                            visible: EditorController.colorPipelineMode !== 0
+                            text: "모니터 Display"
+                            color: "#b4bdc8"
+                        }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            visible: EditorController.colorPipelineMode !== 0
+                            model: EditorController.displayOptions
+                            displayText: EditorController.displayName.length > 0
+                                         ? EditorController.displayName
+                                         : "기본 출력 색공간"
+                            currentIndex: Math.max(
+                                0, EditorController.displayOptions.indexOf(EditorController.displayName))
+                            onActivated: EditorController.setDisplayName(currentText)
+                        }
+                        Label {
+                            visible: EditorController.colorPipelineMode !== 0
+                            text: "모니터 View"
+                            color: "#b4bdc8"
+                        }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            visible: EditorController.colorPipelineMode !== 0
+                            model: EditorController.viewOptions
+                            displayText: EditorController.viewName.length > 0
+                                         ? EditorController.viewName
+                                         : "기본 View"
+                            currentIndex: Math.max(
+                                0, EditorController.viewOptions.indexOf(EditorController.viewName))
+                            onActivated: EditorController.setViewName(currentText)
+                        }
+                        Switch {
+                            visible: EditorController.colorPipelineMode !== 0
+                            text: "표시 변환 우회"
+                            checked: EditorController.displayTransformBypassed
+                            onToggled: EditorController.setDisplayTransformBypassed(checked)
+                        }
+                        Switch {
+                            visible: EditorController.colorPipelineMode !== 0 &&
+                                     !EditorController.displayTransformBypassed
+                            text: "적용 전후 비교"
+                            checked: EditorController.previewCompareEnabled
+                            onToggled: EditorController.setPreviewCompareEnabled(checked)
+                        }
+                        Switch {
+                            visible: EditorController.colorPipelineMode !== 0
+                            text: "HDR 모니터 출력"
+                            checked: EditorController.hdrMonitoring
+                            onToggled: EditorController.setHdrMonitoring(checked)
+                        }
+                        GridLayout {
+                            visible: EditorController.colorPipelineMode !== 0 && EditorController.hdrMonitoring
+                            Layout.fillWidth: true
+                            columns: 2
+                            Label { text: "HDR 피크"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 100; to: 10000; stepSize: 50
+                                value: EditorController.hdrPeakNits
+                                textFromValue: function(value) { return value + " nits" }
+                                valueFromText: function(text) { return parseInt(text) || 1000 }
+                                onValueModified: EditorController.setHdrPeakNits(value)
+                            }
+                            Label { text: "SDR 흰색"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 80; to: 500; stepSize: 1
+                                value: EditorController.sdrWhiteNits
+                                textFromValue: function(value) { return value + " nits" }
+                                valueFromText: function(text) { return parseInt(text) || 203 }
+                                onValueModified: EditorController.setSdrWhiteNits(value)
+                            }
+                            Label { text: "MaxCLL"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 0; to: 10000; stepSize: 50
+                                value: EditorController.maxCll
+                                textFromValue: function(value) { return value + " nits" }
+                                valueFromText: function(text) { return parseInt(text) || 1000 }
+                                onValueModified: EditorController.setMaxCll(value)
+                            }
+                            Label { text: "MaxFALL"; color: "#b4bdc8" }
+                            SpinBox {
+                                Layout.fillWidth: true; from: 0; to: 10000; stepSize: 50
+                                value: EditorController.maxFall
+                                textFromValue: function(value) { return value + " nits" }
+                                valueFromText: function(text) { return parseInt(text) || 400 }
+                                onValueModified: EditorController.setMaxFall(value)
+                            }
+                        }
+                        Label {
+                            visible: EditorController.colorPipelineMode !== 0 &&
+                                     EditorController.hdrMonitoring
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: "#7f8c9c"
+                            font.pixelSize: 11
+                            text: EditorController.hdrDisplayStatus
+                        }
+                        Label {
+                            visible: EditorController.colorPipelineMode !== 0 &&
+                                     EditorController.monitorIccPath.length > 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.WrapAnywhere
+                            elide: Text.ElideMiddle
+                            color: "#7f8c9c"
+                            font.pixelSize: 10
+                            text: "모니터 ICC · " + EditorController.monitorIccPath
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: "#7f8c9c"
+                            font.pixelSize: 11
+                            text: "창작 Look만 Cube/OCIO 패키지로 내보냅니다. 공간·키프레임 노드는 차단됩니다."
+                        }
+                        Label { text: "Cube 크기"; color: "#b4bdc8" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["33³ 실시간", "65³ 전달"]
+                            currentIndex: EditorController.lookExportCubeSize >= 49 ? 1 : 0
+                            onActivated: EditorController.setLookExportCubeSize(currentIndex === 1 ? 65 : 33)
+                        }
+                        Label { text: "Shaper"; color: "#b4bdc8" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["ACEScct", "log2 ±8 stop", "작업 색공간"]
+                            currentIndex: EditorController.lookExportEncoding
+                            onActivated: EditorController.setLookExportEncoding(currentIndex)
+                        }
+                        Switch {
+                            text: "Unreal OCIO 패키지"
+                            checked: EditorController.lookExportUnrealBundle
+                            onToggled: EditorController.setLookExportUnrealBundle(checked)
+                        }
+                        AppButton {
+                            Layout.fillWidth: true
+                            text: EditorController.lookExportUnrealBundle
+                                  ? "Look 패키지 내보내기" : "Look Cube 내보내기"
+                            onClicked: EditorController.lookExportUnrealBundle
+                                       ? lookPackageDialog.open() : lookCubeDialog.open()
+                        }
+                        Label { text: "샷 스틸"; color: "#b4bdc8" }
+                        Label {
+                            Layout.fillWidth: true
+                            elide: Text.ElideMiddle
+                            color: "#8796a8"
+                            font.pixelSize: 10
+                            text: EditorController.shotStillPath.length > 0
+                                  ? EditorController.shotStillPath : "저장된 스틸 없음"
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            AppButton { text: "스틸 캡처"; Layout.fillWidth: true; onClicked: EditorController.captureShotStill() }
+                            AppButton { text: "지우기"; Layout.fillWidth: true; enabled: EditorController.shotStillPath.length > 0; onClicked: EditorController.clearShotStill() }
+                        }
+                        AppButton {
+                            Layout.fillWidth: true
+                            text: "스틸에 샷 매칭"
+                            enabled: EditorController.shotStillPath.length > 0 &&
+                                     EditorController.selectedClipIds.length === 1
+                            onClicked: EditorController.matchSelectedGradeToStill()
+                        }
+                        Label { text: "스틸 비교"; color: "#b4bdc8" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["끄기", "좌우 wipe", "상하 split"]
+                            currentIndex: EditorController.shotCompareMode
+                            onActivated: EditorController.setShotCompareMode(currentIndex)
+                        }
+                    }
+
+                    ColumnLayout {
+                        id: colorGradeStack
+                        visible: root.colorWorkspace
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label { text: "그레이드 스택"; font.bold: true }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: EditorController.selectedClipIds.length === 1
+                                  ? "노드는 위에서 아래 순서로 적용됩니다."
+                                  : "컬러 노드를 편집할 클립 하나를 선택하세요."
+                            color: "#7f8c9c"; font.pixelSize: 11
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -1116,6 +1720,16 @@ ApplicationWindow {
                                 text: "LUT / Look"
                                 Layout.fillWidth: true
                                 onClicked: gradeLutDialog.open()
+                            }
+                            AppButton {
+                                text: "Qualifier"
+                                Layout.fillWidth: true
+                                onClicked: EditorController.addGradeNode(8)
+                            }
+                            AppButton {
+                                text: "Window"
+                                Layout.fillWidth: true
+                                onClicked: EditorController.addGradeNode(9)
                             }
                             AppButton {
                                 text: "붙여넣기"
@@ -1175,6 +1789,30 @@ ApplicationWindow {
                                         { label: "하이라이트 노출", key: "highlightExposure", scale: 10, from: -100, to: 100 },
                                         { label: "스페큘러 노출", key: "specularExposure", scale: 10, from: -100, to: 100 },
                                         { label: "존 폭", key: "zoneWidth", scale: 10, from: 1, to: 80 }
+                                    ]
+                                    if (type === 8) return [
+                                        { label: "색조 중심", key: "hueCenter", scale: 1, from: 0, to: 360 },
+                                        { label: "색조 폭", key: "hueWidth", scale: 1, from: 1, to: 180 },
+                                        { label: "색조 소프트", key: "hueSoft", scale: 1, from: 0, to: 90 },
+                                        { label: "채도 하한", key: "satLow", scale: 100, from: 0, to: 100 },
+                                        { label: "채도 상한", key: "satHigh", scale: 100, from: 0, to: 100 },
+                                        { label: "루마 하한", key: "lumaLow", scale: 100, from: 0, to: 100 },
+                                        { label: "루마 상한", key: "lumaHigh", scale: 100, from: 0, to: 100 },
+                                        { label: "내부 노출", key: "insideExposure", scale: 10, from: -100, to: 100 },
+                                        { label: "내부 채도", key: "insideSaturation", scale: 100, from: 0, to: 400 },
+                                        { label: "반전", key: "invert", scale: 1, from: 0, to: 1 }
+                                    ]
+                                    if (type === 9) return [
+                                        { label: "중심 X", key: "centerX", scale: 1000, from: 0, to: 1000 },
+                                        { label: "중심 Y", key: "centerY", scale: 1000, from: 0, to: 1000 },
+                                        { label: "크기 X", key: "sizeX", scale: 1000, from: 20, to: 1500 },
+                                        { label: "크기 Y", key: "sizeY", scale: 1000, from: 20, to: 1500 },
+                                        { label: "회전", key: "rotation", scale: 1, from: -180, to: 180 },
+                                        { label: "소프트", key: "softness", scale: 100, from: 0, to: 100 },
+                                        { label: "사각", key: "shape", scale: 1, from: 0, to: 1 },
+                                        { label: "내부 노출", key: "insideExposure", scale: 10, from: -100, to: 100 },
+                                        { label: "내부 채도", key: "insideSaturation", scale: 100, from: 0, to: 400 },
+                                        { label: "반전", key: "invert", scale: 1, from: 0, to: 1 }
                                     ]
                                     return []
                                 }
@@ -1449,279 +2087,10 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#303844" }
-                        Label { text: "클립 사이 전환"; font.bold: true }
-                        GridLayout {
-                            Layout.fillWidth: true; columns: 2
-                            Label { text: "디졸브"; color: "#b4bdc8" }
-                            SpinBox {
-                                Layout.fillWidth: true
-                                from: 0; to: 5000; stepSize: 100; editable: true
-                                enabled: EditorController.selectedClipIds.length === 1 &&
-                                         EditorController.clips.length > 0 &&
-                                         EditorController.selectedClipId !== EditorController.clips[0].id
-                                value: EditorController.selectedClipDissolveMs
-                                textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
-                                valueFromText: function(text) { return Math.round((parseFloat(text) || 0) * 1000) }
-                                onValueModified: EditorController.setSelectedClipDissolveMs(value)
-                            }
-                        }
-                        Label {
-                            Layout.fillWidth: true; wrapMode: Text.WordWrap
-                            text: "선택 클립과 바로 앞 클립을 겹쳐 영상·오디오를 함께 전환합니다."
-                            color: "#7f8c9c"; font.pixelSize: 11
-                        }
                     }
 
                     InspectorNode {
-                        visible: root.showGraphicsNode
-                        nodeKey: "graphics"
-                        title: "문구·스탬프"
-                        summary: EditorController.stampMode === 1
-                                 ? "문구 · 확장 스탬프" : "문구 · 오버레이 스탬프"
-                        onRemoveRequested: {
-                            root.showGraphicsNode = false
-                            if (root.expandedNode === nodeKey) root.expandedNode = ""
-                        }
-
-                        Label { text: "자유 문구"; font.bold: true }
-                        TextField {
-                            id: newOverlayText
-                            Layout.fillWidth: true
-                            placeholderText: "화면에 넣을 문구"
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            SpinBox {
-                                id: newOverlayDuration
-                                Layout.fillWidth: true
-                                from: 500; to: 60000; stepSize: 500; value: 3000
-                                textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
-                                valueFromText: function(text) { return Math.round((parseFloat(text) || 3) * 1000) }
-                            }
-                            AppButton {
-                                text: "+ 문구"
-                                compact: true
-                                enabled: EditorController.durationNs > 0 && newOverlayText.text.trim().length > 0
-                                onClicked: {
-                                    EditorController.addTextOverlay(newOverlayText.text, newOverlayDuration.value)
-                                    newOverlayText.clear()
-                                }
-                            }
-                        }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            visible: EditorController.selectedCaptionId.length > 0
-                            Label { text: "선택 문구"; color: "#b4bdc8" }
-                            TextField {
-                                Layout.fillWidth: true
-                                text: EditorController.selectedCaptionText
-                                onEditingFinished: EditorController.updateSelectedCaption(
-                                    text, selectedOverlayDuration.value)
-                            }
-                            GridLayout {
-                                Layout.fillWidth: true; columns: 2
-                                Label { text: "표시 시간"; color: "#b4bdc8" }
-                                SpinBox {
-                                    id: selectedOverlayDuration
-                                    Layout.fillWidth: true
-                                    from: 100; to: 60000; stepSize: 100
-                                    value: EditorController.selectedCaptionDurationMs
-                                    textFromValue: function(value) { return (value / 1000).toFixed(1) + "초" }
-                                    valueFromText: function(text) { return Math.round((parseFloat(text) || 1) * 1000) }
-                                    onValueModified: EditorController.updateSelectedCaption(
-                                        EditorController.selectedCaptionText, value)
-                                }
-                                Label { text: "글자 크기"; color: "#b4bdc8" }
-                                SpinBox {
-                                    Layout.fillWidth: true
-                                    from: 12; to: 160; stepSize: 2
-                                    value: EditorController.selectedCaptionFontSize
-                                    onValueModified: EditorController.setSelectedCaptionFontSize(value)
-                                }
-                                Label { text: "배경 불투명도"; color: "#b4bdc8" }
-                                SpinBox {
-                                    Layout.fillWidth: true
-                                    from: 0; to: 100; stepSize: 5
-                                    value: EditorController.selectedCaptionBackgroundOpacity
-                                    textFromValue: function(value) {
-                                        return value === 0 ? "없음" : value + "%"
-                                    }
-                                    valueFromText: function(text) { return parseInt(text) || 0 }
-                                    onValueModified:
-                                        EditorController.setSelectedCaptionBackgroundOpacity(value)
-                                }
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: "프로그램 모니터에서 직접 끌어 배치합니다. 배경 0%는 없음, 100%는 불투명입니다."
-                                wrapMode: Text.WordWrap
-                                color: "#7f8c9c"; font.pixelSize: 11
-                            }
-                            AppButton {
-                                Layout.fillWidth: true
-                                text: "선택 문구 삭제"
-                                onClicked: EditorController.deleteSelectedCaption()
-                            }
-                        }
-
-                        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#303844" }
-                        Switch {
-                            text: "상·하단 스탬프 표시"
-                            checked: EditorController.stampEnabled
-                            onToggled: EditorController.setStampEnabled(checked)
-                        }
-                        GridLayout {
-                            Layout.fillWidth: true; columns: 2
-                            enabled: EditorController.stampEnabled
-                            Label { text: "배치 방식"; color: "#b4bdc8" }
-                            ComboBox {
-                                Layout.fillWidth: true
-                                model: ["영상 위에 겹치기", "캔버스 높이 확장"]
-                                currentIndex: EditorController.stampMode
-                                onActivated: EditorController.setStampMode(currentIndex)
-                            }
-                            Label { text: "작업자"; color: "#b4bdc8" }
-                            TextField {
-                                Layout.fillWidth: true
-                                text: EditorController.stampWorker
-                                placeholderText: "이름"
-                                onEditingFinished: EditorController.setStampWorker(text)
-                            }
-                            Label { text: "영상 정보"; color: "#b4bdc8" }
-                            TextField {
-                                Layout.fillWidth: true
-                                text: EditorController.stampInformation
-                                placeholderText: "프로젝트·버전·샷 정보"
-                                onEditingFinished: EditorController.setStampInformation(text)
-                            }
-                            Label { text: "바 높이"; color: "#b4bdc8" }
-                            SpinBox {
-                                Layout.fillWidth: true
-                                from: 4; to: 25; value: EditorController.stampBarPercent
-                                textFromValue: function(value) { return value + "%" }
-                                valueFromText: function(text) { return parseInt(text) || 9 }
-                                onValueModified: EditorController.setStampBarPercent(value)
-                            }
-                            Label { text: "바 불투명도"; color: "#b4bdc8" }
-                            SpinBox {
-                                Layout.fillWidth: true
-                                from: 0; to: 100; stepSize: 5
-                                value: EditorController.stampOpacity
-                                textFromValue: function(value) {
-                                    return value === 0 ? "투명" : value + "%"
-                                }
-                                valueFromText: function(text) { return parseInt(text) || 0 }
-                                onValueModified: EditorController.setStampOpacity(value)
-                            }
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            text: EditorController.stampMode === 0
-                                  ? "영상 위에 바를 겹칩니다. 출력 해상도는 바뀌지 않습니다."
-                                  : "원본 영상은 축소하지 않고 위·아래 픽셀을 추가해 출력 높이를 늘립니다."
-                            wrapMode: Text.WordWrap
-                            color: "#7f8c9c"; font.pixelSize: 11
-                        }
-                    }
-
-                    InspectorNode {
-                        visible: root.showGlobalTrimNode
-                        nodeKey: "globalTrim"
-                        title: "전체 트림"
-                        summary: "모든 클립의 앞·뒤를 프레임 단위로 정리"
-                        onRemoveRequested: {
-                            root.showGlobalTrimNode = false
-                            if (root.expandedNode === nodeKey) root.expandedNode = ""
-                        }
-                        GridLayout {
-                            Layout.fillWidth: true; columns: 2
-                            Label { text: "앞 프레임"; color: "#b4bdc8" }
-                            SpinBox { id: globalFrontFrames; Layout.fillWidth: true; from: 0; to: 999; editable: true }
-                            Label { text: "뒤 프레임"; color: "#b4bdc8" }
-                            SpinBox { id: globalBackFrames; Layout.fillWidth: true; from: 0; to: 999; editable: true }
-                        }
-                        AppButton {
-                            Layout.fillWidth: true
-                            text: "모든 클립에 적용"
-                            enabled: globalFrontFrames.value > 0 || globalBackFrames.value > 0
-                            onClicked: EditorController.trimAllClipEdges(
-                                globalFrontFrames.value, globalBackFrames.value)
-                        }
-                    }
-
-                    InspectorNode {
-                        visible: root.showColorManagementNode
-                        nodeKey: "colorManagement"
-                        title: "컬러 관리"
-                        summary: EditorController.colorPipelineSummary
-                        onRemoveRequested: {
-                            root.showColorManagementNode = false
-                            if (root.expandedNode === nodeKey) root.expandedNode = ""
-                        }
-                        Label { text: "프로젝트 컬러 파이프라인"; color: "#b4bdc8" }
-                        ComboBox {
-                            Layout.fillWidth: true
-                            model: ["현재 색 유지 · Legacy", "ACES 2.0 · ACEScg", "사용자 OpenColorIO"]
-                            currentIndex: EditorController.colorPipelineMode
-                            onActivated: {
-                                if (currentIndex === 2 && EditorController.customOcioPath.length === 0)
-                                    ocioConfigDialog.open()
-                                else
-                                    EditorController.setColorPipelineMode(currentIndex)
-                            }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: EditorController.colorPipelineMode === 2
-                            Label {
-                                Layout.fillWidth: true
-                                text: EditorController.customOcioPath
-                                elide: Text.ElideMiddle
-                                color: "#8796a8"
-                                font.pixelSize: 10
-                            }
-                            AppButton { text: "변경"; compact: true; onClicked: ocioConfigDialog.open() }
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            visible: EditorController.colorPipelineMode !== 0
-                            wrapMode: Text.WordWrap
-                            text: "입력 변환 → ACEScg 작업 → 표시 변환을 분리합니다. Legacy로 돌아가면 기존 색처리를 그대로 사용합니다."
-                            color: "#7f8c9c"
-                            font.pixelSize: 11
-                        }
-                        Switch {
-                            visible: EditorController.colorPipelineMode !== 0
-                            text: "HDR 모니터 출력"
-                            checked: EditorController.hdrMonitoring
-                            onToggled: EditorController.setHdrMonitoring(checked)
-                        }
-                        GridLayout {
-                            visible: EditorController.colorPipelineMode !== 0 && EditorController.hdrMonitoring
-                            Layout.fillWidth: true
-                            columns: 2
-                            Label { text: "HDR 피크"; color: "#b4bdc8" }
-                            SpinBox {
-                                Layout.fillWidth: true; from: 100; to: 10000; stepSize: 50
-                                value: EditorController.hdrPeakNits
-                                textFromValue: function(value) { return value + " nits" }
-                                valueFromText: function(text) { return parseInt(text) || 1000 }
-                                onValueModified: EditorController.setHdrPeakNits(value)
-                            }
-                            Label { text: "SDR 흰색"; color: "#b4bdc8" }
-                            SpinBox {
-                                Layout.fillWidth: true; from: 80; to: 500; stepSize: 1
-                                value: EditorController.sdrWhiteNits
-                                textFromValue: function(value) { return value + " nits" }
-                                valueFromText: function(text) { return parseInt(text) || 203 }
-                                onValueModified: EditorController.setSdrWhiteNits(value)
-                            }
-                        }
-                    }
-
-                    InspectorNode {
-                        visible: root.showOutputSettingsNode
+                        visible: !root.colorWorkspace && root.showOutputSettingsNode
                         nodeKey: "outputSettings"
                         title: "출력 설정"
                         summary: ["MP4", "MKV", "MOV", "GIF"][EditorController.exportContainer]
@@ -1832,10 +2201,11 @@ ApplicationWindow {
             }
         }
 
-        Frame {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 250
-            background: Rectangle { color: "#11161c" }
+            Frame {
+                SplitView.fillWidth: true
+                SplitView.preferredHeight: 320
+                SplitView.minimumHeight: 180
+                background: Rectangle { color: "#11161c" }
 
             ColumnLayout {
                 anchors.fill: parent
@@ -1939,13 +2309,7 @@ ApplicationWindow {
                         ToolTip.visible: hovered
                         ToolTip.text: "인/아웃 구간을 삭제하고 빈자리 닫기  Shift+Delete"
                     }
-                    Label {
-                        Layout.fillWidth: true
-                        text: EditorController.status
-                        elide: Text.ElideRight
-                        color: EditorController.previewFailed ? "#ff7780"
-                             : EditorController.previewBusy ? "#f0bd58" : "#8994a3"
-                    }
+                    Item { Layout.fillWidth: true }
                     Label {
                         text: "눈금 드래그 탐색  ·  클립 드래그 이동  ·  Ctrl+휠 확대"
                         color: "#687484"
@@ -2183,6 +2547,7 @@ ApplicationWindow {
                         }
                     }
                 }
+            }
             }
         }
     }

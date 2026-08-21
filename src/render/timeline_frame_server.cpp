@@ -32,7 +32,8 @@ RenderedTimelineFrame TimelineFrameServer::render(
     const TimelineModel& timeline,
     TimeNs timeline_time,
     const ColorPipelineSettings& color_pipeline,
-    const std::string& output_space) {
+    const std::string& output_space,
+    ColorProcessStage stage) {
     const auto spans = timeline.snapshot();
     const auto active = std::ranges::find_if(
         spans | std::views::reverse, [timeline_time](const auto& span) {
@@ -42,7 +43,7 @@ RenderedTimelineFrame TimelineFrameServer::render(
         throw std::out_of_range("timeline frame position is outside media");
     }
 
-    const auto renderSpan = [this, &timeline, &color_pipeline, &output_space, timeline_time]
+    const auto renderSpan = [this, &timeline, &color_pipeline, &output_space, timeline_time, stage]
         (const TimelineSpan& span) {
         const auto* asset = timeline.asset(span.clip.asset_id);
         if (asset == nullptr || !asset->image_sequence().has_value()) {
@@ -69,7 +70,7 @@ RenderedTimelineFrame TimelineFrameServer::render(
         auto combinedGrade = compose_clip_grade(span.clip);
         auto processed = process_color_frame(
             *source, asset->source_color(), color_pipeline, combinedGrade, output_space,
-            sourceTime);
+            sourceTime, stage);
         return RenderedTimelineFrame{
             std::move(source), std::move(processed), span.clip.id, asset->id(), requested,
             resolved, requested != resolved};

@@ -74,7 +74,8 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
     Q_PROPERTY(QWindow* videoWindow READ videoWindow CONSTANT)
-    Q_PROPERTY(bool gpuSceneGraphPreview READ gpuSceneGraphPreview CONSTANT)
+    Q_PROPERTY(bool gpuSceneGraphPreview READ gpuSceneGraphPreview NOTIFY previewPathChanged)
+    Q_PROPERTY(bool cpuPreviewFallback READ cpuPreviewFallback NOTIFY previewPathChanged)
     Q_PROPERTY(bool inProcessPreview READ inProcessPreview CONSTANT)
     Q_PROPERTY(bool exporting READ exporting NOTIFY exportingChanged)
     Q_PROPERTY(qreal exportProgress READ exportProgress NOTIFY exportProgressChanged)
@@ -93,11 +94,31 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool hdrMonitoring READ hdrMonitoring WRITE setHdrMonitoring NOTIFY colorPipelineChanged)
     Q_PROPERTY(int hdrPeakNits READ hdrPeakNits WRITE setHdrPeakNits NOTIFY colorPipelineChanged)
     Q_PROPERTY(int sdrWhiteNits READ sdrWhiteNits WRITE setSdrWhiteNits NOTIFY colorPipelineChanged)
+    Q_PROPERTY(int maxCll READ maxCll WRITE setMaxCll NOTIFY colorPipelineChanged)
+    Q_PROPERTY(int maxFall READ maxFall WRITE setMaxFall NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QString hdrDisplayStatus READ hdrDisplayStatus NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QString monitorIccPath READ monitorIccPath NOTIFY colorPipelineChanged)
     Q_PROPERTY(QString colorPipelineSummary READ colorPipelineSummary NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QString displayName READ displayName WRITE setDisplayName NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QString viewName READ viewName WRITE setViewName NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QStringList displayOptions READ displayOptions NOTIFY colorPipelineChanged)
+    Q_PROPERTY(QStringList viewOptions READ viewOptions NOTIFY colorPipelineChanged)
+    Q_PROPERTY(bool displayTransformBypassed READ displayTransformBypassed WRITE setDisplayTransformBypassed NOTIFY colorPipelineChanged)
+    Q_PROPERTY(bool previewCompareEnabled READ previewCompareEnabled WRITE setPreviewCompareEnabled NOTIFY colorPipelineChanged)
+    Q_PROPERTY(int lookExportCubeSize READ lookExportCubeSize WRITE setLookExportCubeSize NOTIFY lookExportChanged)
+    Q_PROPERTY(int lookExportEncoding READ lookExportEncoding WRITE setLookExportEncoding NOTIFY lookExportChanged)
+    Q_PROPERTY(bool lookExportUnrealBundle READ lookExportUnrealBundle WRITE setLookExportUnrealBundle NOTIFY lookExportChanged)
+    Q_PROPERTY(QString shotStillPath READ shotStillPath NOTIFY shotLibraryChanged)
+    Q_PROPERTY(int shotCompareMode READ shotCompareMode WRITE setShotCompareMode NOTIFY shotLibraryChanged)
     Q_PROPERTY(QVariantList selectedGradeNodes READ selectedGradeNodes NOTIFY gradeUiChanged)
     Q_PROPERTY(bool gradeClipboardAvailable READ gradeClipboardAvailable NOTIFY gradeClipboardChanged)
     Q_PROPERTY(bool scopesVisible READ scopesVisible WRITE setScopesVisible NOTIFY scopeSettingsChanged)
     Q_PROPERTY(int scopeMode READ scopeMode WRITE setScopeMode NOTIFY scopeSettingsChanged)
+    Q_PROPERTY(int scopeReferenceStage READ scopeReferenceStage WRITE setScopeReferenceStage NOTIFY scopeSettingsChanged)
+    Q_PROPERTY(int reviewOverlayMode READ reviewOverlayMode WRITE setReviewOverlayMode NOTIFY scopeSettingsChanged)
+    Q_PROPERTY(QString pixelInspectorText READ pixelInspectorText NOTIFY scopeFrameChanged)
+    Q_PROPERTY(QString scopeStageHint READ scopeStageHint NOTIFY scopeFrameChanged)
+    Q_PROPERTY(qreal outOfGamutPercent READ outOfGamutPercent NOTIFY scopeFrameChanged)
     Q_PROPERTY(quint64 scopeFramesAnalyzed READ scopeFramesAnalyzed NOTIFY scopeFrameChanged)
     Q_PROPERTY(int exportQuality READ exportQuality WRITE setExportQuality NOTIFY exportSettingsChanged)
     Q_PROPERTY(int exportCodec READ exportCodec WRITE setExportCodec NOTIFY exportSettingsChanged)
@@ -155,6 +176,7 @@ public:
     [[nodiscard]] bool importing() const noexcept { return importing_; }
     [[nodiscard]] QWindow* videoWindow() const noexcept { return video_window_; }
     [[nodiscard]] bool gpuSceneGraphPreview() const noexcept { return use_d3d_scene_graph_; }
+    [[nodiscard]] bool cpuPreviewFallback() const noexcept { return cpu_preview_fallback_; }
     [[nodiscard]] bool inProcessPreview() const noexcept { return in_process_preview_; }
     [[nodiscard]] bool exporting() const noexcept { return exporting_; }
     [[nodiscard]] qreal exportProgress() const noexcept { return export_progress_; }
@@ -176,13 +198,41 @@ public:
     [[nodiscard]] bool hdrMonitoring() const noexcept { return color_pipeline_.hdr_monitoring; }
     [[nodiscard]] int hdrPeakNits() const noexcept { return color_pipeline_.hdr_peak_nits; }
     [[nodiscard]] int sdrWhiteNits() const noexcept { return color_pipeline_.sdr_white_nits; }
+    [[nodiscard]] int maxCll() const noexcept { return color_pipeline_.max_cll; }
+    [[nodiscard]] int maxFall() const noexcept { return color_pipeline_.max_fall; }
+    [[nodiscard]] QString hdrDisplayStatus() const { return hdr_display_status_; }
+    [[nodiscard]] QString monitorIccPath() const {
+        return QString::fromStdString(color_pipeline_.monitor_icc_path);
+    }
     [[nodiscard]] QString colorPipelineSummary() const;
+    [[nodiscard]] QString displayName() const {
+        return QString::fromStdString(color_pipeline_.display);
+    }
+    [[nodiscard]] QString viewName() const {
+        return QString::fromStdString(color_pipeline_.view);
+    }
+    [[nodiscard]] bool displayTransformBypassed() const noexcept {
+        return color_pipeline_.display_transform_bypassed;
+    }
+    [[nodiscard]] bool previewCompareEnabled() const noexcept { return preview_compare_enabled_; }
+    [[nodiscard]] int lookExportCubeSize() const noexcept { return look_export_cube_size_; }
+    [[nodiscard]] int lookExportEncoding() const noexcept { return look_export_encoding_; }
+    [[nodiscard]] bool lookExportUnrealBundle() const noexcept { return look_export_unreal_bundle_; }
+    [[nodiscard]] QString shotStillPath() const { return shot_still_path_; }
+    [[nodiscard]] int shotCompareMode() const noexcept { return shot_compare_mode_; }
     [[nodiscard]] QVariantList selectedGradeNodes() const;
     [[nodiscard]] bool gradeClipboardAvailable() const noexcept {
         return grade_node_clipboard_.has_value();
     }
     [[nodiscard]] bool scopesVisible() const noexcept { return scopes_visible_; }
     [[nodiscard]] int scopeMode() const noexcept { return scope_mode_; }
+    [[nodiscard]] int scopeReferenceStage() const noexcept { return scope_reference_stage_; }
+    [[nodiscard]] int reviewOverlayMode() const noexcept {
+        return static_cast<int>(review_overlay_mode_);
+    }
+    [[nodiscard]] QString pixelInspectorText() const { return pixel_inspector_text_; }
+    [[nodiscard]] QString scopeStageHint() const;
+    [[nodiscard]] qreal outOfGamutPercent() const noexcept { return out_of_gamut_percent_; }
     [[nodiscard]] quint64 scopeFramesAnalyzed() const noexcept { return scope_frames_analyzed_; }
     [[nodiscard]] int exportQuality() const noexcept { return export_quality_; }
     [[nodiscard]] int exportCodec() const noexcept { return export_codec_; }
@@ -212,6 +262,9 @@ public:
     [[nodiscard]] std::uint64_t videoFramesReceived() const noexcept;
     [[nodiscard]] std::uint64_t previewRebuildCount() const noexcept {
         return preview_rebuild_count_;
+    }
+    [[nodiscard]] std::uint64_t previewColorUpdateCount() const noexcept {
+        return preview_color_update_count_;
     }
     [[nodiscard]] std::uint64_t scrubFramesSubmitted() const noexcept {
         return scrub_frames_submitted_;
@@ -293,11 +346,27 @@ public slots:
     void copyOutputDirectory();
     void setColorPipelineMode(int mode);
     void setCustomOcioUrl(const QUrl& url);
+    void setDisplayName(const QString& name);
+    void setViewName(const QString& name);
+    void setDisplayTransformBypassed(bool bypassed);
+    void setPreviewCompareEnabled(bool enabled);
     void setHdrMonitoring(bool enabled);
     void setHdrPeakNits(int nits);
     void setSdrWhiteNits(int nits);
+    void setMaxCll(int nits);
+    void setMaxFall(int nits);
+    Q_INVOKABLE void attachPreviewWindow(QObject* window);
+    Q_INVOKABLE void refreshHdrDisplay();
     void addGradeNode(int type);
     void addGradeLutUrl(const QUrl& url);
+    void exportLookUrl(const QUrl& url);
+    void setLookExportCubeSize(int size);
+    void setLookExportEncoding(int encoding);
+    void setLookExportUnrealBundle(bool enabled);
+    void captureShotStill();
+    void clearShotStill();
+    void matchSelectedGradeToStill();
+    void setShotCompareMode(int mode);
     void removeGradeNode(const QString& nodeId);
     void moveGradeNode(const QString& nodeId, int direction);
     void copyGradeNode(const QString& nodeId);
@@ -314,6 +383,9 @@ public slots:
         const QString& nodeId, const QString& curveName, int adjustmentPercent);
     void setScopesVisible(bool visible);
     void setScopeMode(int mode);
+    void setScopeReferenceStage(int stage);
+    void setReviewOverlayMode(int mode);
+    void inspectPreviewPixel(qreal x, qreal y);
     void attachScopeItem(QObject* item);
     void cancelExport();
     void setExportQuality(int quality);
@@ -335,6 +407,8 @@ public slots:
     void setStampMode(int mode);
     [[nodiscard]] QString exportExtension() const;
     [[nodiscard]] QStringList inputColorSpaceOptions() const;
+    [[nodiscard]] QStringList displayOptions() const;
+    [[nodiscard]] QStringList viewOptions() const;
     [[nodiscard]] QString timeText(qint64 timelinePosition) const;
     [[nodiscard]] qint64 frameNumberAt(qint64 timelinePosition) const;
     [[nodiscard]] qint64 frameCountBetween(qint64 first, qint64 second) const;
@@ -362,6 +436,9 @@ signals:
     void exportProgressChanged();
     void exportSettingsChanged();
     void colorPipelineChanged();
+    void lookExportChanged();
+    void shotLibraryChanged();
+    void previewPathChanged();
     void scopeSettingsChanged();
     void scopeFrameChanged();
     void gradeClipboardChanged();
@@ -378,12 +455,17 @@ private:
     };
 
     void publishTimeline(bool resetPlayhead = false);
+    void publishColorPreview();
+    void touchCoalescedGradeEdit();
+    void endCoalescedGradeEdit();
     void commitGradeNodeEdit(
         const std::string& clip_id, ffgui::GradeGraph graph, const std::string& node_id);
     [[nodiscard]] std::optional<ffgui::TimeNs> selectedClipSourceTime() const;
     void setStatus(QString status);
     void queuePreviewOperation(bool restorePosition);
     void startPreviewOperation();
+    void queueLiveSeek(qint64 timelinePosition);
+    void pumpLiveSeek();
     void submitCachedScrubFrame(qint64 timelinePosition);
     bool submitFloatScrubFrame(qint64 timelinePosition);
     void startFloatScrubFrame(qint64 timelinePosition);
@@ -396,6 +478,13 @@ private:
     void startFloatVideoFrame(ffgui::PreviewVideoFrame frame);
     void submitScopeFrame(ffgui::PreviewVideoFrame frame);
     void startScopeFrame(ffgui::PreviewVideoFrame frame);
+    void presentPreviewFrame(ffgui::PreviewVideoFrame frame);
+    void recoverCpuPreview();
+    void syncOutputSpaceFromDisplayView();
+    void applyHdrDisplayPath();
+    bool selectHdrDisplayView();
+    void restoreSdrDisplayView();
+    void storeInspectableFrame(const ffgui::PreviewVideoFrame& frame);
     [[nodiscard]] bool canUseFloatExport() const;
     void startFloatExport();
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
@@ -412,6 +501,11 @@ private:
     struct PreviewOperationResult final {
         std::uint64_t generation{};
         bool rebuilt{};
+        bool color_only{};
+        bool success{};
+        QString error;
+    };
+    struct LiveSeekResult final {
         bool success{};
         QString error;
     };
@@ -445,12 +539,14 @@ private:
     std::uint64_t preview_generation_{};
     std::optional<std::uint64_t> preview_applied_generation_;
     std::uint64_t preview_rebuild_count_{};
+    std::uint64_t preview_color_update_count_{};
     std::uint64_t video_frames_presented_{};
     std::uint64_t video_frames_delivered_{};
     qint64 playhead_ns_{};
     qint64 in_point_ns_{-1};
     qint64 out_point_ns_{-1};
     bool playing_{};
+    bool scrubbing_{};
     bool preview_busy_{};
     bool preview_failed_{};
     bool preview_suspended_for_export_{};
@@ -475,22 +571,52 @@ private:
     QObject* video_item_{};
     QObject* scope_item_{};
     QWindow* video_window_{};
+    QWindow* preview_quick_window_{};
+    QString hdr_display_status_;
+    std::string saved_display_before_hdr_;
+    std::string saved_view_before_hdr_;
+    bool hdr_display_override_{};
     bool use_d3d_scene_graph_{};
+    bool cpu_preview_fallback_{};
     bool in_process_preview_{};
     bool scopes_visible_{};
     int scope_mode_{};
+    int scope_reference_stage_{2};
+    ffgui::ReviewOverlayMode review_overlay_mode_{ffgui::ReviewOverlayMode::off};
+    bool preview_compare_enabled_{};
+    int look_export_cube_size_{33};
+    int look_export_encoding_{2};
+    bool look_export_unreal_bundle_{true};
+    QString shot_still_path_;
+    QString shot_still_clip_id_;
+    qint64 shot_still_source_time_{};
+    int shot_compare_mode_{};
+    std::optional<ffgui::FloatImageFrame> shot_still_frame_;
+    QString pixel_inspector_text_;
+    qreal out_of_gamut_percent_{};
+    bool last_scope_approximate_{};
+    std::uint32_t inspect_width_{};
+    std::uint32_t inspect_height_{};
+    std::uint32_t inspect_stride_{};
+    std::shared_ptr<std::vector<std::uint8_t>> inspect_bgra_;
+    std::vector<float> inspect_rgba_;
+    std::mutex inspect_mutex_;
     std::uint64_t scope_frames_analyzed_{};
     bool importing_{};
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
     QTimer preview_update_timer_;
+    QTimer grade_coalesce_timer_;
     QTimer float_playback_timer_;
     QElapsedTimer float_playback_clock_;
     qint64 float_playback_origin_ns_{};
     bool float_playback_running_{};
 #ifdef FFGUI_HAS_GES
     QFutureWatcher<PreviewOperationResult> preview_watcher_;
+    QFutureWatcher<LiveSeekResult> live_seek_watcher_;
     std::optional<qint64> pending_preview_seek_;
+    std::optional<qint64> pending_live_seek_;
     bool preview_operation_pending_{};
+    bool preview_color_only_pending_{};
     bool preview_should_play_{};
     bool preview_stop_requested_{};
     mutable std::mutex pending_video_frame_mutex_;

@@ -2,11 +2,16 @@
 #include "ffprobe_analyzer.hpp"
 #include "d3d11_video_item.hpp"
 #include "color_scope_item.hpp"
+#include "hdr_display.hpp"
 #include "core/subtitle_srt.hpp"
 #include "core/render_preflight.hpp"
 #include "color/color_frame_processor.hpp"
 #include "color/grade_processor.hpp"
 #include "color/ocio_engine.hpp"
+#include "color/review_tools.hpp"
+#include "color/scope_analyzer.hpp"
+#include "color/look_export.hpp"
+#include "color/shot_matching.hpp"
 
 #include <QFile>
 #include <QCoreApplication>
@@ -19,6 +24,7 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QJSEngine>
+#include <QPointF>
 #include <QSaveFile>
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -34,8 +40,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <optional>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -72,6 +81,44 @@ ffgui::TimeNs parseTime(const QJsonValue& value, const char* field) {
     return static_cast<ffgui::TimeNs>(parsed);
 }
 
+ffgui::FloatImageFrame packed_8bit_to_float(
+    const std::uint8_t* pixels, std::size_t width, std::size_t height, std::size_t stride,
+    bool bgra) {
+    ffgui::FloatImageFrame frame;
+    frame.width = static_cast<int>(width);
+    frame.height = static_cast<int>(height);
+    frame.rgba.resize(width * height * 4);
+    for (std::size_t y = 0; y < height; ++y) {
+        const auto* row = pixels + y * stride;
+        for (std::size_t x = 0; x < width; ++x) {
+            const auto* pixel = row + x * 4;
+            auto* output = frame.rgba.data() + (y * width + x) * 4;
+            output[0] = static_cast<float>(bgra ? pixel[2] : pixel[0]) / 255.0F;
+            output[1] = static_cast<float>(pixel[1]) / 255.0F;
+            output[2] = static_cast<float>(bgra ? pixel[0] : pixel[2]) / 255.0F;
+            output[3] = static_cast<float>(pixel[3]) / 255.0F;
+        }
+    }
+    return frame;
+}
+
+void invert_display_to_working(
+    ffgui::FloatImageFrame& frame, const ffgui::ColorPipelineSettings& settings,
+    const std::string& output_space) {
+    ffgui::OcioEngine ocio(settings);
+    if (ffgui::uses_display_view(settings)) {
+        ocio.transform_display_view_rgba32f(
+            frame.rgba.data(), static_cast<std::size_t>(frame.width),
+            static_cast<std::size_t>(frame.height), settings.working_space,
+            settings.display, settings.view, true);
+    } else if (!output_space.empty() && output_space != settings.working_space) {
+        ocio.transform_rgba32f(
+            frame.rgba.data(), static_cast<std::size_t>(frame.width),
+            static_cast<std::size_t>(frame.height), output_space, settings.working_space);
+    }
+    frame.color_space = settings.working_space;
+}
+
 QString mediaKindName(ffgui::MediaKind kind) {
     switch (kind) {
     case ffgui::MediaKind::animated_image: return QStringLiteral("animatedImage");
@@ -87,6 +134,14 @@ ffgui::MediaKind parseMediaKind(const QString& value) {
     if (value == QStringLiteral("stillImage")) return ffgui::MediaKind::still_image;
     if (value == QStringLiteral("imageSequence")) return ffgui::MediaKind::image_sequence;
     return ffgui::MediaKind::video;
+}
+
+void removeExportColorArtifacts(const QStringList& paths) {
+    for (const auto& path : paths) {
+        QFileInfo info(path);
+        if (info.isDir()) QDir(path).removeRecursively();
+        else QFile::remove(path);
+    }
 }
 
 QJsonObject serializeGradeGraph(const ffgui::GradeGraph& graph) {
@@ -190,8 +245,12 @@ void EditorController::setSingletonInstance(EditorController* instance) {
 }
 
 EditorController::EditorController(QObject* parent) : QObject(parent) {
-    connect(this, &EditorController::playheadChanged,
-            this, &EditorController::gradeUiChanged);
+    connect(this, &EditorController::playheadChanged, this, [this] {
+        if (!playing_ && !scrubbing_) emit gradeUiChanged();
+    });
+    connect(this, &EditorController::playingChanged, this, [this] {
+        if (!playing_ && !scrubbing_) emit gradeUiChanged();
+    });
     connect(this, &EditorController::selectedClipChanged,
             this, &EditorController::gradeUiChanged);
     connect(this, &EditorController::timelineChanged,
@@ -335,10 +394,21 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             const auto document = QJsonDocument::fromJson(output);
             const auto streams = document.object().value("streams").toArray();
             bool hasVideo = false;
+            bool hdrSignaled = false;
+            bool hdrConflict = false;
             for (const auto& stream : streams) {
-                if (stream.toObject().value("codec_type").toString() == "video") {
-                    hasVideo = true;
-                    break;
+                const auto object = stream.toObject();
+                if (object.value("codec_type").toString() != "video") continue;
+                hasVideo = true;
+                const auto transfer = object.value("color_transfer").toString();
+                const auto primaries = object.value("color_primaries").toString();
+                const auto pq = transfer.contains(QStringLiteral("smpte2084"), Qt::CaseInsensitive) ||
+                    transfer == QStringLiteral("16");
+                const auto bt2020 = primaries.contains(QStringLiteral("bt2020"), Qt::CaseInsensitive) ||
+                    primaries == QStringLiteral("9");
+                hdrSignaled = pq && bt2020;
+                if ((!transfer.isEmpty() && !pq) || (!primaries.isEmpty() && !bt2020)) {
+                    hdrConflict = true;
                 }
             }
             const auto durationSeconds = document.object().value("format").toObject()
@@ -349,11 +419,22 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 500'000'000, export_duration_ns_ / 50);
             valid = valid && hasVideo && actualDuration > 0 &&
                 std::abs(actualDuration - export_duration_ns_) <= tolerance;
+            if (valid && export_request_ && export_request_->hdr10) {
+                if (hdrConflict) {
+                    qWarning().noquote() << "HDR10 export has conflicting stream color metadata";
+                    valid = false;
+                } else if (!hdrSignaled) {
+                    qWarning().noquote()
+                        << "HDR10 export did not report Rec.2100 PQ stream metadata";
+                }
+            }
             qInfo().noquote() << "export validation finished"
                               << "valid=" << valid
                               << "expected_ns=" << export_duration_ns_
                               << "actual_ns=" << actualDuration
                               << "video=" << hasVideo
+                              << "hdr10=" << (export_request_ && export_request_->hdr10)
+                              << "hdr_signaled=" << hdrSignaled
                               << "log=" << export_log_path_;
             if (!valid && !error.trimmed().isEmpty()) export_stderr_.append(error);
             finishExport(valid);
@@ -400,15 +481,13 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 video_frame_delivery_queued_ = false;
             }
             if (!frame.has_value()) return;
-            if (auto* item = qobject_cast<VideoPreviewItem*>(video_item_)) {
-                ++video_frames_delivered_;
-                if (video_frames_delivered_ == 1) {
-                    qInfo().noquote() << "first preview frame delivered to Qt item"
-                                      << "cpu=" << (frame->cpu_pixels != nullptr)
-                                      << "size=" << frame->width << "x" << frame->height;
-                }
-                item->submitFrame(std::move(frame.value()));
+            ++video_frames_delivered_;
+            if (video_frames_delivered_ == 1) {
+                qInfo().noquote() << "first preview frame delivered to Qt item"
+                                  << "cpu=" << (frame->cpu_pixels != nullptr)
+                                  << "size=" << frame->width << "x" << frame->height;
             }
+            presentPreviewFrame(std::move(*frame));
         }, Qt::QueuedConnection);
     });
     player_->set_scope_frame_callback([this](ffgui::PreviewVideoFrame frame) {
@@ -480,7 +559,19 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     preview_update_timer_.setSingleShot(true);
     preview_update_timer_.setInterval(50);
     connect(&preview_update_timer_, &QTimer::timeout, this, [this] {
+#ifdef FFGUI_HAS_GES
+        const bool structural = !preview_applied_generation_.has_value() ||
+            preview_applied_generation_.value() != preview_generation_;
+        if (structural) preview_color_only_pending_ = false;
+        queuePreviewOperation(structural);
+#else
         queuePreviewOperation(true);
+#endif
+    });
+    grade_coalesce_timer_.setSingleShot(true);
+    grade_coalesce_timer_.setInterval(350);
+    connect(&grade_coalesce_timer_, &QTimer::timeout, this, [this] {
+        endCoalescedGradeEdit();
     });
     float_playback_timer_.setTimerType(Qt::PreciseTimer);
     float_playback_timer_.setInterval(8);
@@ -502,6 +593,8 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 if (result.rebuilt) {
                     preview_applied_generation_ = result.generation;
                     ++preview_rebuild_count_;
+                } else if (result.color_only) {
+                    ++preview_color_update_count_;
                 }
             } else {
                 if (retryPending) {
@@ -535,6 +628,22 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                         ? QStringLiteral("재생 중")
                         : QStringLiteral("미리보기 준비 완료")));
             }
+            pumpLiveSeek();
+        });
+    connect(
+        &live_seek_watcher_,
+        &QFutureWatcher<LiveSeekResult>::finished,
+        this,
+        [this] {
+            const auto result = live_seek_watcher_.result();
+            if (!result.success && !result.error.isEmpty()) {
+                qWarning().noquote() << "live preview seek failed" << result.error;
+            }
+            if (preview_operation_pending_) {
+                startPreviewOperation();
+                return;
+            }
+            pumpLiveSeek();
         });
     connect(
         &float_scrub_watcher_,
@@ -554,18 +663,15 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 setStatus(result.error);
                 stopFloatPlayback();
             } else if (result.generation == float_scrub_generation_) {
-                auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
-                if (item != nullptr) {
-                    auto scopeFrame = result.frame;
-                    ++scrub_frames_submitted_;
-                    item->submitFrame(std::move(result.frame));
-                    if (scopes_visible_) submitScopeFrame(std::move(scopeFrame));
-                    if (result.requested_frame != result.resolved_frame) {
-                        setStatus(QStringLiteral("누락 프레임 %1 · %2 프레임으로 대체")
-                            .arg(result.requested_frame).arg(result.resolved_frame));
-                    } else if (!float_playback_running_) {
-                        setStatus(QStringLiteral("원본 float 프레임 표시 완료"));
-                    }
+                auto scopeFrame = result.frame;
+                ++scrub_frames_submitted_;
+                presentPreviewFrame(std::move(result.frame));
+                if (scopes_visible_) submitScopeFrame(std::move(scopeFrame));
+                if (result.requested_frame != result.resolved_frame) {
+                    setStatus(QStringLiteral("누락 프레임 %1 · %2 프레임으로 대체")
+                        .arg(result.requested_frame).arg(result.resolved_frame));
+                } else if (!float_playback_running_) {
+                    setStatus(QStringLiteral("원본 float 프레임 표시 완료"));
                 }
             }
             if (pending_float_scrub_ns_.has_value()) {
@@ -612,12 +718,10 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 return;
             } else if (result.generation == preview_generation_) {
                 ++float_video_frames_processed_;
-                if (auto* item = qobject_cast<VideoPreviewItem*>(video_item_)) {
-                    auto scopeFrame = result.frame;
-                    ++video_frames_delivered_;
-                    item->submitFrame(std::move(result.frame));
-                    if (scopes_visible_) submitScopeFrame(std::move(scopeFrame));
-                }
+                auto scopeFrame = result.frame;
+                ++video_frames_delivered_;
+                presentPreviewFrame(std::move(result.frame));
+                if (scopes_visible_) submitScopeFrame(std::move(scopeFrame));
                 if (float_video_frames_processed_ <= 2 || result.elapsed_ms >= 100) {
                     qInfo().noquote() << "float video frame completed"
                                       << "count=" << float_video_frames_processed_
@@ -641,6 +745,10 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 if (auto* item = qobject_cast<ColorScopeItem*>(scope_item_)) {
                     item->submitAnalysis(*result.analysis);
                     ++scope_frames_analyzed_;
+                    last_scope_approximate_ = result.analysis->approximate;
+                    out_of_gamut_percent_ = result.analysis->sampled_pixels == 0 ? 0.0
+                        : 100.0 * static_cast<qreal>(result.analysis->out_of_gamut_pixels) /
+                            static_cast<qreal>(result.analysis->sampled_pixels);
                     emit scopeFrameChanged();
                 }
             } else if (!result.error.isEmpty()) {
@@ -691,6 +799,8 @@ EditorController::~EditorController() {
     pending_float_scrub_ns_.reset();
     ++float_scrub_generation_;
     if (float_scrub_watcher_.isRunning()) float_scrub_watcher_.waitForFinished();
+    pending_live_seek_.reset();
+    if (live_seek_watcher_.isRunning()) live_seek_watcher_.waitForFinished();
     if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
 #endif
     if (import_watcher_.isRunning()) import_watcher_.waitForFinished();
@@ -704,7 +814,7 @@ EditorController::~EditorController() {
     }
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
     if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
-    for (const auto& path : export_color_lut_paths_) QFile::remove(path);
+    removeExportColorArtifacts(export_color_lut_paths_);
 }
 
 std::uint64_t EditorController::videoFramesReceived() const noexcept {
@@ -1071,7 +1181,7 @@ QVariantList EditorController::selectedGradeNodes() const {
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return result;
     const auto* asset = timeline_.asset(clip->asset_id);
-    const auto keyframeSupported = asset != nullptr && asset->image_sequence().has_value();
+    const auto keyframeSupported = asset != nullptr;
     const auto sourceTime = selectedClipSourceTime().value_or(clip->source_in);
     for (const auto& node : clip->grade.nodes()) {
         QVariantMap parameters;
@@ -1137,7 +1247,9 @@ QVariantList EditorController::selectedGradeNodes() const {
 
 void EditorController::addGradeNode(int type) {
     if (selected_clip_id_.isEmpty()) return;
-    type = std::clamp(type, 0, static_cast<int>(ffgui::GradeNodeType::color_warper));
+    endCoalescedGradeEdit();
+    type = std::clamp(type, 0, static_cast<int>(ffgui::GradeNodeType::power_window));
+    if (type == static_cast<int>(ffgui::GradeNodeType::lut)) return;
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1147,7 +1259,7 @@ void EditorController::addGradeNode(int type) {
             static_cast<ffgui::GradeNodeType>(type),
             makeUniqueGradeNodeId()));
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishTimeline();
+        publishColorPreview();
         setStatus("컬러 노드를 추가했습니다");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -1163,11 +1275,12 @@ void EditorController::commitGradeNodeEdit(
     } else {
         timeline_.set_shared_grade_node(node->shared_id, *node);
     }
-    publishTimeline();
+    publishColorPreview();
 }
 
 void EditorController::addGradeLutUrl(const QUrl& url) {
     if (selected_clip_id_.isEmpty() || !url.isLocalFile()) return;
+    endCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1186,8 +1299,217 @@ void EditorController::addGradeLutUrl(const QUrl& url) {
             : "LUT · " + displayName.toUtf8().toStdString();
         graph.add(std::move(node));
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishTimeline();
+        publishColorPreview();
         setStatus("LUT / Look을 검증하고 컬러 노드에 추가했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::setLookExportCubeSize(int size) {
+    size = size >= 49 ? 65 : 33;
+    if (look_export_cube_size_ == size) return;
+    look_export_cube_size_ = size;
+    emit lookExportChanged();
+}
+
+void EditorController::setLookExportEncoding(int encoding) {
+    encoding = std::clamp(encoding, 0, 2);
+    if (look_export_encoding_ == encoding) return;
+    look_export_encoding_ = encoding;
+    emit lookExportChanged();
+}
+
+void EditorController::setLookExportUnrealBundle(bool enabled) {
+    if (look_export_unreal_bundle_ == enabled) return;
+    look_export_unreal_bundle_ = enabled;
+    emit lookExportChanged();
+}
+
+void EditorController::exportLookUrl(const QUrl& url) {
+    if (!url.isLocalFile()) return;
+    const auto local = QDir::toNativeSeparators(url.toLocalFile());
+    try {
+        ffgui::LutExportRequest request;
+        request.cube_size = look_export_cube_size_ >= 49 ? 65 : 33;
+        request.encoding = static_cast<ffgui::LutEncoding>(std::clamp(look_export_encoding_, 0, 2));
+        request.unreal_ocio_bundle = look_export_unreal_bundle_;
+        request.include_display_transform = false;
+        switch (request.encoding) {
+        case ffgui::LutEncoding::acescct:
+            request.input_space = "ACEScct";
+            request.output_space = "ACEScct";
+            break;
+        case ffgui::LutEncoding::log2:
+            request.input_space = "log2";
+            request.output_space = "log2";
+            break;
+        case ffgui::LutEncoding::working_space:
+            request.input_space = color_pipeline_.working_space.empty()
+                ? "ACEScg" : color_pipeline_.working_space;
+            request.output_space = request.input_space;
+            break;
+        }
+        ffgui::GradeGraph grade;
+        std::int64_t sourceTime = 0;
+        if (!selected_clip_id_.isEmpty()) {
+            const auto selectedId = selected_clip_id_.toStdString();
+            const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+            if (clip != timeline_.clips().end()) {
+                grade = clip->grade;
+                sourceTime = selectedClipSourceTime().value_or(clip->source_in);
+            }
+        }
+        const auto package = ffgui::compile_look_export(
+            color_pipeline_, grade, request, sourceTime);
+        const QFileInfo info(local);
+        if (look_export_unreal_bundle_ || info.isDir()) {
+            const auto directory = info.isDir() ? local : info.absolutePath();
+            ffgui::write_look_export(
+                package, std::filesystem::path(directory.toStdString()));
+            setStatus(QStringLiteral("Look 패키지를 내보냈습니다 · %1").arg(directory));
+        } else {
+            QSaveFile file(local);
+            if (!file.open(QIODevice::WriteOnly) ||
+                file.write(QByteArray::fromStdString(package.cube)) < 0 || !file.commit()) {
+                throw std::runtime_error("look cube could not be written");
+            }
+            setStatus(QStringLiteral("Look Cube를 내보냈습니다 · %1").arg(info.fileName()));
+        }
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::setShotCompareMode(int mode) {
+    mode = std::clamp(mode, 0, 2);
+    if (shot_compare_mode_ == mode) return;
+    shot_compare_mode_ = mode;
+    emit shotLibraryChanged();
+    publishColorPreview();
+}
+
+void EditorController::clearShotStill() {
+    if (shot_still_path_.isEmpty() && shot_compare_mode_ == 0) return;
+    shot_still_path_.clear();
+    shot_still_clip_id_.clear();
+    shot_still_source_time_ = 0;
+    shot_still_frame_.reset();
+    emit shotLibraryChanged();
+    setStatus("샷 스틸을 지웠습니다");
+    publishColorPreview();
+}
+
+void EditorController::captureShotStill() {
+    std::vector<float> rgba;
+    int width = 0;
+    int height = 0;
+    {
+        std::scoped_lock lock(inspect_mutex_);
+        width = static_cast<int>(inspect_width_);
+        height = static_cast<int>(inspect_height_);
+        if (!inspect_rgba_.empty() && width > 0 && height > 0) {
+            rgba = inspect_rgba_;
+        } else if (inspect_bgra_ != nullptr && width > 0 && height > 0) {
+            rgba.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
+            for (int y = 0; y < height; ++y) {
+                const auto* row = inspect_bgra_->data() +
+                    static_cast<std::size_t>(y) * inspect_stride_;
+                for (int x = 0; x < width; ++x) {
+                    const auto* bgra = row + static_cast<std::size_t>(x) * 4;
+                    auto* pixel = rgba.data() + (static_cast<std::size_t>(y) *
+                        static_cast<std::size_t>(width) + static_cast<std::size_t>(x)) * 4;
+                    pixel[0] = bgra[2] / 255.0F;
+                    pixel[1] = bgra[1] / 255.0F;
+                    pixel[2] = bgra[0] / 255.0F;
+                    pixel[3] = bgra[3] / 255.0F;
+                }
+            }
+        }
+    }
+    if (rgba.empty()) {
+        setStatus("미리보기 프레임이 없어 샷 스틸을 저장할 수 없습니다");
+        return;
+    }
+    try {
+        const auto directory = current_project_path_.isEmpty()
+            ? QDir::temp().filePath(QStringLiteral("ffgui-shots"))
+            : QFileInfo(current_project_path_).absolutePath() + QStringLiteral("/shots");
+        QDir().mkpath(directory);
+        const auto sourceTime = selectedClipSourceTime().value_or(playhead_ns_);
+        const auto fileName = QStringLiteral("%1_%2.png")
+            .arg(selected_clip_id_.isEmpty() ? QStringLiteral("timeline") : selected_clip_id_)
+            .arg(sourceTime);
+        const auto path = QDir(directory).filePath(fileName);
+        ffgui::write_rgba32f_png(
+            std::filesystem::path(path.toStdString()), width, height, rgba.data());
+        ffgui::FloatImageFrame frame;
+        frame.width = width;
+        frame.height = height;
+        frame.rgba = std::move(rgba);
+        shot_still_frame_ = std::move(frame);
+        shot_still_path_ = QDir::toNativeSeparators(path);
+        shot_still_clip_id_ = selected_clip_id_;
+        shot_still_source_time_ = sourceTime;
+        emit shotLibraryChanged();
+        setStatus(QStringLiteral("샷 스틸을 저장했습니다 · %1").arg(QFileInfo(path).fileName()));
+        publishColorPreview();
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::matchSelectedGradeToStill() {
+    if (selected_clip_id_.isEmpty()) return;
+    if (shot_still_path_.isEmpty()) {
+        setStatus("비교할 샷 스틸이 없습니다");
+        return;
+    }
+    try {
+        if (!shot_still_frame_.has_value()) {
+            shot_still_frame_ = ffgui::read_rgba32f_image(
+                std::filesystem::path(shot_still_path_.toStdString()));
+        }
+        std::vector<float> current;
+        {
+            std::scoped_lock lock(inspect_mutex_);
+            if (!inspect_rgba_.empty()) current = inspect_rgba_;
+            else if (inspect_bgra_ != nullptr && inspect_width_ > 0 && inspect_height_ > 0) {
+                current.resize(static_cast<std::size_t>(inspect_width_) *
+                    static_cast<std::size_t>(inspect_height_) * 4);
+                for (std::uint32_t y = 0; y < inspect_height_; ++y) {
+                    const auto* row = inspect_bgra_->data() +
+                        static_cast<std::size_t>(y) * inspect_stride_;
+                    for (std::uint32_t x = 0; x < inspect_width_; ++x) {
+                        const auto* bgra = row + static_cast<std::size_t>(x) * 4;
+                        auto* pixel = current.data() + (static_cast<std::size_t>(y) *
+                            inspect_width_ + x) * 4;
+                        pixel[0] = bgra[2] / 255.0F;
+                        pixel[1] = bgra[1] / 255.0F;
+                        pixel[2] = bgra[0] / 255.0F;
+                        pixel[3] = bgra[3] / 255.0F;
+                    }
+                }
+            }
+        }
+        if (current.empty() || !shot_still_frame_.has_value()) {
+            throw std::runtime_error("shot match requires a current preview frame and a still");
+        }
+        const auto pixels = std::min(
+            current.size() / 4, shot_still_frame_->rgba.size() / 4);
+        const auto offset = ffgui::match_mean_rgb(
+            shot_still_frame_->rgba.data(), current.data(), pixels);
+        endCoalescedGradeEdit();
+        const auto selectedId = selected_clip_id_.toStdString();
+        const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+        if (clip == timeline_.clips().end()) return;
+        auto graph = clip->grade;
+        ffgui::apply_shot_match(graph, offset);
+        timeline_.set_clip_grade_graph(selectedId, std::move(graph));
+        publishColorPreview();
+        setStatus(QStringLiteral("스틸 평균에 맞춰 노출 %1, 채도 %2를 적용했습니다")
+            .arg(offset.exposure, 0, 'f', 2)
+            .arg(offset.saturation, 0, 'f', 2));
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
     }
@@ -1195,6 +1517,7 @@ void EditorController::addGradeLutUrl(const QUrl& url) {
 
 void EditorController::removeGradeNode(const QString& nodeId) {
     if (selected_clip_id_.isEmpty()) return;
+    endCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1202,7 +1525,7 @@ void EditorController::removeGradeNode(const QString& nodeId) {
         auto graph = clip->grade;
         graph.remove(nodeId.toStdString());
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishTimeline();
+        publishColorPreview();
         setStatus("컬러 노드를 삭제했습니다");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -1224,7 +1547,7 @@ void EditorController::moveGradeNode(const QString& nodeId, int direction) {
     graph.move(nodeId.toStdString(), direction > 0
         ? static_cast<std::size_t>(target + 1) : static_cast<std::size_t>(target));
     timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-    publishTimeline();
+    publishColorPreview();
 }
 
 void EditorController::copyGradeNode(const QString& nodeId) {
@@ -1254,7 +1577,7 @@ void EditorController::pasteGradeNode() {
         node.validate();
         graph.add(std::move(node));
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishTimeline();
+        publishColorPreview();
         setStatus("복사한 컬러 노드를 붙여넣었습니다");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -1292,7 +1615,7 @@ void EditorController::makeGradeNodeShared(const QString& nodeId) {
     if (node == nullptr || !node->shared_id.empty()) return;
     node->shared_id = makeUniqueSharedGradeId();
     timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-    publishTimeline();
+    publishColorPreview();
     setStatus("공유 그레이드로 전환했습니다. 다른 클립에 복사해 연결할 수 있습니다");
 }
 
@@ -1306,12 +1629,13 @@ void EditorController::unlinkGradeNode(const QString& nodeId) {
     if (node == nullptr || node->shared_id.empty()) return;
     node->shared_id.clear();
     timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-    publishTimeline();
+    publishColorPreview();
     setStatus("이 노드를 공유 그레이드에서 분리했습니다");
 }
 
 void EditorController::setGradeNodeEnabled(const QString& nodeId, bool enabled) {
     if (selected_clip_id_.isEmpty()) return;
+    touchCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1340,6 +1664,7 @@ void EditorController::setGradeNodeName(const QString& nodeId, const QString& na
 
 void EditorController::setGradeNodeMix(const QString& nodeId, int percent) {
     if (selected_clip_id_.isEmpty()) return;
+    touchCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1354,6 +1679,7 @@ void EditorController::setGradeNodeMix(const QString& nodeId, int percent) {
 void EditorController::setGradeParameter(
     const QString& nodeId, const QString& parameter, double value) {
     if (selected_clip_id_.isEmpty() || parameter.isEmpty() || !std::isfinite(value)) return;
+    touchCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1382,7 +1708,7 @@ void EditorController::setGradeParameter(
     node->validate();
     if (editsAnimation) {
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishTimeline();
+        publishColorPreview();
     } else {
         commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString());
     }
@@ -1412,12 +1738,13 @@ void EditorController::toggleGradeParameterKeyframe(
     }
     node->validate();
     timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-    publishTimeline();
+    publishColorPreview();
 }
 
 void EditorController::setGradeCurveMidpoint(
     const QString& nodeId, const QString& curveName, int adjustmentPercent) {
     if (selected_clip_id_.isEmpty() || curveName.isEmpty()) return;
+    touchCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1472,6 +1799,9 @@ void EditorController::attachVideoItem(QObject* item) {
     connect(videoItem, &VideoPreviewItem::framePresented, this, [this](quint64) {
         ++video_frames_presented_;
     });
+    connect(videoItem, &VideoPreviewItem::gpuDeviceRemoved, this, [this] {
+        recoverCpuPreview();
+    });
 #ifdef FFGUI_HAS_GES
     if (use_d3d_scene_graph_) {
         connect(videoItem, &VideoPreviewItem::d3d11DeviceReady, this, [this](quintptr device) {
@@ -1517,6 +1847,46 @@ void EditorController::setScopeMode(int mode) {
     scope_mode_ = clamped;
     if (auto* item = qobject_cast<ColorScopeItem*>(scope_item_)) item->setMode(scope_mode_);
     emit scopeSettingsChanged();
+}
+
+void EditorController::setScopeReferenceStage(int stage) {
+    const auto clamped = std::clamp(stage, 0, 2);
+    if (scope_reference_stage_ == clamped) return;
+    scope_reference_stage_ = clamped;
+    emit scopeSettingsChanged();
+#ifdef FFGUI_HAS_GES
+    if (scopes_visible_ && !timeline_.clips().empty()) {
+        pending_preview_seek_ = playhead_ns_;
+        queuePreviewOperation(false);
+        if (!float_playback_running_) startFloatScrubFrame(playhead_ns_);
+    }
+#endif
+    emit scopeFrameChanged();
+}
+
+void EditorController::setReviewOverlayMode(int mode) {
+    const auto clamped = std::clamp(mode, 0, 2);
+    const auto value = static_cast<ffgui::ReviewOverlayMode>(clamped);
+    if (review_overlay_mode_ == value) return;
+    review_overlay_mode_ = value;
+    emit scopeSettingsChanged();
+#ifdef FFGUI_HAS_GES
+    if (!timeline_.clips().empty()) {
+        pending_preview_seek_ = playhead_ns_;
+        queuePreviewOperation(false);
+        if (!float_playback_running_) startFloatScrubFrame(playhead_ns_);
+    }
+#endif
+}
+
+QString EditorController::scopeStageHint() const {
+    if (last_scope_approximate_) {
+        return QStringLiteral("일반 영상 그레이드 전은 표시 변환만 되돌린 근사입니다");
+    }
+    if (scope_reference_stage_ != 2) {
+        return QStringLiteral("장면 참조 · ACEScct 인코딩");
+    }
+    return QStringLiteral("디스플레이 참조 · 코드 값");
 }
 
 void EditorController::loadFiles(const QStringList& paths) {
@@ -1707,9 +2077,32 @@ void EditorController::scrub(qint64 timelinePosition, bool finalPosition) {
     if (!floatSubmitted) submitCachedScrubFrame(playhead_ns_);
 #ifdef FFGUI_HAS_GES
     preview_should_play_ = false;
-    if (!finalPosition || floatSubmitted) return;
+    if (floatSubmitted) {
+        scrubbing_ = !finalPosition;
+        if (finalPosition) emit gradeUiChanged();
+        return;
+    }
+    if (!finalPosition) {
+        if (!scrubbing_) {
+            scrubbing_ = true;
+            if (player_) player_->set_scope_capture_enabled(false);
+        }
+        queueLiveSeek(playhead_ns_);
+        return;
+    }
+    if (scrubbing_) {
+        scrubbing_ = false;
+        if (player_) player_->set_scope_capture_enabled(scopes_visible_);
+    }
+    pending_live_seek_.reset();
     pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
+    if (scopes_visible_ && pending_scope_analysis_frame_.has_value()) {
+        auto frame = std::move(*pending_scope_analysis_frame_);
+        pending_scope_analysis_frame_.reset();
+        submitScopeFrame(std::move(frame));
+    }
+    emit gradeUiChanged();
 #else
     static_cast<void>(finalPosition);
 #endif
@@ -1742,13 +2135,17 @@ void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
     if (asset == nullptr || !asset->image_sequence().has_value()) return;
     const auto timeline = timeline_;
     const auto settings = color_pipeline_;
-    const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
-        ? std::string{}
-        : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
+    const auto outputSpace = ffgui::resolved_color_output_space(settings);
+    const auto compare = preview_compare_enabled_ &&
+        settings.mode != ffgui::ColorPipelineMode::legacy &&
+        !settings.display_transform_bypassed;
+    const auto shotCompare = static_cast<ffgui::ShotCompareMode>(shot_compare_mode_);
+    const auto shotStill = shot_still_frame_;
     const auto generation = ++float_scrub_generation_;
     float_scrub_active_ = true;
     float_scrub_watcher_.setFuture(QtConcurrent::run(
-        [this, timeline, settings, outputSpace, timelinePosition, generation] {
+        [this, timeline, settings, outputSpace, timelinePosition, generation, compare,
+         shotCompare, shotStill] {
             FloatScrubResult result;
             result.generation = generation;
             QElapsedTimer elapsed;
@@ -1756,6 +2153,24 @@ void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
             try {
                 auto rendered = timeline_frame_server_.render(
                     timeline, timelinePosition, settings, outputSpace);
+                if (compare) {
+                    auto graded = timeline_frame_server_.render(
+                        timeline, timelinePosition, settings, outputSpace,
+                        ffgui::ColorProcessStage::post_grade);
+                    ffgui::wipe_rgba32f(
+                        rendered.processed.rgba.data(), graded.processed.rgba.data(),
+                        static_cast<std::size_t>(rendered.processed.width),
+                        static_cast<std::size_t>(rendered.processed.height));
+                }
+                if (shotCompare != ffgui::ShotCompareMode::off && shotStill.has_value() &&
+                    shotStill->width == rendered.processed.width &&
+                    shotStill->height == rendered.processed.height &&
+                    shotStill->rgba.size() == rendered.processed.rgba.size()) {
+                    ffgui::compose_shot_compare_rgba32f(
+                        rendered.processed.rgba.data(), shotStill->rgba.data(),
+                        static_cast<std::size_t>(rendered.processed.width),
+                        static_cast<std::size_t>(rendered.processed.height), shotCompare);
+                }
                 result.requested_frame = rendered.requested_sequence_frame;
                 result.resolved_frame = rendered.resolved_sequence_frame;
                 const auto& processed = rendered.processed;
@@ -1831,7 +2246,7 @@ void EditorController::submitCachedScrubFrame(qint64 timelinePosition) {
     frame.pts = timelinePosition;
     frame.serial = ++scrub_frame_serial_;
     ++scrub_frames_submitted_;
-    item->submitFrame(std::move(frame));
+    presentPreviewFrame(std::move(frame));
 #else
     static_cast<void>(timelinePosition);
 #endif
@@ -1962,9 +2377,7 @@ void EditorController::startFloatVideoFrame(ffgui::PreviewVideoFrame frame) {
     const auto settings = color_pipeline_;
     const auto grade = color_pipeline_.mode == ffgui::ColorPipelineMode::legacy
         ? clip->grade : ffgui::compose_clip_grade(*clip);
-    const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
-        ? std::string{}
-        : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
+    const auto outputSpace = ffgui::resolved_color_output_space(settings);
     const auto generation = preview_generation_;
     const auto sourceTime = mapped->source_time;
     float_video_active_ = true;
@@ -2033,12 +2446,94 @@ void EditorController::startFloatVideoFrame(ffgui::PreviewVideoFrame frame) {
 #endif
 }
 
+void EditorController::storeInspectableFrame(const ffgui::PreviewVideoFrame& frame) {
+    if (frame.cpu_pixels == nullptr || frame.cpu_format != ffgui::PreviewCpuFormat::bgra8) return;
+    std::scoped_lock lock(inspect_mutex_);
+    inspect_width_ = frame.width;
+    inspect_height_ = frame.height;
+    inspect_stride_ = frame.cpu_stride;
+    inspect_bgra_ = frame.cpu_pixels;
+    inspect_rgba_.clear();
+}
+
+void EditorController::presentPreviewFrame(ffgui::PreviewVideoFrame frame) {
+    storeInspectableFrame(frame);
+    auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
+    if (item == nullptr) return;
+    if (review_overlay_mode_ != ffgui::ReviewOverlayMode::off &&
+        frame.cpu_pixels != nullptr && frame.cpu_format == ffgui::PreviewCpuFormat::bgra8) {
+        auto overlay = frame;
+        overlay.cpu_pixels = std::make_shared<std::vector<std::uint8_t>>(*frame.cpu_pixels);
+        ffgui::apply_review_overlay_bgra8(
+            overlay.cpu_pixels->data(), overlay.width, overlay.height, overlay.cpu_stride,
+            review_overlay_mode_);
+        item->submitFrame(std::move(overlay));
+        return;
+    }
+    item->submitFrame(std::move(frame));
+}
+
+void EditorController::recoverCpuPreview() {
+    if (cpu_preview_fallback_ || !use_d3d_scene_graph_) return;
+    use_d3d_scene_graph_ = false;
+    cpu_preview_fallback_ = true;
+#ifdef FFGUI_HAS_GES
+    player_->set_d3d11_device(nullptr);
+    player_->set_video_sink_factory("cpu-appsink");
+    preview_applied_generation_.reset();
+    if (!preview_snapshot_.empty()) queuePreviewOperation(true);
+#endif
+    emit previewPathChanged();
+    setStatus(QStringLiteral("GPU 장치가 제거되어 CPU 미리보기로 복구했습니다"));
+}
+
+void EditorController::inspectPreviewPixel(qreal x, qreal y) {
+    auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
+    QPointF uv = item != nullptr
+        ? item->videoUvFromItem(x * item->width(), y * item->height())
+        : QPointF(x, y);
+    if (uv.x() < 0.0 || uv.y() < 0.0) {
+        if (!pixel_inspector_text_.isEmpty()) {
+            pixel_inspector_text_.clear();
+            emit scopeFrameChanged();
+        }
+        return;
+    }
+    ffgui::PixelInspection inspection;
+    {
+        std::scoped_lock lock(inspect_mutex_);
+        if (!inspect_rgba_.empty() && inspect_width_ > 0 && inspect_height_ > 0) {
+            inspection = ffgui::inspect_rgba32f(
+                inspect_rgba_.data(), inspect_width_, inspect_height_,
+                std::min(inspect_width_ - 1,
+                    static_cast<std::uint32_t>(uv.x() * inspect_width_)),
+                std::min(inspect_height_ - 1,
+                    static_cast<std::uint32_t>(uv.y() * inspect_height_)));
+        } else if (inspect_bgra_ != nullptr && inspect_width_ > 0 && inspect_height_ > 0) {
+            inspection = ffgui::inspect_bgra8(
+                inspect_bgra_->data(), inspect_width_, inspect_height_, inspect_stride_,
+                std::min(inspect_width_ - 1,
+                    static_cast<std::uint32_t>(uv.x() * inspect_width_)),
+                std::min(inspect_height_ - 1,
+                    static_cast<std::uint32_t>(uv.y() * inspect_height_)));
+        }
+    }
+    const auto text = QString::fromStdString(ffgui::format_pixel_inspection(inspection));
+    if (pixel_inspector_text_ == text) return;
+    pixel_inspector_text_ = text;
+    emit scopeFrameChanged();
+}
+
 void EditorController::submitScopeFrame(ffgui::PreviewVideoFrame frame) {
 #ifdef FFGUI_HAS_GES
     const bool cpuFrame = frame.cpu_format == ffgui::PreviewCpuFormat::bgra8 &&
         frame.cpu_pixels != nullptr && frame.width > 0 && frame.height > 0 &&
         frame.cpu_stride >= frame.width * 4;
     if (!cpuFrame && frame.sample == nullptr) return;
+    if (scrubbing_) {
+        pending_scope_analysis_frame_ = std::move(frame);
+        return;
+    }
     if (scope_active_) {
         pending_scope_analysis_frame_ = std::move(frame);
     } else {
@@ -2052,18 +2547,52 @@ void EditorController::submitScopeFrame(ffgui::PreviewVideoFrame frame) {
 void EditorController::startScopeFrame(ffgui::PreviewVideoFrame frame) {
 #ifdef FFGUI_HAS_GES
     scope_active_ = true;
-    scope_watcher_.setFuture(QtConcurrent::run([frame = std::move(frame)]() mutable {
+    const auto stage = static_cast<ffgui::ScopeReferenceStage>(scope_reference_stage_);
+    const auto processStage = static_cast<ffgui::ColorProcessStage>(scope_reference_stage_);
+    const auto settings = color_pipeline_;
+    const auto outputSpace = ffgui::resolved_color_output_space(settings);
+    const auto timeline = timeline_;
+    const auto playhead = playhead_ns_;
+    auto* server = &timeline_frame_server_;
+    scope_watcher_.setFuture(QtConcurrent::run(
+        [frame = std::move(frame), stage, processStage, settings, outputSpace, timeline, playhead,
+         server]() mutable {
         ScopeResult result;
         try {
+            const auto mapped = timeline.locate(playhead);
+            const auto* asset = mapped.has_value() ? timeline.asset(mapped->asset_id) : nullptr;
+            if (asset != nullptr && asset->image_sequence().has_value()) {
+                auto rendered = server->render(
+                    timeline, playhead, settings, outputSpace, processStage);
+                result.analysis = std::make_shared<ffgui::ScopeAnalysis>(
+                    ffgui::analyze_scope_float(rendered.processed, frame.serial, stage));
+                return result;
+            }
+
+            auto analyzeDisplayOrWorking = [&](
+                const std::uint8_t* pixels, std::size_t width, std::size_t height,
+                std::size_t stride, bool bgra) {
+                if (stage == ffgui::ScopeReferenceStage::post_display ||
+                    settings.mode == ffgui::ColorPipelineMode::legacy) {
+                    return bgra
+                        ? ffgui::analyze_scope_bgra8(pixels, width, height, stride, frame.serial, stage)
+                        : ffgui::analyze_scope_rgba8(pixels, width, height, stride, frame.serial, stage);
+                }
+                auto working = packed_8bit_to_float(pixels, width, height, stride, bgra);
+                invert_display_to_working(working, settings, outputSpace);
+                auto analysis = ffgui::analyze_scope_float(working, frame.serial, stage);
+                analysis.approximate = stage == ffgui::ScopeReferenceStage::pre_grade;
+                return analysis;
+            };
+
             if (frame.cpu_pixels != nullptr) {
                 const auto expected = static_cast<std::size_t>(frame.cpu_stride) * frame.height;
                 if (frame.cpu_pixels->size() < expected) {
                     throw std::invalid_argument("scope frame storage is invalid");
                 }
                 result.analysis = std::make_shared<ffgui::ScopeAnalysis>(
-                    ffgui::analyze_scope_bgra8(
-                        frame.cpu_pixels->data(), frame.width, frame.height, frame.cpu_stride,
-                        frame.serial, ffgui::ScopeReferenceStage::post_display));
+                    analyzeDisplayOrWorking(
+                        frame.cpu_pixels->data(), frame.width, frame.height, frame.cpu_stride, true));
             } else {
                 auto* sample = static_cast<GstSample*>(frame.sample.get());
                 auto* buffer = sample != nullptr ? gst_sample_get_buffer(sample) : nullptr;
@@ -2101,13 +2630,8 @@ void EditorController::startScopeFrame(ffgui::PreviewVideoFrame frame) {
                 }
                 std::optional<ffgui::ScopeAnalysis> analysis;
                 try {
-                    analysis = format == GST_VIDEO_FORMAT_RGBA
-                        ? ffgui::analyze_scope_rgba8(
-                            map.data, width, height, stride, frame.serial,
-                            ffgui::ScopeReferenceStage::post_display)
-                        : ffgui::analyze_scope_bgra8(
-                            map.data, width, height, stride, frame.serial,
-                            ffgui::ScopeReferenceStage::post_display);
+                    analysis = analyzeDisplayOrWorking(
+                        map.data, width, height, stride, format == GST_VIDEO_FORMAT_BGRA);
                 } catch (...) {
                     gst_buffer_unmap(buffer, &map);
                     throw;
@@ -2148,9 +2672,7 @@ void EditorController::startFloatExport() {
     const auto timeline = timeline_;
     const auto settings = color_pipeline_;
     const auto request = *export_request_;
-    const auto outputSpace = settings.mode == ffgui::ColorPipelineMode::legacy
-        ? std::string{}
-        : settings.output_space.empty() ? std::string{"sRGB - Display"} : settings.output_space;
+    const auto outputSpace = ffgui::resolved_color_output_space(settings);
     const auto* firstAsset = timeline.asset(timeline.clips().front().asset_id);
     const auto sourceRate = firstAsset->image_sequence()->frame_rate.value();
     const auto fps = request.gif.enabled
@@ -2707,6 +3229,7 @@ void EditorController::setSelectedClipSpeedPercent(int percent) {
 
 void EditorController::setSelectedClipBrightness(int percent) {
     if (selected_clip_ids_.isEmpty()) return;
+    touchCoalescedGradeEdit();
     auto color = ffgui::ClipColor{
         static_cast<double>(std::clamp(percent, -100, 100)) / 100.0,
         static_cast<double>(selectedClipContrast()) / 100.0,
@@ -2715,13 +3238,14 @@ void EditorController::setSelectedClipBrightness(int percent) {
         std::vector<std::string> ids;
         for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
         timeline_.set_clips_color(ids, color);
-        publishTimeline();
+        publishColorPreview();
         setStatus(QStringLiteral("밝기 · %1").arg(percent));
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
 
 void EditorController::setSelectedClipContrast(int percent) {
     if (selected_clip_ids_.isEmpty()) return;
+    touchCoalescedGradeEdit();
     auto color = ffgui::ClipColor{
         static_cast<double>(selectedClipBrightness()) / 100.0,
         static_cast<double>(std::clamp(percent, 0, 200)) / 100.0,
@@ -2730,13 +3254,14 @@ void EditorController::setSelectedClipContrast(int percent) {
         std::vector<std::string> ids;
         for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
         timeline_.set_clips_color(ids, color);
-        publishTimeline();
+        publishColorPreview();
         setStatus(QStringLiteral("대비 · %1%").arg(percent));
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
 
 void EditorController::setSelectedClipSaturation(int percent) {
     if (selected_clip_ids_.isEmpty()) return;
+    touchCoalescedGradeEdit();
     auto color = ffgui::ClipColor{
         static_cast<double>(selectedClipBrightness()) / 100.0,
         static_cast<double>(selectedClipContrast()) / 100.0,
@@ -2745,7 +3270,7 @@ void EditorController::setSelectedClipSaturation(int percent) {
         std::vector<std::string> ids;
         for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
         timeline_.set_clips_color(ids, color);
-        publishTimeline();
+        publishColorPreview();
         setStatus(QStringLiteral("채도 · %1%").arg(percent));
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
@@ -3207,7 +3732,16 @@ void EditorController::saveProject(const QString& path) {
             {"hdrPeakNits", color_pipeline_.hdr_peak_nits},
             {"sdrWhiteNits", color_pipeline_.sdr_white_nits},
             {"maxCll", color_pipeline_.max_cll},
-            {"maxFall", color_pipeline_.max_fall}};
+            {"maxFall", color_pipeline_.max_fall},
+            {"monitorIccPath", QString::fromStdString(color_pipeline_.monitor_icc_path)},
+            {"lookExportCubeSize", look_export_cube_size_},
+            {"lookExportEncoding", look_export_encoding_},
+            {"lookExportUnrealBundle", look_export_unreal_bundle_}};
+        const QJsonObject shotLibrary{
+            {"stillPath", shot_still_path_},
+            {"clipId", shot_still_clip_id_},
+            {"sourceTimeNs", QString::number(shot_still_source_time_)},
+            {"compareMode", shot_compare_mode_}};
         const QJsonDocument document(QJsonObject{
             {"format", "ffmpegGUI-next"},
             {"version", 4},
@@ -3216,6 +3750,7 @@ void EditorController::saveProject(const QString& path) {
             {"captions", captions},
             {"stamp", stamp},
             {"colorPipeline", colorPipeline},
+            {"shotLibrary", shotLibrary},
             {"outputSettings", outputSettings}});
 
         QSaveFile file(path);
@@ -3438,7 +3973,26 @@ void EditorController::loadProject(const QString& path) {
             color_pipeline_.sdr_white_nits = colorPipeline.value("sdrWhiteNits").toInt(203);
             color_pipeline_.max_cll = colorPipeline.value("maxCll").toInt(1000);
             color_pipeline_.max_fall = colorPipeline.value("maxFall").toInt(400);
+            color_pipeline_.monitor_icc_path =
+                colorPipeline.value("monitorIccPath").toString().toStdString();
+            look_export_cube_size_ = colorPipeline.value("lookExportCubeSize").toInt(33) >= 49 ? 65 : 33;
+            look_export_encoding_ = std::clamp(colorPipeline.value("lookExportEncoding").toInt(2), 0, 2);
+            look_export_unreal_bundle_ = colorPipeline.value("lookExportUnrealBundle").toBool(true);
             color_pipeline_.validate();
+        }
+        const auto shotLibrary = root.value("shotLibrary").toObject();
+        shot_still_path_ = shotLibrary.value("stillPath").toString();
+        shot_still_clip_id_ = shotLibrary.value("clipId").toString();
+        shot_still_source_time_ = shotLibrary.value("sourceTimeNs").toString().toLongLong();
+        shot_compare_mode_ = std::clamp(shotLibrary.value("compareMode").toInt(0), 0, 2);
+        shot_still_frame_.reset();
+        if (!shot_still_path_.isEmpty() && QFileInfo::exists(shot_still_path_)) {
+            try {
+                shot_still_frame_ = ffgui::read_rgba32f_image(
+                    std::filesystem::path(shot_still_path_.toStdString()));
+            } catch (const std::exception&) {
+                shot_still_frame_.reset();
+            }
         }
         current_project_path_ = QFileInfo(path).absoluteFilePath();
         QSettings().setValue(QStringLiteral("output/lastDirectory"), output_directory_);
@@ -3449,7 +4003,10 @@ void EditorController::loadProject(const QString& path) {
         emit graphicsChanged();
         emit exportSettingsChanged();
         emit colorPipelineChanged();
+        emit lookExportChanged();
+        emit shotLibraryChanged();
         emit gifEstimateChanged();
+        refreshHdrDisplay();
         setStatus("프로젝트 불러오기 완료");
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
@@ -3592,6 +4149,16 @@ QString EditorController::colorPipelineSummary() const {
     if (color_pipeline_.mode == ffgui::ColorPipelineMode::legacy) {
         return QStringLiteral("현재 색 유지 · Legacy");
     }
+    if (color_pipeline_.display_transform_bypassed) {
+        return color_pipeline_.mode == ffgui::ColorPipelineMode::aces_managed
+            ? QStringLiteral("ACEScg · 표시 변환 우회")
+            : QStringLiteral("OCIO · 표시 변환 우회");
+    }
+    if (!color_pipeline_.display.empty() && !color_pipeline_.view.empty()) {
+        return QStringLiteral("%1 · %2")
+            .arg(QString::fromStdString(color_pipeline_.display),
+                 QString::fromStdString(color_pipeline_.view));
+    }
     if (color_pipeline_.mode == ffgui::ColorPipelineMode::aces_managed) {
         return color_pipeline_.hdr_monitoring
             ? QStringLiteral("ACEScg · HDR 모니터") : QStringLiteral("ACEScg · SDR 모니터");
@@ -3613,6 +4180,107 @@ QStringList EditorController::inputColorSpaceOptions() const {
     } catch (...) {
         return {};
     }
+}
+
+QStringList EditorController::displayOptions() const {
+    try {
+        auto settings = color_pipeline_;
+        if (settings.mode == ffgui::ColorPipelineMode::legacy) {
+            settings.mode = ffgui::ColorPipelineMode::aces_managed;
+        }
+        const auto values = ffgui::OcioEngine(settings).displays();
+        QStringList result;
+        result.reserve(static_cast<qsizetype>(values.size()));
+        for (const auto& value : values) result.push_back(QString::fromStdString(value));
+        return result;
+    } catch (...) {
+        return {};
+    }
+}
+
+QStringList EditorController::viewOptions() const {
+    try {
+        auto settings = color_pipeline_;
+        if (settings.mode == ffgui::ColorPipelineMode::legacy) {
+            settings.mode = ffgui::ColorPipelineMode::aces_managed;
+        }
+        ffgui::OcioEngine engine(settings);
+        auto display = color_pipeline_.display;
+        if (display.empty()) display = engine.default_display();
+        const auto values = engine.views(display);
+        QStringList result;
+        result.reserve(static_cast<qsizetype>(values.size()));
+        for (const auto& value : values) result.push_back(QString::fromStdString(value));
+        return result;
+    } catch (...) {
+        return {};
+    }
+}
+
+void EditorController::syncOutputSpaceFromDisplayView() {
+    if (color_pipeline_.mode == ffgui::ColorPipelineMode::legacy ||
+        color_pipeline_.display.empty() || color_pipeline_.view.empty()) {
+        return;
+    }
+    try {
+        const auto space = ffgui::OcioEngine(color_pipeline_).display_view_color_space(
+            color_pipeline_.display, color_pipeline_.view);
+        if (!space.empty()) color_pipeline_.output_space = space;
+    } catch (...) {
+    }
+}
+
+void EditorController::setDisplayName(const QString& name) {
+    const auto value = name.toStdString();
+    if (color_pipeline_.display == value) return;
+    color_pipeline_.display = value;
+    try {
+        ffgui::OcioEngine engine(color_pipeline_);
+        const auto views = engine.views(color_pipeline_.display);
+        if (std::ranges::find(views, color_pipeline_.view) == views.end()) {
+            color_pipeline_.view = engine.default_view(color_pipeline_.display);
+            if (color_pipeline_.view.empty() && !views.empty()) {
+                color_pipeline_.view = views.front();
+            }
+        }
+    } catch (...) {
+    }
+    syncOutputSpaceFromDisplayView();
+    emit colorPipelineChanged();
+    publishColorPreview();
+    setStatus(QStringLiteral("모니터 Display를 %1(으)로 설정했습니다").arg(name));
+}
+
+void EditorController::setViewName(const QString& name) {
+    const auto value = name.toStdString();
+    if (color_pipeline_.view == value) return;
+    color_pipeline_.view = value;
+    syncOutputSpaceFromDisplayView();
+    emit colorPipelineChanged();
+    publishColorPreview();
+    setStatus(QStringLiteral("모니터 View를 %1(으)로 설정했습니다").arg(name));
+}
+
+void EditorController::setDisplayTransformBypassed(bool bypassed) {
+    if (color_pipeline_.display_transform_bypassed == bypassed) return;
+    color_pipeline_.display_transform_bypassed = bypassed;
+    emit colorPipelineChanged();
+    publishColorPreview();
+    setStatus(bypassed
+        ? QStringLiteral("표시 변환을 우회합니다")
+        : QStringLiteral("표시 변환을 적용합니다"));
+}
+
+void EditorController::setPreviewCompareEnabled(bool enabled) {
+    if (preview_compare_enabled_ == enabled) return;
+    preview_compare_enabled_ = enabled;
+    emit colorPipelineChanged();
+#ifdef FFGUI_HAS_GES
+    if (!float_playback_running_) startFloatScrubFrame(playhead_ns_);
+#endif
+    setStatus(enabled
+        ? QStringLiteral("표시 변환 적용 전후를 좌우로 비교합니다")
+        : QStringLiteral("표시 변환 비교를 껐습니다"));
 }
 
 void EditorController::setColorPipelineMode(int mode) {
@@ -3655,8 +4323,17 @@ void EditorController::setCustomOcioUrl(const QUrl& url) {
 void EditorController::setHdrMonitoring(bool enabled) {
     if (color_pipeline_.hdr_monitoring == enabled) return;
     color_pipeline_.hdr_monitoring = enabled;
+    if (enabled) {
+        if (!selectHdrDisplayView()) applyHdrDisplayPath();
+    } else {
+        restoreSdrDisplayView();
+        applyHdrDisplayPath();
+    }
     emit colorPipelineChanged();
-    setStatus(enabled ? "HDR 모니터 출력을 요청했습니다" : "SDR 모니터 출력을 사용합니다");
+    setStatus(hdr_display_status_.isEmpty()
+        ? (enabled ? QStringLiteral("HDR 모니터 출력을 요청했습니다")
+                   : QStringLiteral("SDR 모니터 출력을 사용합니다"))
+        : hdr_display_status_);
 }
 
 void EditorController::setHdrPeakNits(int nits) {
@@ -3672,6 +4349,150 @@ void EditorController::setSdrWhiteNits(int nits) {
     if (color_pipeline_.sdr_white_nits == nits) return;
     color_pipeline_.sdr_white_nits = nits;
     emit colorPipelineChanged();
+}
+
+void EditorController::setMaxCll(int nits) {
+    nits = std::clamp(nits, 0, 10'000);
+    if (color_pipeline_.max_cll == nits) return;
+    color_pipeline_.max_cll = nits;
+    emit colorPipelineChanged();
+}
+
+void EditorController::setMaxFall(int nits) {
+    nits = std::clamp(nits, 0, 10'000);
+    if (color_pipeline_.max_fall == nits) return;
+    color_pipeline_.max_fall = nits;
+    emit colorPipelineChanged();
+}
+
+void EditorController::attachPreviewWindow(QObject* window) {
+    auto* quickWindow = qobject_cast<QWindow*>(window);
+    if (preview_quick_window_ == quickWindow) return;
+    if (preview_quick_window_ != nullptr) {
+        disconnect(preview_quick_window_, &QWindow::screenChanged,
+                   this, &EditorController::refreshHdrDisplay);
+    }
+    preview_quick_window_ = quickWindow;
+    if (preview_quick_window_ != nullptr) {
+        connect(preview_quick_window_, &QWindow::screenChanged,
+                this, &EditorController::refreshHdrDisplay, Qt::UniqueConnection);
+    }
+    refreshHdrDisplay();
+}
+
+void EditorController::refreshHdrDisplay() {
+    applyHdrDisplayPath();
+    if (color_pipeline_.hdr_monitoring) selectHdrDisplayView();
+    emit colorPipelineChanged();
+}
+
+bool EditorController::selectHdrDisplayView() {
+    if (!color_pipeline_.hdr_monitoring ||
+        color_pipeline_.mode == ffgui::ColorPipelineMode::legacy) {
+        applyHdrDisplayPath();
+        return false;
+    }
+    try {
+        ffgui::OcioEngine engine(color_pipeline_);
+        const auto displays = engine.displays();
+        auto findPq = [](const std::string& value) {
+            const auto lower = QString::fromStdString(value).toLower();
+            return lower.contains(QStringLiteral("2100")) &&
+                (lower.contains(QStringLiteral("pq")) ||
+                 lower.contains(QStringLiteral("2084")));
+        };
+        std::string hdrDisplay;
+        for (const auto& display : displays) {
+            if (findPq(display)) {
+                hdrDisplay = display;
+                break;
+            }
+        }
+        if (hdrDisplay.empty()) {
+            applyHdrDisplayPath();
+            return false;
+        }
+        const auto views = engine.views(hdrDisplay);
+        std::string hdrView = engine.default_view(hdrDisplay);
+        for (const auto& view : views) {
+            const auto lower = QString::fromStdString(view).toLower();
+            if (lower.contains(QStringLiteral("pq")) ||
+                lower.contains(QStringLiteral("2084")) ||
+                lower.contains(QStringLiteral("2100"))) {
+                hdrView = view;
+                break;
+            }
+        }
+        if (hdrView.empty() && !views.empty()) hdrView = views.front();
+        if (color_pipeline_.display != hdrDisplay || color_pipeline_.view != hdrView) {
+            if (!hdr_display_override_) {
+                saved_display_before_hdr_ = color_pipeline_.display;
+                saved_view_before_hdr_ = color_pipeline_.view;
+                hdr_display_override_ = true;
+            }
+            color_pipeline_.display = hdrDisplay;
+            color_pipeline_.view = hdrView;
+            syncOutputSpaceFromDisplayView();
+            publishColorPreview();
+        }
+    } catch (...) {
+        applyHdrDisplayPath();
+        return false;
+    }
+    applyHdrDisplayPath();
+    return true;
+}
+
+void EditorController::restoreSdrDisplayView() {
+    if (!hdr_display_override_) return;
+    if (!saved_display_before_hdr_.empty()) {
+        color_pipeline_.display = saved_display_before_hdr_;
+    }
+    if (!saved_view_before_hdr_.empty()) {
+        color_pipeline_.view = saved_view_before_hdr_;
+    }
+    hdr_display_override_ = false;
+    saved_display_before_hdr_.clear();
+    saved_view_before_hdr_.clear();
+    syncOutputSpaceFromDisplayView();
+    publishColorPreview();
+}
+
+void EditorController::applyHdrDisplayPath() {
+    auto* window = preview_quick_window_ != nullptr ? preview_quick_window_ : video_window_;
+    const auto probe = probe_hdr_display(window);
+    if (!probe.monitor_icc_path.isEmpty()) {
+        color_pipeline_.monitor_icc_path = probe.monitor_icc_path.toStdString();
+    }
+    HdrWindowMode mode = HdrWindowMode::sdr;
+    QString status;
+    if (color_pipeline_.hdr_monitoring) {
+        if (!probe.hdr_capable) {
+            mode = HdrWindowMode::sdr;
+            status = QStringLiteral("이 모니터는 HDR를 지원하지 않아 SDR로 표시합니다");
+        } else if (apply_window_color_space(window, HdrWindowMode::scrgb, probe.monitor_icc_path)) {
+            mode = HdrWindowMode::scrgb;
+            status = QStringLiteral("HDR 표시 · scRGB");
+        } else if (apply_window_color_space(
+                       window, HdrWindowMode::rec2020_pq, probe.monitor_icc_path)) {
+            mode = HdrWindowMode::rec2020_pq;
+            status = QStringLiteral("HDR 표시 · Rec.2020 PQ");
+        } else {
+            apply_window_color_space(window, HdrWindowMode::sdr, probe.monitor_icc_path);
+            status = QStringLiteral("HDR 창 색공간을 열지 못해 SDR로 표시합니다");
+        }
+    } else {
+        apply_window_color_space(window, HdrWindowMode::sdr, probe.monitor_icc_path);
+        status = probe.monitor_icc_path.isEmpty()
+            ? QStringLiteral("SDR 표시")
+            : QStringLiteral("SDR 표시 · 모니터 ICC 연결");
+    }
+    if (mode == HdrWindowMode::sdr && color_pipeline_.hdr_monitoring && probe.hdr_capable) {
+        status += QStringLiteral(" · 출력은 HDR10");
+    } else if (color_pipeline_.hdr_monitoring) {
+        status += QStringLiteral(" · 출력 HDR10");
+    }
+    hdr_display_status_ = status;
 }
 
 void EditorController::setExportQuality(int quality) {
@@ -3965,7 +4786,9 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     preview_update_timer_.stop();
     preview_operation_pending_ = false;
     pending_preview_seek_.reset();
+    pending_live_seek_.reset();
     preview_should_play_ = false;
+    if (live_seek_watcher_.isRunning()) live_seek_watcher_.waitForFinished();
     if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
     player_->stop();
 #endif
@@ -3973,6 +4796,11 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     request.output_path = std::filesystem::path(output.toStdWString());
     request.prefer_stream_copy = export_codec_ == 2;
     request.quality = static_cast<ffgui::ExportQuality>(export_quality_);
+    request.hdr10 = color_pipeline_.hdr_monitoring && export_container_ != 3;
+    request.hdr_peak_nits = color_pipeline_.hdr_peak_nits;
+    request.sdr_white_nits = color_pipeline_.sdr_white_nits;
+    request.max_cll = color_pipeline_.max_cll;
+    request.max_fall = color_pipeline_.max_fall;
     if (export_resolution_ == 1) {
         request.output_width = 3840; request.output_height = 2160;
     } else if (export_resolution_ == 2) {
@@ -4060,11 +4888,10 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     }) && timeline_.captions().empty() && !stamp_enabled_;
     export_color_lut_paths_.clear();
     if (!floatOnly) {
-        const auto outputSpace = color_pipeline_.mode == ffgui::ColorPipelineMode::legacy
-            ? std::string{}
-            : color_pipeline_.output_space.empty()
-                ? std::string{"sRGB - Display"} : color_pipeline_.output_space;
+        const auto outputSpace = ffgui::resolved_color_output_space(color_pipeline_);
         try {
+            const int clutFps = request.gif.enabled ? std::max(1, request.gif.fps) :
+                (request.output_fps > 0 ? request.output_fps : 30);
             for (std::size_t index = 0; index < exportSnapshot.size(); ++index) {
                 const auto& span = exportSnapshot[index];
                 const auto* asset = timeline_.asset(span.clip.asset_id);
@@ -4074,11 +4901,51 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
                     span.clip.grade.nodes().empty() && !hasClipControls)) {
                     continue;
                 }
+                const auto grade = ffgui::compose_clip_grade(span.clip);
+                request.clips[index].brightness = 0.0;
+                request.clips[index].contrast = 1.0;
+                request.clips[index].saturation = 1.0;
+                if (grade.has_keyframes()) {
+                    const auto clutDir = QDir(exportCache).filePath(
+                        QStringLiteral("%1-clip-%2-clut").arg(exportJobId).arg(index));
+                    if (!QDir().mkpath(clutDir)) {
+                        throw std::runtime_error("animated color CLUT directory could not be created");
+                    }
+                    const auto durationSeconds = static_cast<double>(span.clip.duration) /
+                        static_cast<double>(ffgui::kNanosecondsPerSecond);
+                    auto fps = clutFps;
+                    auto frameCount = std::max(1, static_cast<int>(std::llround(
+                        durationSeconds * static_cast<double>(fps))));
+                    constexpr int kMaxClutFrames = 1'800;
+                    if (frameCount > kMaxClutFrames) {
+                        fps = std::max(1, static_cast<int>(
+                            std::llround(static_cast<double>(kMaxClutFrames) / durationSeconds)));
+                        frameCount = std::max(1, static_cast<int>(std::llround(
+                            durationSeconds * static_cast<double>(fps))));
+                    }
+                    for (int frame = 0; frame < frameCount; ++frame) {
+                        const auto sourceTime = span.clip.source_in + static_cast<ffgui::TimeNs>(
+                            std::llround(static_cast<double>(frame) /
+                                static_cast<double>(fps) *
+                                static_cast<double>(ffgui::kNanosecondsPerSecond)));
+                        const auto clut = ffgui::build_hald_clut(
+                            asset->source_color(), color_pipeline_, grade, outputSpace, 6,
+                            sourceTime);
+                        const auto framePath = QDir(clutDir).filePath(
+                            QStringLiteral("%1.ppm").arg(frame + 1, 6, 10, QLatin1Char('0')));
+                        ffgui::write_hald_clut_ppm(
+                            std::filesystem::path(framePath.toStdWString()), clut);
+                    }
+                    export_color_lut_paths_.push_back(clutDir);
+                    request.clips[index].color_clut_pattern =
+                        std::filesystem::path(QDir(clutDir).filePath("%06d.ppm").toStdWString());
+                    request.clips[index].color_clut_fps = fps;
+                    continue;
+                }
                 const auto lutPath = QDir(exportCache).filePath(
                     QStringLiteral("%1-clip-%2.cube").arg(exportJobId).arg(index));
                 const auto payload = ffgui::bake_color_cube(
-                    asset->source_color(), color_pipeline_,
-                    ffgui::compose_clip_grade(span.clip), outputSpace, 33);
+                    asset->source_color(), color_pipeline_, grade, outputSpace, 33);
                 QSaveFile file(lutPath);
                 const auto bytes = QByteArray::fromStdString(payload);
                 if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() ||
@@ -4088,12 +4955,9 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
                 export_color_lut_paths_.push_back(lutPath);
                 request.clips[index].color_lut_path =
                     std::filesystem::path(lutPath.toStdWString());
-                request.clips[index].brightness = 0.0;
-                request.clips[index].contrast = 1.0;
-                request.clips[index].saturation = 1.0;
             }
         } catch (const std::exception& error) {
-            for (const auto& path : export_color_lut_paths_) QFile::remove(path);
+            removeExportColorArtifacts(export_color_lut_paths_);
             export_color_lut_paths_.clear();
             setStatus(QStringLiteral("출력 중단: 컬러 준비 실패 · %1")
                 .arg(QString::fromUtf8(error.what())));
@@ -4227,7 +5091,9 @@ void EditorController::startExportValidation() {
         const auto output = QString::fromStdWString(export_request_->output_path.wstring());
         export_validation_process_.setProgram(ffgui::locate_ffprobe());
         export_validation_process_.setArguments({
-            "-v", "error", "-show_entries", "stream=codec_type:format=duration",
+            "-v", "error",
+            "-show_entries",
+            "stream=codec_type,color_primaries,color_transfer,color_space:format=duration",
             "-of", "json", output});
         export_validation_process_.start();
     } catch (const std::exception& error) {
@@ -4277,7 +5143,7 @@ void EditorController::finishExport(bool success) {
                       << "log=" << export_log_path_;
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
     if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
-    for (const auto& path : export_color_lut_paths_) QFile::remove(path);
+    removeExportColorArtifacts(export_color_lut_paths_);
     export_concat_path_.clear();
     export_subtitle_path_.clear();
     export_color_lut_paths_.clear();
@@ -4313,71 +5179,135 @@ void EditorController::queuePreviewOperation(bool restorePosition) {
 #endif
 }
 
+void EditorController::queueLiveSeek(qint64 timelinePosition) {
+#ifdef FFGUI_HAS_GES
+    if (preview_suspended_for_export_ || player_ == nullptr) return;
+    pending_live_seek_ = timelinePosition;
+    pumpLiveSeek();
+#else
+    static_cast<void>(timelinePosition);
+#endif
+}
+
+void EditorController::pumpLiveSeek() {
+#ifdef FFGUI_HAS_GES
+    if (preview_suspended_for_export_ || !pending_live_seek_.has_value()) return;
+    if (preview_watcher_.isRunning() || live_seek_watcher_.isRunning() || player_ == nullptr) {
+        return;
+    }
+    const auto position = *pending_live_seek_;
+    pending_live_seek_.reset();
+    auto* player = player_.get();
+    live_seek_watcher_.setFuture(QtConcurrent::run([player, position] {
+        LiveSeekResult result;
+        try {
+            if (player->duration() > 0) {
+                const auto target = std::clamp<qint64>(
+                    position, 0, static_cast<qint64>(player->duration()));
+                player->seek(target, ffgui::GesSequencePlayer::PreviewSeekMode::keyframe);
+            }
+            result.success = true;
+        } catch (const std::exception& error) {
+            result.error = QString::fromUtf8(error.what());
+        }
+        return result;
+    }));
+#endif
+}
+
 void EditorController::startPreviewOperation() {
 #ifdef FFGUI_HAS_GES
     if (preview_suspended_for_export_ || preview_watcher_.isRunning() ||
-        !preview_operation_pending_) return;
+        live_seek_watcher_.isRunning() || !preview_operation_pending_) return;
 
     const auto generation = preview_generation_;
     const bool rebuild = !preview_applied_generation_.has_value() ||
         preview_applied_generation_.value() != generation;
-    auto spans = rebuild ? preview_snapshot_ : std::vector<ffgui::TimelineSpan>{};
+    const bool colorOnly = !rebuild && preview_color_only_pending_;
+    preview_color_only_pending_ = false;
+    auto spans = (rebuild || colorOnly) ? preview_snapshot_ : std::vector<ffgui::TimelineSpan>{};
     // Caption overlay operations can invalidate the NLE composition during an accurate seek.
     // Keep the core editing preview video/audio-only until the overlay path has its own
     // gap-safe composition and regression suite.
     auto captions = std::vector<ffgui::CaptionCue>{};
     const auto seekTarget = pending_preview_seek_;
+    const auto fallbackSeek = playhead_ns_;
     const bool shouldPlay = preview_should_play_;
     const bool shouldStop = preview_stop_requested_;
     const auto colorSettings = color_pipeline_;
     pending_preview_seek_.reset();
     preview_stop_requested_ = false;
     preview_operation_pending_ = false;
-    if (!preview_busy_) {
-        preview_busy_ = true;
-        emit previewBusyChanged();
+    if (rebuild && !colorOnly) {
+        if (!preview_busy_) {
+            preview_busy_ = true;
+            emit previewBusyChanged();
+        }
+        if (preview_failed_) {
+            preview_failed_ = false;
+            emit previewFailedChanged();
+        }
+        setStatus(QStringLiteral("미리보기 타임라인 준비 중…"));
     }
-    if (preview_failed_) {
-        preview_failed_ = false;
-        emit previewFailedChanged();
-    }
-    setStatus(rebuild
-        ? QStringLiteral("미리보기 타임라인 준비 중…")
-        : QStringLiteral("미리보기 위치 이동 중…"));
 
     auto* player = player_.get();
     preview_watcher_.setFuture(QtConcurrent::run(
         [player,
          generation,
          rebuild,
+         colorOnly,
          spans = std::move(spans),
          captions = std::move(captions),
          seekTarget,
+         fallbackSeek,
          shouldPlay,
          shouldStop,
          colorSettings]() mutable {
             PreviewOperationResult result;
             result.generation = generation;
             result.rebuilt = rebuild;
+            result.color_only = colorOnly;
             QElapsedTimer elapsed;
             elapsed.start();
             qInfo().noquote() << "preview operation started"
                               << "generation=" << generation
                               << "rebuild=" << rebuild
+                              << "color_only=" << colorOnly
                               << "seek=" << seekTarget.value_or(-1)
                               << "play=" << shouldPlay;
             try {
-                if (rebuild && colorSettings.mode != ffgui::ColorPipelineMode::legacy) {
+                if (colorOnly) {
+                    const auto outputSpace = ffgui::resolved_color_output_space(colorSettings);
+                    player->set_color_pipeline(colorSettings, outputSpace);
+                    if (player->update_source_color(spans)) {
+                        result.success = true;
+                        qInfo().noquote() << "preview color updated in place"
+                                          << "generation=" << generation
+                                          << "elapsed_ms=" << elapsed.elapsed();
+                        return result;
+                    }
+                    result.color_only = false;
+                    result.rebuilt = true;
+                    qInfo().noquote() << "preview color live update unavailable; rebuilding";
+                }
+                if ((rebuild || result.rebuilt) &&
+                    colorSettings.mode != ffgui::ColorPipelineMode::legacy) {
                     ffgui::OcioEngine warmColorCache(colorSettings);
                     static_cast<void>(warmColorCache.managed());
                 }
-                if (rebuild) player->set_timeline(std::move(spans), std::move(captions));
+                if (rebuild || result.rebuilt) {
+                    player->set_timeline(std::move(spans), std::move(captions));
+                }
                 if (shouldStop) {
                     player->stop();
                 } else {
-                    if (seekTarget.has_value() && player->duration() > 0) {
+                    const auto seek = seekTarget.has_value()
+                        ? seekTarget
+                        : (result.rebuilt && !rebuild
+                            ? std::optional<qint64>(fallbackSeek) : std::optional<qint64>{});
+                    if (seek.has_value() && player->duration() > 0) {
                         const auto target = std::clamp<qint64>(
-                            seekTarget.value(), 0, static_cast<qint64>(player->duration()));
+                            seek.value(), 0, static_cast<qint64>(player->duration()));
                         player->seek(target);
                     }
                     if (shouldPlay) {
@@ -4393,6 +5323,8 @@ void EditorController::startPreviewOperation() {
             qInfo().noquote() << "preview operation finished"
                               << "generation=" << generation
                               << "success=" << result.success
+                              << "rebuilt=" << result.rebuilt
+                              << "color_only=" << result.color_only
                               << "elapsed_ms=" << elapsed.elapsed()
                               << "error=" << result.error;
             return result;
@@ -4403,18 +5335,17 @@ void EditorController::startPreviewOperation() {
 void EditorController::publishTimeline(bool resetPlayhead) {
     QElapsedTimer publishElapsed;
     publishElapsed.start();
+    endCoalescedGradeEdit();
 #ifdef FFGUI_HAS_GES
+    const bool keepPlaying = playing_ || preview_should_play_;
     stopFloatPlayback();
-    preview_should_play_ = false;
+    preview_should_play_ = keepPlaying;
     pending_float_video_frame_.reset();
+    preview_color_only_pending_ = false;
     player_->set_legacy_source_color_enabled(
         color_pipeline_.mode == ffgui::ColorPipelineMode::legacy);
     player_->set_color_pipeline(
-        color_pipeline_, color_pipeline_.mode == ffgui::ColorPipelineMode::legacy
-            ? std::string{}
-            : color_pipeline_.output_space.empty()
-                ? std::string{"sRGB - Display"}
-                : color_pipeline_.output_space);
+        color_pipeline_, ffgui::resolved_color_output_space(color_pipeline_));
     player_->set_float_output_enabled(requiresFloatVideoPreview());
 #endif
     if (resetPlayhead) {
@@ -4461,6 +5392,42 @@ void EditorController::publishTimeline(bool resetPlayhead) {
                              << "elapsed_ms=" << publishElapsed.elapsed()
                              << "clips=" << timeline_.clips().size();
     }
+}
+
+void EditorController::publishColorPreview() {
+    QElapsedTimer publishElapsed;
+    publishElapsed.start();
+    preview_snapshot_ = timeline_.snapshot();
+    preview_revision_ = timeline_.revision();
+    clips_cache_.reset();
+    emit selectedClipChanged();
+    emit historyChanged();
+    emit gradeUiChanged();
+#ifdef FFGUI_HAS_GES
+    if (requiresFloatVideoPreview()) {
+        if (!float_playback_running_) startFloatScrubFrame(playhead_ns_);
+    }
+    preview_color_only_pending_ = true;
+    preview_update_timer_.start();
+    if (!preview_busy_) setStatus(QStringLiteral("컬러 미리보기 갱신 중"));
+#else
+    setStatus(QStringLiteral("컬러 변경 적용"));
+#endif
+    if (publishElapsed.elapsed() >= 50) {
+        qWarning().noquote() << "color preview publish blocked the UI"
+                             << "elapsed_ms=" << publishElapsed.elapsed()
+                             << "clips=" << timeline_.clips().size();
+    }
+}
+
+void EditorController::touchCoalescedGradeEdit() {
+    if (!timeline_.coalescing()) timeline_.begin_coalesced_edit();
+    grade_coalesce_timer_.start();
+}
+
+void EditorController::endCoalescedGradeEdit() {
+    grade_coalesce_timer_.stop();
+    timeline_.end_coalesced_edit();
 }
 
 void EditorController::setStatus(QString status) {

@@ -5,6 +5,8 @@
 #include "color/grade_processor.hpp"
 #include "color/color_frame_processor.hpp"
 #include "color/scope_analyzer.hpp"
+#include "color/look_export.hpp"
+#include "color/shot_matching.hpp"
 #include "media/oiio_probe.hpp"
 #include "media/oiio_frame_source.hpp"
 #include "render/timeline_frame_server.hpp"
@@ -13,13 +15,17 @@
 #include "core/subtitle_srt.hpp"
 #include "export/ffmpeg_export_plan.hpp"
 
-#include <exception>
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <numeric>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -132,6 +138,29 @@ void test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_no
     require_throws<std::invalid_argument>([&] {
         ffgui::LutExportRequest{"ACEScct", "ACEScg", ffgui::LutEncoding::acescct, 33}.validate(graph);
     }, "LUT export must reject graphs that cannot be represented by a global RGB transform");
+    ffgui::GradeGraph animated;
+    auto keyed = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "keyed");
+    keyed.parameter_keyframes["exposure"] = {{0, 0.0}, {1, 1.0}};
+    animated.add(std::move(keyed));
+    require_throws<std::invalid_argument>([&] {
+        ffgui::LutExportRequest{"ACEScg", "ACEScg", ffgui::LutEncoding::working_space, 33}
+            .validate(animated);
+    }, "LUT export must reject time-varying grades");
+    ffgui::LutExportRequest dual{"ACEScg", "ACEScg", ffgui::LutEncoding::working_space, 33};
+    dual.unreal_ocio_bundle = true;
+    dual.include_display_transform = true;
+    require_throws<std::invalid_argument>([&] {
+        dual.validate({});
+    }, "Unreal packages must refuse a stacked display transform");
+    require(ffgui::resolved_color_output_space({}).empty(),
+            "legacy output space must stay empty");
+    ffgui::ColorPipelineSettings bypassed;
+    bypassed.mode = ffgui::ColorPipelineMode::aces_managed;
+    bypassed.display_transform_bypassed = true;
+    require(ffgui::resolved_color_output_space(bypassed) == "ACEScg",
+            "bypassed display transform must leave pixels in working space");
+    require(!ffgui::uses_display_view(bypassed),
+            "bypass must disable the Display/View output transform");
 }
 
 void test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube() {
@@ -140,6 +169,18 @@ void test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube() {
     ffgui::OcioEngine engine(settings);
     require(engine.managed() && !engine.color_spaces().empty(),
             "ACES managed mode must load the bundled OCIO configuration");
+    const auto displays = engine.displays();
+    const auto defaultDisplay = engine.default_display();
+    require(!displays.empty() && !defaultDisplay.empty() &&
+                std::ranges::find(displays, defaultDisplay) != displays.end(),
+            "ACES Studio config must expose at least one monitor display");
+    const auto views = engine.views(defaultDisplay);
+    const auto defaultView = engine.default_view(defaultDisplay);
+    require(!views.empty() && !defaultView.empty(),
+            "ACES Studio config must expose a default view for the default display");
+    const auto displaySpace = engine.display_view_color_space(defaultDisplay, defaultView);
+    require(!displaySpace.empty(),
+            "Display/View must resolve to an OCIO color space name");
     const auto spaces = engine.color_spaces();
     require(std::ranges::find(spaces, "ACEScg") != spaces.end(),
             "ACES Studio config must expose ACEScg");
@@ -220,13 +261,112 @@ void test_float_grade_pipeline_preserves_alpha_and_node_mix() {
 
     ffgui::GradeGraph unsupported;
     unsupported.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::qualifier, "qualifier"));
-    require_throws<std::invalid_argument>([&] {
-        ffgui::apply_grade_graph_rgba32f(pixel, 1, unsupported);
-    }, "spatial grade nodes must never be silently ignored by the reference renderer");
+    require(unsupported.nodes().front().render_supported(),
+            "qualifier nodes must be part of the float reference renderer");
+    float keyed[]{0.8F, 0.05F, 0.05F, 1.0F};
+    auto qualifier = ffgui::make_default_grade_node(ffgui::GradeNodeType::qualifier, "qualifier-red");
+    qualifier.parameters["hueCenter"] = 0.0;
+    qualifier.parameters["hueWidth"] = 35.0;
+    qualifier.parameters["insideExposure"] = 1.0;
+    ffgui::GradeGraph keyedGraph;
+    keyedGraph.add(qualifier);
+    const auto originalRed = keyed[0];
+    ffgui::apply_grade_graph_rgba32f(keyed, 1, keyedGraph);
+    require(keyed[0] > originalRed * 1.4F,
+            "qualifier must grade inside the hue key instead of ignoring the node");
+    float blue[]{0.05F, 0.05F, 0.8F, 1.0F};
+    const auto originalBlue = blue[2];
+    ffgui::apply_grade_graph_rgba32f(blue, 1, keyedGraph);
+    require(std::abs(blue[2] - originalBlue) < 0.02F,
+            "qualifier must leave out-of-key pixels nearly unchanged");
 
     const auto cube = ffgui::bake_color_cube({}, {}, fullGrade, {}, 2);
     require(cube.contains("LUT_3D_SIZE 2") && std::ranges::count(cube, '\n') == 12,
             "clip color cube must contain every RGB lattice point from the reference path");
+
+    const auto preGrade = ffgui::process_color_frame(
+        premultiplied, {}, {}, fullGrade, {}, 0, ffgui::ColorProcessStage::pre_grade);
+    require(std::abs(preGrade.rgba[0] - 0.125F) < 0.00001F,
+            "legacy pre-grade must restore the original ungraded premultiplied pixel");
+}
+
+void test_review_display_stages_scopes_and_overlays() {
+    ffgui::ColorPipelineSettings settings;
+    settings.mode = ffgui::ColorPipelineMode::aces_managed;
+    ffgui::OcioEngine engine(settings);
+    settings.display = engine.default_display();
+    settings.view = engine.default_view(settings.display);
+    require(ffgui::uses_display_view(settings),
+            "selecting the default Display/View must enable the display transform");
+
+    ffgui::FloatImageFrame source;
+    source.width = 1;
+    source.height = 1;
+    source.color_space = "ACEScg";
+    source.rgba = {0.18F, 0.18F, 0.18F, 1.0F};
+    ffgui::SourceColorDescriptor descriptor;
+    descriptor.input_color_space = "ACEScg";
+    ffgui::GradeGraph grade;
+    auto primary = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary-1");
+    primary.parameters["exposure"] = 1.0;
+    grade.add(primary);
+
+    const auto pre = ffgui::process_color_frame(
+        source, descriptor, settings, grade, "sRGB - Display", 0,
+        ffgui::ColorProcessStage::pre_grade);
+    const auto postGrade = ffgui::process_color_frame(
+        source, descriptor, settings, grade, "sRGB - Display", 0,
+        ffgui::ColorProcessStage::post_grade);
+    const auto postDisplay = ffgui::process_color_frame(
+        source, descriptor, settings, grade, "sRGB - Display", 0,
+        ffgui::ColorProcessStage::post_display);
+    require(pre.color_space == "ACEScg" && std::abs(pre.rgba[0] - 0.18F) < 0.0001F,
+            "pre-grade must stop in working space before creative correction");
+    require(postGrade.color_space == "ACEScg" && postGrade.rgba[0] > pre.rgba[0] + 0.05F,
+            "post-grade must keep working-space pixels after exposure");
+    require(postDisplay.color_space != "ACEScg" &&
+                std::abs(postDisplay.rgba[0] - postGrade.rgba[0]) > 0.01F,
+            "post-display must apply the selected Display/View transform");
+
+    settings.display_transform_bypassed = true;
+    const auto bypassed = ffgui::process_color_frame(
+        source, descriptor, settings, grade, "sRGB - Display");
+    require(bypassed.color_space == "ACEScg" &&
+                std::abs(bypassed.rgba[0] - postGrade.rgba[0]) < 0.0001F,
+            "display bypass must match the post-grade working-space result");
+
+    ffgui::FloatImageFrame hot;
+    hot.width = 1;
+    hot.height = 1;
+    hot.rgba = {1.8F, -0.2F, 0.4F, 1.0F};
+    const auto displayScope = ffgui::analyze_scope_float(
+        hot, 7, ffgui::ScopeReferenceStage::post_display);
+    const auto sceneScope = ffgui::analyze_scope_float(
+        hot, 8, ffgui::ScopeReferenceStage::post_grade);
+    require(displayScope.histogram[0][255] == 1 && displayScope.out_of_gamut_pixels == 1 &&
+                displayScope.peak_luma > 1.0F,
+            "display-referred scopes must clip superwhite into the top code-value bin");
+    require(sceneScope.scene_referred && sceneScope.histogram[0][255] == 0 &&
+                sceneScope.out_of_gamut_pixels == 1,
+            "working-space scopes must use ACEScct encoding instead of clipping to code 255");
+
+    ffgui::apply_review_overlay_rgba32f(
+        hot.rgba.data(), 1, 1, ffgui::ReviewOverlayMode::gamut_warning);
+    require(hot.rgba[0] > 0.9F && hot.rgba[2] > 0.4F,
+            "gamut warning must paint out-of-range pixels magenta");
+    const auto inspected = ffgui::inspect_rgba32f(source.rgba.data(), 1, 1, 0, 0);
+    require(inspected.valid && std::abs(inspected.red - 0.18F) < 0.0001F &&
+                !inspected.out_of_gamut,
+            "pixel inspector must read the exact working-space sample");
+
+    ffgui::FloatImageFrame left;
+    left.width = 2;
+    left.height = 1;
+    left.rgba = {1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F};
+    const std::vector<float> right{0.0F, 1.0F, 0.0F, 1.0F, 0.0F, 1.0F, 0.0F, 1.0F};
+    ffgui::wipe_rgba32f(left.rgba.data(), right.data(), 2, 1, 0.5F);
+    require(std::abs(left.rgba[1] - 1.0F) < 0.0001F && std::abs(left.rgba[6] - 1.0F) < 0.0001F,
+            "display compare wipe must copy the bypassed half onto the left");
 }
 
 void test_advanced_grade_nodes_share_the_float_reference_contract() {
@@ -384,6 +524,151 @@ void test_grade_parameter_keyframes_evaluate_in_source_time() {
         "duplicate keyframe times must be rejected");
 }
 
+void test_source_time_buffer_mapping_and_animated_cube_cache() {
+    require(ffgui::source_time_for_clip_buffer(
+                seconds(2), seconds(5), 1.0, seconds(5) + seconds(1) / 2) ==
+                seconds(2) + seconds(1) / 2,
+            "timeline-absolute PTS must convert to source time after the clip in-point");
+    require(ffgui::source_time_for_clip_buffer(seconds(2), seconds(5), 2.0, seconds(1) / 2) ==
+                seconds(3),
+            "clip-local PTS must still apply playback rate to reach source time");
+    ffgui::ColorLutRecipe recipe;
+    auto node = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "animated");
+    node.parameter_keyframes["exposure"] = {{0, 0.0}, {seconds(1), 2.0}};
+    recipe.grade.add(std::move(node));
+    recipe.animated = true;
+    recipe.cube_size = 5;
+    recipe.source_in = 0;
+    recipe.timeline_in = seconds(5);
+    recipe.playback_rate = 1.0;
+    ffgui::AnimatedCubeCache cache;
+    auto shared = std::make_shared<const ffgui::ColorLutRecipe>(recipe);
+    const auto first = cache.cube_for_pts(shared, seconds(5));
+    const auto again = cache.cube_for_pts(shared, seconds(5) + 1000);
+    const auto later = cache.cube_for_pts(shared, seconds(6));
+    require(first && again && first == again,
+            "animated cube cache must reuse the same baked cube within 1ms");
+    require(later && later != first,
+            "animated cube cache must bake a new cube when source time changes");
+    float identity[3]{0.5F, 0.5F, 0.5F};
+    float early[3]{};
+    float late[3]{};
+    ffgui::sample_color_cube(*first, identity, early);
+    ffgui::sample_color_cube(*later, identity, late);
+    require(std::abs(early[0] - 0.5F) < 0.02F && late[0] > early[0] + 0.4F,
+            "source-time cube evaluation must brighten as exposure keyframes advance");
+}
+
+void test_grade_cube_matches_float_reference_for_bypass_mix_order_and_keyframes() {
+    const auto compare = [](const ffgui::GradeGraph& graph, std::int64_t sourceTime,
+                            const char* message) {
+        const auto cube = ffgui::build_color_cube({}, {}, graph, {}, 9, sourceTime);
+        require(cube.size == 9 && cube.rgb.size() == 9U * 9U * 9U * 3U,
+                "golden patch cubes must use the published 3D lattice size");
+        const std::array<float, 3> samples[]{
+            {0.0F, 0.0F, 0.0F}, {0.5F, 0.5F, 0.5F}, {1.0F, 1.0F, 1.0F},
+            {0.25F, 0.5F, 0.75F}, {0.8F, 0.2F, 0.1F}};
+        for (const auto& sample : samples) {
+            float fromCube[3]{};
+            ffgui::sample_color_cube(cube, sample.data(), fromCube);
+            float pixel[]{sample[0], sample[1], sample[2], 0.42F};
+            ffgui::apply_grade_graph_rgba32f(pixel, 1, graph, sourceTime);
+            const auto lattice =
+                std::fmod(sample[0] * 8.0F, 1.0F) < 0.000001F &&
+                std::fmod(sample[1] * 8.0F, 1.0F) < 0.000001F &&
+                std::fmod(sample[2] * 8.0F, 1.0F) < 0.000001F;
+            const auto tolerance = lattice ? 0.0001F : 0.03F;
+            require(std::abs(fromCube[0] - pixel[0]) < tolerance &&
+                        std::abs(fromCube[1] - pixel[1]) < tolerance &&
+                        std::abs(fromCube[2] - pixel[2]) < tolerance &&
+                        std::abs(pixel[3] - 0.42F) < 0.000001F,
+                    message);
+        }
+    };
+
+    ffgui::GradeGraph bypassed;
+    auto disabled = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "off");
+    disabled.enabled = false;
+    disabled.parameters["exposure"] = 4.0;
+    bypassed.add(disabled);
+    compare(bypassed, 0, "bypassed nodes must leave the cube identical to the float renderer");
+
+    ffgui::GradeGraph mixed;
+    auto primary = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "mix");
+    primary.parameters["exposure"] = 1.0;
+    primary.mix = 0.5;
+    mixed.add(primary);
+    compare(mixed, 0, "node mix must match between the float renderer and sampled 3D cube");
+
+    ffgui::GradeGraph logThenPrimary;
+    auto log = ffgui::make_default_grade_node(ffgui::GradeNodeType::log_wheels, "log");
+    log.parameters["offsetR"] = 0.05;
+    log.parameters["offsetG"] = 0.05;
+    log.parameters["offsetB"] = 0.05;
+    auto second = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "after-log");
+    second.parameters["contrast"] = 1.2;
+    logThenPrimary.add(log);
+    logThenPrimary.add(second);
+    ffgui::GradeGraph primaryThenLog;
+    primaryThenLog.add(second);
+    primaryThenLog.add(log);
+    compare(logThenPrimary, 0, "node order log-then-primary must match the cube contract");
+    compare(primaryThenLog, 0, "node order primary-then-log must match the cube contract");
+    float logFirst[]{0.4F, 0.4F, 0.4F, 1.0F};
+    float primaryFirst[]{0.4F, 0.4F, 0.4F, 1.0F};
+    ffgui::apply_grade_graph_rgba32f(logFirst, 1, logThenPrimary);
+    ffgui::apply_grade_graph_rgba32f(primaryFirst, 1, primaryThenLog);
+    require(std::abs(logFirst[0] - primaryFirst[0]) > 0.0001F,
+            "swapping node order must change the float reference so order is actually tested");
+
+    ffgui::GradeGraph keyed;
+    auto animated = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "key");
+    animated.parameter_keyframes["exposure"] = {{0, 0.0}, {seconds(1), 1.0}};
+    keyed.add(animated);
+    compare(keyed, 0, "keyframe start must match the cube sampled at source time 0");
+    compare(keyed, seconds(1), "keyframe end must match the cube sampled at source time 1s");
+    require(keyed.has_keyframes(), "graphs with parameter keyframes must report animation");
+}
+
+void test_hald_clut_identity_and_export_plan_uses_time_varying_haldclut() {
+    const auto identity = ffgui::build_hald_clut({}, {}, {}, {}, 4);
+    require(identity.level == 4 && identity.width == 64 &&
+                identity.rgb.size() == 64U * 64U * 3U,
+            "Hald CLUT level 4 must be a 64x64 RGB image");
+    const auto cubeSize = 16;
+    const auto index = static_cast<std::size_t>(8) +
+        static_cast<std::size_t>(8) * cubeSize +
+        static_cast<std::size_t>(8) * cubeSize * cubeSize;
+    const auto y = static_cast<int>(index / 64);
+    const auto x = static_cast<int>(index % 64);
+    const auto pixel = (static_cast<std::size_t>(y) * 64 + static_cast<std::size_t>(x)) * 3;
+    require(identity.rgb[pixel] > 110 && identity.rgb[pixel] < 145 &&
+                identity.rgb[pixel + 1] > 110 && identity.rgb[pixel + 1] < 145 &&
+                identity.rgb[pixel + 2] > 110 && identity.rgb[pixel + 2] < 145,
+            "identity Hald CLUT mid-gray lattice must round-trip near 0.5");
+    auto request = ffgui::ExportRequest{
+        {
+            {std::filesystem::path{"A.mp4"}, 0, seconds(2), true},
+            {std::filesystem::path{"B.mp4"}, 0, seconds(2), true},
+        },
+        std::filesystem::path{"result.mp4"},
+        ffgui::ExportVideoEncoder::libx264};
+    request.clips[1].transition_in = seconds(1) / 2;
+    request.clips[0].color_clut_pattern = std::filesystem::path{"cluts/%06d.ppm"};
+    request.clips[0].color_clut_fps = 24;
+    const auto plan = ffgui::compile_ffmpeg_export(request);
+    std::string arguments;
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(arguments.contains("\n-framerate\n24\n-start_number\n1\n") &&
+                arguments.contains("cluts/%06d.ppm"),
+            "animated grades must attach a Hald CLUT image sequence as an extra input");
+    require(arguments.contains("haldclut=interp=trilinear") &&
+                arguments.find("haldclut=") < arguments.find("xfade="),
+            "time-varying clip color must run haldclut before the timeline dissolve");
+    require(!arguments.contains("lut3d="),
+            "animated grades must not fall back to a static 3D LUT");
+}
+
 void test_shared_grade_node_updates_all_clips_as_one_undoable_edit() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"a", "asset-a", 0, seconds(2)});
@@ -416,6 +701,35 @@ void test_shared_grade_node_updates_all_clips_as_one_undoable_edit() {
     require(timeline.clips()[0].grade.nodes().front().parameters.at("exposure") == 1.5 &&
                 timeline.clips()[1].grade.nodes().front().parameters.at("exposure") == 1.5,
             "one redo must reapply the complete shared grade edit");
+}
+
+void test_coalesced_grade_parameter_edits_are_one_undo_step() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"a", "asset-a", 0, seconds(4)});
+    auto graph = timeline.clips()[0].grade;
+    graph.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary"));
+    timeline.set_clip_grade_graph("a", graph);
+    const auto committed = timeline.revision();
+    timeline.begin_coalesced_edit();
+    auto live = timeline.clips()[0].grade;
+    require(live.node("primary") != nullptr, "coalesced grade edit needs the committed primary node");
+    live.node("primary")->parameters["exposure"] = 0.25;
+    timeline.set_clip_grade_graph("a", live);
+    live.node("primary")->parameters["exposure"] = 0.75;
+    timeline.set_clip_grade_graph("a", live);
+    live.node("primary")->parameters["exposure"] = 1.25;
+    timeline.set_clip_grade_graph("a", live);
+    timeline.end_coalesced_edit();
+    require(timeline.clips()[0].grade.nodes().front().parameters.at("exposure") == 1.25,
+            "coalesced grade drags must keep the last previewed value");
+    require(timeline.revision() > committed,
+            "live grade preview must still advance the model revision");
+    require(timeline.undo() &&
+                timeline.clips()[0].grade.nodes().front().parameters.at("exposure") == 0.0,
+            "one undo must restore the grade from before the coalesced gesture");
+    require(timeline.redo() &&
+                timeline.clips()[0].grade.nodes().front().parameters.at("exposure") == 1.25,
+            "one redo must restore the final coalesced grade");
 }
 
 void test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope() {
@@ -459,6 +773,9 @@ void test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope() {
     const auto floatScopes = ffgui::analyze_scope_float(frame, 43);
     require(floatScopes.serial == 43 && floatScopes.histogram == scopes.histogram,
             "float and BGRA scope inputs must agree for the same display-referred pixels");
+    require(scopes.stage == ffgui::ScopeReferenceStage::post_display &&
+                scopes.out_of_gamut_pixels == 0,
+            "in-gamut display pixels must keep a zero out-of-gamut count");
 }
 
 void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
@@ -1370,6 +1687,54 @@ void test_ffmpeg_export_plan_applies_codec_and_quality_presets() {
             "compact H.264 preset must trade quality for speed and size");
 }
 
+void test_ffmpeg_export_plan_emits_hdr10_metadata() {
+    auto request = ffgui::ExportRequest{
+        {{std::filesystem::path{"A.mp4"}, 0, seconds(2), true,
+          seconds(2), {0, seconds(2)}}},
+        std::filesystem::path{"result.mov"},
+        ffgui::ExportVideoEncoder::libx265};
+    request.prefer_stream_copy = true;
+    request.concat_script_path = std::filesystem::path{"job.ffconcat"};
+    request.hdr10 = true;
+    request.hdr_peak_nits = 1000;
+    request.max_cll = 800;
+    request.max_fall = 200;
+    const auto plan = ffgui::compile_ffmpeg_export(request);
+    require(plan.mode == ffgui::ExportMode::transcode,
+            "HDR10 mastering metadata must disable stream copy");
+    std::string arguments;
+    for (const auto& argument : plan.arguments) arguments += argument + '\n';
+    require(arguments.contains("color_primaries\nbt2020") &&
+                arguments.contains("color_trc\nsmpte2084") &&
+                arguments.contains("colorspace\nbt2020nc"),
+            "HDR10 output must signal Rec.2100 PQ");
+    require(arguments.contains("yuv420p10le") && arguments.contains("x265-params"),
+            "HEVC HDR10 must encode 10-bit with x265 mastering parameters");
+    require(arguments.contains("master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)") &&
+                arguments.contains("max-cll=800,200"),
+            "Rec.2020 mastering display and MaxCLL/MaxFALL must reach x265");
+
+    request.video_encoder = ffgui::ExportVideoEncoder::hevc_nvenc;
+    const auto nvenc = ffgui::compile_ffmpeg_export(request);
+    arguments.clear();
+    for (const auto& argument : nvenc.arguments) arguments += argument + '\n';
+    require(arguments.contains("hevc_nvenc") && arguments.contains("p010le") &&
+                arguments.contains("hevc_metadata=colour_primaries=9"),
+            "NVENC HDR10 must use 10-bit HEVC and bitstream color metadata");
+
+    require_throws<std::invalid_argument>(
+        [] {
+            auto invalid = ffgui::ExportRequest{
+                {{std::filesystem::path{"A.mp4"}, 0, seconds(2), true}},
+                std::filesystem::path{"result.mp4"},
+                ffgui::ExportVideoEncoder::libx265};
+            invalid.hdr10 = true;
+            invalid.hdr_peak_nits = 50;
+            static_cast<void>(ffgui::compile_ffmpeg_export(invalid));
+        },
+        "invalid HDR10 peak luminance must be rejected");
+}
+
 void test_ffmpeg_export_plan_applies_resolution_fps_and_color() {
     auto request = ffgui::ExportRequest{
         {{std::filesystem::path{"A.mp4"}, 0, seconds(2), true}},
@@ -1513,12 +1878,131 @@ void test_render_preflight_blocks_offline_and_unresolved_managed_media() {
     animatedClip.grade.add(std::move(animatedNode));
     animatedVideo.append_clip(std::move(animatedClip));
     report = ffgui::build_render_preflight(animatedVideo, {});
-    require(!report.can_render() &&
-                std::ranges::any_of(report.issues, [](const auto& issue) {
+    require(report.can_render() &&
+                std::ranges::none_of(report.issues, [](const auto& issue) {
                     return issue.code == "animated-grade-frame-server-required";
                 }),
-            "ordinary video keyframes must not silently export through a static LUT");
+            "ordinary video keyframes must export through the time-varying color path");
+    auto spatialClip = Clip{"spatial-clip", "animated", 0, seconds(2)};
+    spatialClip.grade.add(
+        ffgui::make_default_grade_node(ffgui::GradeNodeType::power_window, "window"));
+    TimelineModel spatialVideo;
+    spatialVideo.add_asset(MediaAsset{"animated", path, seconds(2)});
+    spatialVideo.append_clip(std::move(spatialClip));
+    report = ffgui::build_render_preflight(spatialVideo, {});
+    require(!report.can_render() &&
+                std::ranges::any_of(report.issues, [](const auto& issue) {
+                    return issue.code == "spatial-grade-requires-float-frame-server";
+                }),
+            "ordinary video spatial grades must block LUT export");
+    auto spatialSequenceClip = Clip{"spatial-sequence", "sequence", 0, seconds(1)};
+    spatialSequenceClip.grade.add(
+        ffgui::make_default_grade_node(ffgui::GradeNodeType::qualifier, "qualifier"));
+    TimelineModel spatialSequence;
+    spatialSequence.add_asset(MediaAsset{
+        "sequence", path, seconds(1), {0}, {}, {}, ffgui::MediaKind::image_sequence,
+        renderableSequence, {}, path, path});
+    spatialSequence.append_clip(std::move(spatialSequenceClip));
+    require(ffgui::build_render_preflight(spatialSequence, {}).can_render(),
+            "image sequence spatial grades must use the float frame server");
     std::filesystem::remove(path);
+}
+
+void test_look_export_bakes_creative_cube_and_unreal_ocioz() {
+    ffgui::GradeGraph grade;
+    auto primary = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "look-primary");
+    primary.parameters["exposure"] = 0.5;
+    grade.add(std::move(primary));
+    ffgui::LutExportRequest request;
+    request.input_space = "ACEScg";
+    request.output_space = "ACEScg";
+    request.encoding = ffgui::LutEncoding::working_space;
+    request.cube_size = 33;
+    request.unreal_ocio_bundle = true;
+    request.include_display_transform = false;
+    const auto package = ffgui::compile_look_export({}, grade, request);
+    require(package.cube.contains("LUT_3D_SIZE 33") && package.cube.contains("TITLE"),
+            "look export must write a Resolve Cube");
+    require(package.ocioz.size() > 4 && package.ocioz[0] == 'P' && package.ocioz[1] == 'K',
+            "Unreal packages must be store-only zip archives");
+    require(std::ranges::any_of(package.files, [](const auto& file) {
+                return file.relative_path == "config.ocio" &&
+                    file.text.contains("ocio_profile_version: 2.2") &&
+                    file.text.contains("ffmpegGUI_look");
+            }),
+            "Unreal OCIO 2.2 config must name the creative look");
+    require(std::ranges::any_of(package.files, [](const auto& file) {
+                return file.relative_path == "charts/expected.json" &&
+                    file.text.contains("mid_grey");
+            }),
+            "look packages must include verification patches");
+    const auto identity = ffgui::bake_look_cube({}, {}, request);
+    require(identity.contains("LUT_3D_SIZE 33"),
+            "identity look cubes must still honor the requested size");
+
+    const auto root = std::filesystem::temp_directory_path() / "ffgui-look-export";
+    std::filesystem::remove_all(root);
+    ffgui::write_look_export(package, root);
+    require(std::filesystem::is_regular_file(root / "luts" / "ffmpegGUI_look.cube") &&
+                std::filesystem::is_regular_file(root / "ffmpegGUI_look.ocioz") &&
+                std::filesystem::is_regular_file(root / "UNREAL.md"),
+            "look export must write the cube, ocioz archive and Unreal guide");
+    std::filesystem::remove_all(root);
+}
+
+void test_power_window_and_cube_bake_keep_spatial_out_of_luts() {
+    auto window = ffgui::make_default_grade_node(ffgui::GradeNodeType::power_window, "window");
+    window.parameters["centerX"] = 0.25;
+    window.parameters["centerY"] = 0.25;
+    window.parameters["sizeX"] = 0.5;
+    window.parameters["sizeY"] = 0.5;
+    window.parameters["insideExposure"] = 1.0;
+    ffgui::GradeGraph graph;
+    graph.add(window);
+    std::vector<float> pixels{
+        0.2F, 0.2F, 0.2F, 1.0F,
+        0.2F, 0.2F, 0.2F, 1.0F,
+        0.2F, 0.2F, 0.2F, 1.0F,
+        0.2F, 0.2F, 0.2F, 1.0F};
+    ffgui::apply_grade_graph_rgba32f(pixels.data(), 4, graph, 0, 2, 2);
+    require(pixels[0] > 0.35F && std::abs(pixels[12] - 0.2F) < 0.02F,
+            "power windows must grade inside the mask and leave the opposite corner");
+    auto primary = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary, "primary");
+    primary.parameters["exposure"] = 0.25;
+    ffgui::GradeGraph withWindow;
+    withWindow.add(primary);
+    withWindow.add(ffgui::make_default_grade_node(ffgui::GradeNodeType::power_window, "mask"));
+    ffgui::GradeGraph primaryOnly;
+    primaryOnly.add(primary);
+    const auto spatialCube = ffgui::bake_color_cube({}, {}, withWindow, {}, 2);
+    const auto primaryCube = ffgui::bake_color_cube({}, {}, primaryOnly, {}, 2);
+    require(spatialCube == primaryCube,
+            "cube baking must exclude spatial nodes so lattice coordinates stay RGB-only");
+}
+
+void test_shot_match_offsets_primary_from_still_means() {
+    const float still[]{0.36F, 0.36F, 0.36F, 1.0F};
+    const float current[]{0.18F, 0.18F, 0.18F, 1.0F};
+    const auto offset = ffgui::match_mean_rgb(still, current, 1);
+    require(std::abs(offset.exposure - 1.0) < 0.0001,
+            "matching a 0.18 mean to 0.36 must be one stop of exposure");
+    ffgui::GradeGraph graph;
+    ffgui::apply_shot_match(graph, offset);
+    require(!graph.nodes().empty() &&
+                std::abs(graph.nodes().front().parameters.at("exposure") - 1.0) < 0.0001,
+            "shot matching must create or update a primary node");
+    const auto root = std::filesystem::temp_directory_path() / "ffgui-shot-still.png";
+    ffgui::write_rgba32f_png(root, 1, 1, still);
+    const auto loaded = ffgui::read_rgba32f_image(root);
+    require(loaded.width == 1 && loaded.height == 1 &&
+                std::abs(loaded.rgba[0] - 0.36F) < 0.01F,
+            "shot stills must round-trip through a float PNG");
+    std::vector<float> left{0.1F, 0.1F, 0.1F, 1.0F, 0.9F, 0.9F, 0.9F, 1.0F};
+    const float right[]{0.5F, 0.5F, 0.5F, 1.0F, 0.5F, 0.5F, 0.5F, 1.0F};
+    ffgui::compose_shot_compare_rgba32f(left.data(), right, 2, 1, ffgui::ShotCompareMode::still_wipe);
+    require(std::abs(left[0] - 0.5F) < 0.0001F && std::abs(left[4] - 0.9F) < 0.0001F,
+            "still wipe must copy the still onto the left half");
+    std::filesystem::remove(root);
 }
 
 }  // namespace
@@ -1531,10 +2015,15 @@ int main() {
         {"color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes", test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes},
         {"ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube", test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube},
         {"float_grade_pipeline_preserves_alpha_and_node_mix", test_float_grade_pipeline_preserves_alpha_and_node_mix},
+        {"review_display_stages_scopes_and_overlays", test_review_display_stages_scopes_and_overlays},
         {"advanced_grade_nodes_share_the_float_reference_contract", test_advanced_grade_nodes_share_the_float_reference_contract},
         {"external_lut_node_uses_ocio_and_preserves_mix_and_alpha", test_external_lut_node_uses_ocio_and_preserves_mix_and_alpha},
         {"grade_parameter_keyframes_evaluate_in_source_time", test_grade_parameter_keyframes_evaluate_in_source_time},
+        {"source_time_buffer_mapping_and_animated_cube_cache", test_source_time_buffer_mapping_and_animated_cube_cache},
+        {"grade_cube_matches_float_reference_for_bypass_mix_order_and_keyframes", test_grade_cube_matches_float_reference_for_bypass_mix_order_and_keyframes},
+        {"hald_clut_identity_and_export_plan_uses_time_varying_haldclut", test_hald_clut_identity_and_export_plan_uses_time_varying_haldclut},
         {"shared_grade_node_updates_all_clips_as_one_undoable_edit", test_shared_grade_node_updates_all_clips_as_one_undoable_edit},
+        {"coalesced_grade_parameter_edits_are_one_undo_step", test_coalesced_grade_parameter_edits_are_one_undo_step},
         {"scope_analyzer_builds_histogram_waveform_parade_and_vectorscope", test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope},
         {"oiio_probe_reports_exr_layers_alpha_and_color_space", test_oiio_probe_reports_exr_layers_alpha_and_color_space},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},
@@ -1571,10 +2060,14 @@ int main() {
         {"ffmpeg_export_plan_rejects_invalid_requests", test_ffmpeg_export_plan_rejects_invalid_requests},
         {"ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts", test_ffmpeg_export_plan_uses_stream_copy_only_for_safe_keyframe_cuts},
         {"ffmpeg_export_plan_applies_codec_and_quality_presets", test_ffmpeg_export_plan_applies_codec_and_quality_presets},
+        {"ffmpeg_export_plan_emits_hdr10_metadata", test_ffmpeg_export_plan_emits_hdr10_metadata},
         {"ffmpeg_export_plan_applies_resolution_fps_and_color", test_ffmpeg_export_plan_applies_resolution_fps_and_color},
         {"ffmpeg_export_plan_compiles_video_and_audio_dissolve", test_ffmpeg_export_plan_compiles_video_and_audio_dissolve},
         {"ffmpeg_export_plan_builds_palette_optimized_gif_without_audio", test_ffmpeg_export_plan_builds_palette_optimized_gif_without_audio},
         {"render_preflight_blocks_offline_and_unresolved_managed_media", test_render_preflight_blocks_offline_and_unresolved_managed_media},
+        {"look_export_bakes_creative_cube_and_unreal_ocioz", test_look_export_bakes_creative_cube_and_unreal_ocioz},
+        {"power_window_and_cube_bake_keep_spatial_out_of_luts", test_power_window_and_cube_bake_keep_spatial_out_of_luts},
+        {"shot_match_offsets_primary_from_still_means", test_shot_match_offsets_primary_from_still_means},
     };
 
     int failed = 0;

@@ -143,6 +143,9 @@ public:
     bool undo();
     bool redo();
     void clear_history() noexcept;
+    void begin_coalesced_edit();
+    void end_coalesced_edit() noexcept;
+    [[nodiscard]] bool coalescing() const noexcept { return coalescing_; }
 
     [[nodiscard]] const std::vector<Clip>& clips() const noexcept { return clips_; }
     [[nodiscard]] const std::vector<CaptionCue>& captions() const noexcept { return captions_; }
@@ -180,6 +183,8 @@ private:
     std::vector<EditState> undo_stack_;
     std::vector<EditState> redo_stack_;
     std::uint64_t revision_{};
+    bool coalescing_{};
+    bool coalesced_recorded_{};
 };
 
 }  // namespace ffgui

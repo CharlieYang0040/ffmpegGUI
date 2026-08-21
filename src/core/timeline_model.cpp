@@ -631,7 +631,19 @@ void TimelineModel::split_at(
     normalize_transitions();
 }
 
+void TimelineModel::begin_coalesced_edit() {
+    if (coalescing_) return;
+    coalescing_ = true;
+    coalesced_recorded_ = false;
+}
+
+void TimelineModel::end_coalesced_edit() noexcept {
+    coalescing_ = false;
+    coalesced_recorded_ = false;
+}
+
 bool TimelineModel::undo() {
+    end_coalesced_edit();
     if (undo_stack_.empty()) {
         return false;
     }
@@ -644,6 +656,7 @@ bool TimelineModel::undo() {
 }
 
 bool TimelineModel::redo() {
+    end_coalesced_edit();
     if (redo_stack_.empty()) {
         return false;
     }
@@ -656,14 +669,20 @@ bool TimelineModel::redo() {
 }
 
 void TimelineModel::clear_history() noexcept {
+    end_coalesced_edit();
     undo_stack_.clear();
     redo_stack_.clear();
 }
 
 void TimelineModel::record_edit() {
+    if (coalescing_ && coalesced_recorded_) {
+        ++revision_;
+        return;
+    }
     undo_stack_.push_back(EditState{clips_, captions_});
     redo_stack_.clear();
     ++revision_;
+    if (coalescing_) coalesced_recorded_ = true;
 }
 
 std::vector<TimelineSpan> TimelineModel::snapshot() const {

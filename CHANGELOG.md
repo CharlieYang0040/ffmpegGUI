@@ -1,5 +1,33 @@
 # 변경 기록
 
+## Unreleased
+
+- 일반 영상 키프레임 그레이드를 원본 PTS마다 평가한다. GES CPU/GPU 소스 필터는 정적 33³
+  LUT 대신 시간별 큐브를 다시 굽고, 최종 출력은 클립별 Hald CLUT 시퀀스와 `haldclut`를 사용한다.
+- 선택 클립이면 미디어 종류와 관계없이 키프레임 UI를 제공한다. 사전 검사는 더 이상 일반
+  영상의 시간 가변 grade를 차단하지 않는다.
+- bypass/mix/order/keyframe에 대해 CPU float 기준과 3D 큐브 샘플 golden patch를 추가했다.
+- 그레이드·클립 색 조절이 GES 파이프라인을 다시 만들지 않고 소스 LUT/셰이더만 갱신한다. 재생 중 컬러 조절이 응답 없음으로 이어지지 않는다.
+- 연속된 그레이드 파라미터 변경은 350ms 동안 하나의 undo 단계로 합친다.
+- 컬러 큐브 베이크와 OCIO CPU 프로세서를 미리보기 뮤텍스 밖에서 수행·재사용한다.
+- OCIO Display/View와 표시 변환 우회를 미리보기·출력·프로젝트 저장에 연결했다. 이미지
+  시퀀스는 적용 전후 좌우 비교를 지원한다.
+- 스코프 입력을 그레이드 전/후/디스플레이 변환 후로 선택한다. 장면 참조 단계는 ACEScct
+  인코딩을 쓰고, 일반 영상 그레이드 전은 표시 변환 역변환 근사다.
+- gamut warning, false color, 픽셀 검사기를 프로그램 모니터에 연결했다.
+- D3D11 `DXGI_ERROR_DEVICE_REMOVED`를 감지하면 GPU 자원을 버리고 CPU 미리보기로 복구한다.
+- 타임라인 드래그 중에도 키프레임 seek로 실제 미리보기를 최신 위치만 따라가며, 마우스를
+  놓으면 정확 seek로 확정한다. 탐색 중에는 스코프 분석과 그레이드 인스펙터 재평가를 멈춘다.
+- 재생 헤드 틱마다 그레이드 UI를 다시 만들지 않아 재생이 컬러 인스펙터 때문에 끊기지 않는다.
+- HDR 모니터가 있으면 창 색공간을 scRGB 우선, 실패 시 Rec.2020 PQ로 맞추고 모니터 ICC를
+  SDR 표시에 연결한다. HDR 출력은 Rec.2100 PQ·mastering display·MaxCLL/MaxFALL을 FFmpeg
+  HEVC 인코더와 ffprobe 검증에 넣는다.
+- 창작 Look을 33³/65³ Cube와 Unreal OCIO 2.2 `.ocioz`(CLF, manifest, 차트, 설정 안내)로
+  내보낸다. 공간 노드·키프레임·이중 톤맵은 내보내기 전에 거부한다.
+- Qualifier와 power window는 이미지 시퀀스 float 미리보기·출력에 연결되고, 일반 영상 출력은
+  사전 검사에서 차단한다. 샷 스틸, wipe/split 비교, 평균 매칭은 프로젝트에 저장되며 매칭은
+  기존 grade undo를 쓴다.
+
 ## 0.1.1 Preview - 2026-08-12
 
 - Cube, 3DL, CLF, CTF 외부 Look을 검증·캐시하고 CPU 기준 렌더와 D3D11 LUT 경로에 연결했다.

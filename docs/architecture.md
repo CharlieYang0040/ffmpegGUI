@@ -114,7 +114,9 @@ D3D11 장치를 쓰고 멀티스레드 보호를 켠 상태에서 셰이더 리�
 표시 138프레임, 4K H.264/HEVC는 수신·전달·표시 122프레임을 확인했다.
 
 `FFGUI_FORCE_CPU_PREVIEW=1`은 드라이버·원격 데스크톱 호환성 진단을 위한 안전 경로다.
-이 모드도 실제 노출 창에서 CPU BGRA 프레임 표시를 별도로 회귀한다.
+이 모드도 실제 노출 창에서 CPU BGRA 프레임 표시를 별도로 회귀한다. 런타임에 D3D11 장치가
+제거되면 Scene Graph가 `GetDeviceRemovedReason`을 보고 CPU appsink로 파이프라인을 다시
+만들어 미리보기를 이어 간다.
 
 GradeGraph 또는 관리형 컬러가 필요한 일반 영상은 입력→working space→GradeGraph→표시 변환을
 소스별 `RGBA64_LE` top effect에서 수행한다. 관리형 GPU 경로는 OCIO 2.5가 생성한 입력·출력
@@ -156,8 +158,9 @@ source shader에 게시한다. 외부 Cube/3DL/CLF/CTF Look도 OCIO `FileTransfo
 바뀌면 다시 컴파일한다. 파일 경로는 UTF-8로 프로젝트에 저장하고, 누락·손상된 Look은 렌더
 사전 검사에서 `offline-grade-lut` blocker로 보고한다. 노드 복사·붙여넣기와 초기화는 모두
 `TimelineModel::set_clip_grade_graph()` 한 단계 편집이므로 기존 undo/redo와 리비전 계약을 따른다.
-qualifier와 power window는 공간 마스크 계약이 생기기 전까지
-명시적으로 render unsupported 상태를 유지한다.
+  qualifier와 power window는 이미지 시퀀스 float 경로에서 노드 순서대로 실행한다. 일반 영상
+  3D LUT는 공간을 표현하지 못하므로 출력 사전 검사가 차단하고, CPU 미리보기는 큐브 뒤에
+  공간 노드만 적용한다.
 
 구조 편집은 `TimelineModel`과 Scene Graph 화면에 즉시 반영하지만 GES 파이프라인은
 각 마우스 동작마다 다시 만들지 않는다. 50ms 단일 타이머가 연속 편집을 최신 스냅샷
@@ -165,15 +168,22 @@ qualifier와 power window는 공간 마스크 계약이 생기기 전까지
 세대를 즉시 적용한다. 모델 리비전은 출력 일치 검사에, 별도 게시 세대는 프로젝트를
 바꿔 불러온 경우까지 포함한 미리보기 적용 여부에 사용한다.
 
+그레이드 파라미터, 노드 순서, 클립 밝기·대비·채도는 구조가 같으면 GES 그래프를
+파괴하지 않는다. 소스 LUT/OCIO 셰이더는 클립 ID로 고정되고, 필터는 프레임마다
+게시된 큐브를 다시 읽는다. 따라서 재생 중에 컬러를 조절해도 파이프라인 preroll이나
+UI 워치독 지연이 발생하지 않는다. 효과가 새로 필요하거나 사라진 경우에만 전체
+재구축으로 폴백한다. 연속 그레이드 조절은 350ms 동안 하나의 undo 단계로 합친다.
+
 GES 파이프라인 생성, paused 준비, 정확 seek와 재생 상태 전환은 Qt UI 스레드에서 직접
 기다리지 않는다. 컨트롤러의 단일 비동기 작업 슬롯에서 순서대로 실행하며 작업 중 들어온
 scrub·편집 요청은 마지막 위치와 최신 타임라인 세대로 합친다. 이전 세대 작업이 끝나도
 현재 세대가 아니면 즉시 최신 스냅샷을 준비한다. 같은 세대의 준비 실패는 무한 재시도하지
 않고 오류 상태로 남겨 UI가 살아 있는 상태에서 다음 사용자 요청으로 복구할 수 있게 한다.
-드래그 scrub 중에는 GES seek를 반복하지 않는다. 현재 시퀀스 좌표를 원본 좌표로 매핑한
-뒤 12프레임 아틀라스에서 가장 가까운 CPU 프레임을 즉시 프로그램 모니터에 제출한다.
-마우스를 놓은 마지막 위치에서만 `ASYNC_DONE`까지 기다리는 정확 seek를 한 번 수행해
-실제 디코딩 프레임으로 교체한다. 따라서 드래그 속도와 디코더 preroll 성능이 분리되고
+드래그 scrub 중에는 캐시된 썸네일을 즉시 제출하고, GES에는 키프레임 `FLUSH` seek만
+최신 위치로 합쳐 보낸다. 이 경로는 preroll `ASYNC_DONE`을 기다리지 않고 미리보기 준비
+오버레이도 켜지 않는다. 마우스를 놓은 마지막 위치에서만 `ASYNC_DONE`까지 기다리는
+정확 seek를 한 번 수행해 실제 디코딩 프레임으로 확정한다. 탐색·재생 중에는 그레이드
+인스펙터와 스코프 분석을 멈추고, 파이프라인 재구축이 있을 때만 `previewBusy`를 켠다.
 겹친 seek로 `GES timeline seek failed`가 발생하지 않는다. 타임라인 눈금과 편집 피드백의 프레임 번호는 고정 FPS 환산이 아니라
 각 클립의 FFprobe PTS와 트림·속도 매핑을 누적해 계산한다.
 
@@ -232,11 +242,15 @@ GES 1.28 URI 클립의 동적 `volume` 자식은 빠른 그래프 재구축 중 
 출력만 FFmpeg `eq` 빠른 경로를 사용할 수 있다.
 해상도 변경은 비율 유지 scale/pad, FPS 변경은 `fps` 필터로 컴파일하며 이 변환이나
 색보정이 하나라도 있으면 stream-copy 조건에서 제외한다.
+HDR 모니터 출력이 켜진 작업은 Rec.2100 PQ 색 신호와 HEVC 10-bit mastering metadata를
+컴파일하며 stream-copy를 쓰지 않는다. 창을 다른 모니터로 옮기면 DXGI HDR 능력과
+모니터 ICC를 다시 읽어 scRGB, Rec.2020 PQ, SDR 순으로 창 색공간을 맞춘다.
 디졸브는 FFmpeg 영상 `xfade`와 오디오 `acrossfade`로 컴파일한다. 클립 LUT는 scale과
 `xfade`보다 먼저 실행되어 양쪽 샷이 각각 색처리된 후 합성된다. 각 전환의 offset은
 앞에서 이미 합성한 길이에서 현재 겹침을 뺀 시퀀스 좌표이며, 전환이 하나라도 있으면
 stream-copy 대신 재인코딩한다. `xfade` 전에는 MKV/VFR을 포함한 각 영상 입력을 공통
-CFR(사용자 지정 FPS, 미지정 시 전환 합성용 30fps), AVTB, 0 기반 PTS와 `yuv420p`로
+CFR(사용자 지정 FPS, 미지정 시 전환 합성용 30fps), AVTB, 0 기반 PTS와 `yuv420p`(HDR10이면
+`yuv420p10le`)로
 정규화하고 정확한 타임라인 길이로 다시 자른다. 마지막 프레임 한 장을 보강한 뒤 재트림해
 짧은 입력 EOF 때문에 전환 구간 전체가 정지 프레임으로 채워지지 않게 한다.
 GES 1.28의 자동 전환과 명시적 `GESTransitionClip`은 빠른 오버랩 재구축에서 네이티브
@@ -295,24 +309,30 @@ GES appsink가 길이 0인 하드 컷 시점에 합성기 배경 한 프레임�
 복원한다.
 
 keyframe 시간은 시퀀스 시간이 아니라 트림과 재생 속도를 반영한 원본 미디어 시간이다. 공통
-float 처리기는 인접 keyframe을 선형 보간한다. 이미지 시퀀스 프레임 서버는 이 시간을 미리보기와
-최종 출력에 동일하게 전달한다. 일반 영상의 GES GPU 경로는 아직 프레임별 grade 갱신을 지원하지
-않으므로 UI에서 keyframe 생성을 제공하지 않으며, 저장된 데이터가 있으면 출력 사전 검사에서
-차단해 정적 LUT로 잘못 렌더하지 않는다.
+float 처리기는 인접 keyframe을 선형 보간한다. 이미지 시퀀스 프레임 서버와 일반 영상 GES
+소스 필터는 이 시간을 미리보기에 동일하게 전달한다. 최종 출력은 정적 grade를 33³ `.cube`로,
+시간 가변 grade는 클립별 Hald CLUT 시퀀스와 `haldclut`로 합성 전에 적용한다.
+
 FFmpeg 종료 코드 0 이후에도 FFprobe JSON으로 영상 스트림 존재 여부와 예상 타임라인
 재생시간 오차를 검사한다. 검증 실패 파일은 삭제하며, 작업별 전체 stderr와 검증 JSON은
 앱 데이터의 `logs/export-*.log`에 남긴다.
 
 ## 프로그램 모니터 컬러 스코프
 
-Waveform, RGB Parade, Vectorscope, Histogram은 프로그램 모니터에 실제로 전달된
-display-referred 프레임을 공통 `ScopeAnalyzer`로 분석한다. CPU BGRA, GPU RGBA와 float
-입력은 채널 순서만 정규화하고 같은 누적기를 사용하므로 같은 픽셀은 같은 결과를 만든다.
+Waveform, RGB Parade, Vectorscope, Histogram은 선택한 기준점의 픽셀을 공통
+`ScopeAnalyzer`로 분석한다. `디스플레이 변환 후`는 프로그램 모니터 표시 픽셀이고,
+`그레이드 후`/`그레이드 전`은 작업 색공간 값을 ACEScct로 인코딩한 장면 참조 눈금이다.
+이미지 시퀀스는 원본 float를 해당 단계에서 다시 처리한다. 일반 영상 합성 프레임의
+그레이드 전은 표시 변환만 되돌리므로 근사 표시다. CPU BGRA, GPU RGBA와 float 입력은
+채널 순서만 정규화하고 같은 누적기를 사용한다.
 D3D11 경로는 스코프용 `tee`나 보조 sink를 재생 그래프에 추가하지 않는다. Qt에 전달되는
 같은 `GstSample`의 수명을 공유하고 최대 10fps만 작업 스레드에서 system-memory map하여
 메인 appsink의 재생 시계, 프리롤과 프레임 전달률을 보존한다. 분석이 늦으면 대기열을
 쌓지 않고 최신 프레임 하나로 교체한다. CPU 및 float 프레임은 이미 독립 복사된 픽셀을
 재사용한다. 패널이 닫혀 있을 때는 GPU readback과 분석을 모두 중단한다.
+프로젝트 Display/View와 표시 변환 우회는 미리보기 LUT/셰이더와 최종 출력 큐브가 같은
+`resolved_color_output_space`를 쓰게 한다. 이미지 시퀀스 비교 모드는 그레이드 후 프레임을
+왼쪽 절반에 덮어 표시 변환 전후를 한 화면에서 본다.
 
 ## 편집 리비전과 작업 격리
 

@@ -23,6 +23,9 @@ add_library(ffgui_core STATIC
     src/color/ocio_engine.cpp
     src/color/grade_processor.cpp
     src/color/color_frame_processor.cpp
+    src/color/look_export.cpp
+    src/color/shot_matching.cpp
+    src/color/review_tools.cpp
     src/color/scope_analyzer.cpp
     src/core/color_pipeline.cpp
     src/core/ffprobe_parser.cpp
@@ -138,6 +141,8 @@ if(FFGUI_BUILD_DESKTOP)
                 apps/desktop/color_scope_item.hpp
                 apps/desktop/ffprobe_analyzer.cpp
                 apps/desktop/ffprobe_analyzer.hpp
+                apps/desktop/hdr_display.cpp
+                apps/desktop/hdr_display.hpp
                 apps/desktop/timeline_view.cpp
                 apps/desktop/timeline_view.hpp
         )
@@ -168,6 +173,9 @@ if(FFGUI_BUILD_DESKTOP)
             Qt6::Concurrent
         )
         target_include_directories(ffmpegGUI-next PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/apps/desktop")
+        if(WIN32)
+            target_link_libraries(ffmpegGUI-next PRIVATE dxgi)
+        endif()
         if(FFGUI_GES_AVAILABLE)
             target_link_libraries(ffmpegGUI-next PRIVATE ffgui::ges)
             target_compile_definitions(ffmpegGUI-next PRIVATE FFGUI_HAS_GES=1)

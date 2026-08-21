@@ -39,11 +39,96 @@ OCIO::ConstConfigRcPtr cached_config(const ColorPipelineSettings& settings) {
     return config;
 }
 
+OcioGpuShader shader_from_processor(
+    const OCIO::ConstProcessorRcPtr& processor,
+    std::string function_name,
+    std::string resource_prefix) {
+    const auto gpu = processor->getDefaultGPUProcessor();
+    auto description = OCIO::GpuShaderDesc::CreateShaderDesc();
+    description->setLanguage(OCIO::GPU_LANGUAGE_HLSL_DX11);
+    description->setFunctionName(function_name.c_str());
+    description->setPixelName("pixel");
+    description->setResourcePrefix(resource_prefix.c_str());
+    gpu->extractGpuShaderInfo(description);
+
+    OcioGpuShader result;
+    result.cache_id = description->getCacheID();
+    result.source = description->getShaderText();
+    result.function_name = std::move(function_name);
+    for (unsigned index = 0; index < description->getNumTextures(); ++index) {
+        const char* name = nullptr;
+        const char* sampler = nullptr;
+        unsigned width = 0;
+        unsigned height = 0;
+        OCIO::GpuShaderCreator::TextureType channel{};
+        OCIO::GpuShaderCreator::TextureDimensions dimensions{};
+        OCIO::Interpolation interpolation{};
+        description->getTexture(
+            index, name, sampler, width, height, channel, dimensions, interpolation);
+        const float* values = nullptr;
+        description->getTextureValues(index, values);
+        const auto channels = channel == OCIO::GpuShaderCreator::TEXTURE_RED_CHANNEL ? 1U : 3U;
+        const auto count = static_cast<std::size_t>(width) * std::max(1U, height) * channels;
+        OcioGpuTexture texture;
+        texture.name = name == nullptr ? "" : name;
+        texture.sampler = sampler == nullptr ? "" : sampler;
+        texture.width = width;
+        texture.height = std::max(1U, height);
+        texture.depth = 1;
+        texture.channels = channels;
+        texture.binding = description->getTextureShaderBindingIndex(index);
+        texture.dimensions = dimensions == OCIO::GpuShaderCreator::TEXTURE_1D ? 1U : 2U;
+        texture.nearest = interpolation == OCIO::INTERP_NEAREST;
+        texture.values.assign(values, values + count);
+        result.textures.push_back(std::move(texture));
+    }
+    for (unsigned index = 0; index < description->getNum3DTextures(); ++index) {
+        const char* name = nullptr;
+        const char* sampler = nullptr;
+        unsigned edge = 0;
+        OCIO::Interpolation interpolation{};
+        description->get3DTexture(index, name, sampler, edge, interpolation);
+        const float* values = nullptr;
+        description->get3DTextureValues(index, values);
+        const auto count = static_cast<std::size_t>(edge) * edge * edge * 3;
+        OcioGpuTexture texture;
+        texture.name = name == nullptr ? "" : name;
+        texture.sampler = sampler == nullptr ? "" : sampler;
+        texture.width = edge;
+        texture.height = edge;
+        texture.depth = edge;
+        texture.channels = 3;
+        texture.binding = description->get3DTextureShaderBindingIndex(index);
+        texture.dimensions = 3;
+        texture.nearest = interpolation == OCIO::INTERP_NEAREST;
+        texture.values.assign(values, values + count);
+        result.textures.push_back(std::move(texture));
+    }
+    if (result.source.empty()) throw std::runtime_error("OpenColorIO produced an empty GPU shader");
+    return result;
+}
+
+OCIO::ConstProcessorRcPtr display_view_processor(
+    const OCIO::ConstConfigRcPtr& config,
+    const std::string& source_space,
+    const std::string& display,
+    const std::string& view,
+    bool inverse) {
+    auto transform = OCIO::DisplayViewTransform::Create();
+    transform->setSrc(source_space.c_str());
+    transform->setDisplay(display.c_str());
+    transform->setView(view.c_str());
+    transform->setDirection(inverse ? OCIO::TRANSFORM_DIR_INVERSE : OCIO::TRANSFORM_DIR_FORWARD);
+    return config->getProcessor(transform);
+}
+
 }  // namespace
 
 struct OcioEngine::Impl final {
     ColorPipelineSettings settings;
     OCIO::ConstConfigRcPtr config;
+    mutable std::mutex processor_mutex;
+    mutable std::unordered_map<std::string, OCIO::ConstCPUProcessorRcPtr> cpu_processors;
 };
 
 OcioEngine::OcioEngine(const ColorPipelineSettings& settings)
@@ -79,6 +164,47 @@ std::vector<std::string> OcioEngine::color_spaces() const {
     return result;
 }
 
+std::vector<std::string> OcioEngine::displays() const {
+    std::vector<std::string> result;
+    if (!managed()) return result;
+    const auto count = impl_->config->getNumDisplays();
+    result.reserve(static_cast<std::size_t>(count));
+    for (int index = 0; index < count; ++index) {
+        result.emplace_back(impl_->config->getDisplay(index));
+    }
+    return result;
+}
+
+std::vector<std::string> OcioEngine::views(const std::string& display) const {
+    std::vector<std::string> result;
+    if (!managed() || display.empty()) return result;
+    const auto count = impl_->config->getNumViews(display.c_str());
+    result.reserve(static_cast<std::size_t>(count));
+    for (int index = 0; index < count; ++index) {
+        result.emplace_back(impl_->config->getView(display.c_str(), index));
+    }
+    return result;
+}
+
+std::string OcioEngine::default_display() const {
+    if (!managed()) return {};
+    const auto* name = impl_->config->getDefaultDisplay();
+    return name == nullptr ? std::string{} : name;
+}
+
+std::string OcioEngine::default_view(const std::string& display) const {
+    if (!managed() || display.empty()) return {};
+    const auto* name = impl_->config->getDefaultView(display.c_str());
+    return name == nullptr ? std::string{} : name;
+}
+
+std::string OcioEngine::display_view_color_space(
+    const std::string& display, const std::string& view) const {
+    if (!managed() || display.empty() || view.empty()) return {};
+    const auto* name = impl_->config->getDisplayViewColorSpaceName(display.c_str(), view.c_str());
+    return name == nullptr ? std::string{} : name;
+}
+
 void OcioEngine::transform_rgba32f(float* pixels, std::size_t width, std::size_t height,
                                    const std::string& input_space,
                                    const std::string& output_space) const {
@@ -87,8 +213,19 @@ void OcioEngine::transform_rgba32f(float* pixels, std::size_t width, std::size_t
         throw std::invalid_argument("OCIO image transform request is invalid");
     }
     try {
-        const auto processor = impl_->config->getProcessor(input_space.c_str(), output_space.c_str());
-        const auto cpu = processor->getDefaultCPUProcessor();
+        OCIO::ConstCPUProcessorRcPtr cpu;
+        const auto cacheKey = input_space + '>' + output_space;
+        {
+            std::scoped_lock lock(impl_->processor_mutex);
+            if (const auto found = impl_->cpu_processors.find(cacheKey);
+                found != impl_->cpu_processors.end()) {
+                cpu = found->second;
+            } else {
+                cpu = impl_->config->getProcessor(input_space.c_str(), output_space.c_str())
+                          ->getDefaultCPUProcessor();
+                impl_->cpu_processors.emplace(cacheKey, cpu);
+            }
+        }
         OCIO::PackedImageDesc image(pixels, static_cast<long>(width), static_cast<long>(height),
                                     4, OCIO::BIT_DEPTH_F32, sizeof(float),
                                     4 * sizeof(float),
@@ -96,6 +233,41 @@ void OcioEngine::transform_rgba32f(float* pixels, std::size_t width, std::size_t
         cpu->apply(image);
     } catch (const OCIO::Exception& error) {
         throw std::runtime_error(std::string("OpenColorIO image transform failed: ") + error.what());
+    }
+}
+
+void OcioEngine::transform_display_view_rgba32f(
+    float* pixels, std::size_t width, std::size_t height,
+    const std::string& source_space, const std::string& display, const std::string& view,
+    bool inverse) const {
+    if (!managed()) throw std::logic_error("Legacy color mode has no OCIO processor");
+    if (pixels == nullptr || width == 0 || height == 0 || source_space.empty() ||
+        display.empty() || view.empty()) {
+        throw std::invalid_argument("OCIO display/view transform request is invalid");
+    }
+    try {
+        OCIO::ConstCPUProcessorRcPtr cpu;
+        const auto cacheKey = std::string(inverse ? "dvi:" : "dv:") + source_space + '|' +
+            display + '|' + view;
+        {
+            std::scoped_lock lock(impl_->processor_mutex);
+            if (const auto found = impl_->cpu_processors.find(cacheKey);
+                found != impl_->cpu_processors.end()) {
+                cpu = found->second;
+            } else {
+                cpu = display_view_processor(
+                    impl_->config, source_space, display, view, inverse)->getDefaultCPUProcessor();
+                impl_->cpu_processors.emplace(cacheKey, cpu);
+            }
+        }
+        OCIO::PackedImageDesc image(pixels, static_cast<long>(width), static_cast<long>(height),
+                                    4, OCIO::BIT_DEPTH_F32, sizeof(float),
+                                    4 * sizeof(float),
+                                    static_cast<std::ptrdiff_t>(width * 4 * sizeof(float)));
+        cpu->apply(image);
+    } catch (const OCIO::Exception& error) {
+        throw std::runtime_error(
+            std::string("OpenColorIO display/view transform failed: ") + error.what());
     }
 }
 
@@ -139,72 +311,29 @@ OcioGpuShader OcioEngine::gpu_shader_hlsl(
         throw std::invalid_argument("OCIO GPU shader spaces are invalid");
     }
     try {
-        const auto processor = impl_->config->getProcessor(input_space.c_str(), output_space.c_str());
-        const auto gpu = processor->getDefaultGPUProcessor();
-        auto description = OCIO::GpuShaderDesc::CreateShaderDesc();
-        description->setLanguage(OCIO::GPU_LANGUAGE_HLSL_DX11);
-        description->setFunctionName(function_name.c_str());
-        description->setPixelName("pixel");
-        description->setResourcePrefix(resource_prefix.c_str());
-        gpu->extractGpuShaderInfo(description);
-
-        OcioGpuShader result;
-        result.cache_id = description->getCacheID();
-        result.source = description->getShaderText();
-        result.function_name = std::move(function_name);
-        for (unsigned index = 0; index < description->getNumTextures(); ++index) {
-            const char* name = nullptr;
-            const char* sampler = nullptr;
-            unsigned width = 0;
-            unsigned height = 0;
-            OCIO::GpuShaderCreator::TextureType channel{};
-            OCIO::GpuShaderCreator::TextureDimensions dimensions{};
-            OCIO::Interpolation interpolation{};
-            description->getTexture(
-                index, name, sampler, width, height, channel, dimensions, interpolation);
-            const float* values = nullptr;
-            description->getTextureValues(index, values);
-            const auto channels = channel == OCIO::GpuShaderCreator::TEXTURE_RED_CHANNEL ? 1U : 3U;
-            const auto count = static_cast<std::size_t>(width) * std::max(1U, height) * channels;
-            OcioGpuTexture texture;
-            texture.name = name == nullptr ? "" : name;
-            texture.sampler = sampler == nullptr ? "" : sampler;
-            texture.width = width;
-            texture.height = std::max(1U, height);
-            texture.depth = 1;
-            texture.channels = channels;
-            texture.binding = description->getTextureShaderBindingIndex(index);
-            texture.dimensions = dimensions == OCIO::GpuShaderCreator::TEXTURE_1D ? 1U : 2U;
-            texture.nearest = interpolation == OCIO::INTERP_NEAREST;
-            texture.values.assign(values, values + count);
-            result.textures.push_back(std::move(texture));
-        }
-        for (unsigned index = 0; index < description->getNum3DTextures(); ++index) {
-            const char* name = nullptr;
-            const char* sampler = nullptr;
-            unsigned edge = 0;
-            OCIO::Interpolation interpolation{};
-            description->get3DTexture(index, name, sampler, edge, interpolation);
-            const float* values = nullptr;
-            description->get3DTextureValues(index, values);
-            const auto count = static_cast<std::size_t>(edge) * edge * edge * 3;
-            OcioGpuTexture texture;
-            texture.name = name == nullptr ? "" : name;
-            texture.sampler = sampler == nullptr ? "" : sampler;
-            texture.width = edge;
-            texture.height = edge;
-            texture.depth = edge;
-            texture.channels = 3;
-            texture.binding = description->get3DTextureShaderBindingIndex(index);
-            texture.dimensions = 3;
-            texture.nearest = interpolation == OCIO::INTERP_NEAREST;
-            texture.values.assign(values, values + count);
-            result.textures.push_back(std::move(texture));
-        }
-        if (result.source.empty()) throw std::runtime_error("OpenColorIO produced an empty GPU shader");
-        return result;
+        return shader_from_processor(
+            impl_->config->getProcessor(input_space.c_str(), output_space.c_str()),
+            std::move(function_name), std::move(resource_prefix));
     } catch (const OCIO::Exception& error) {
         throw std::runtime_error(std::string("OpenColorIO GPU shader generation failed: ") + error.what());
+    }
+}
+
+OcioGpuShader OcioEngine::gpu_shader_display_view_hlsl(
+    const std::string& source_space, const std::string& display, const std::string& view,
+    std::string function_name, std::string resource_prefix) const {
+    if (!managed()) throw std::logic_error("Legacy color mode has no OCIO GPU shader");
+    if (source_space.empty() || display.empty() || view.empty() || function_name.empty() ||
+        resource_prefix.empty()) {
+        throw std::invalid_argument("OCIO display/view GPU shader request is invalid");
+    }
+    try {
+        return shader_from_processor(
+            display_view_processor(impl_->config, source_space, display, view, false),
+            std::move(function_name), std::move(resource_prefix));
+    } catch (const OCIO::Exception& error) {
+        throw std::runtime_error(
+            std::string("OpenColorIO display/view GPU shader generation failed: ") + error.what());
     }
 }
 

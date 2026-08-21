@@ -57,7 +57,9 @@ public:
     void set_timeline(
         std::vector<TimelineSpan> timeline,
         std::vector<CaptionCue> captions);
+    enum class PreviewSeekMode { accurate, keyframe };
     void seek(TimeNs timeline_position) override;
+    void seek(TimeNs timeline_position, PreviewSeekMode mode);
     void play() override;
     void pause() override;
     void stop() override;
@@ -66,6 +68,7 @@ public:
     void set_error_callback(ErrorCallback callback) override;
     void set_video_window_handle(std::uintptr_t window_handle);
     void set_d3d11_device(void* device);
+    void set_video_sink_factory(std::string factory);
     void set_video_frame_callback(std::function<void(PreviewVideoFrame)> callback);
     void set_scope_frame_callback(std::function<void(PreviewVideoFrame)> callback);
     void set_scope_capture_enabled(bool enabled) noexcept {
@@ -75,6 +78,7 @@ public:
     void set_float_output_enabled(bool enabled);
     void set_legacy_source_color_enabled(bool enabled);
     void set_color_pipeline(ColorPipelineSettings settings, std::string output_space);
+    [[nodiscard]] bool update_source_color(const std::vector<TimelineSpan>& timeline);
 
     [[nodiscard]] TimeNs duration() const noexcept;
     [[nodiscard]] TimeNs position() const noexcept;
@@ -116,6 +120,8 @@ private:
     void rebuild_pipeline_locked(
         const std::vector<TimelineSpan>& timeline,
         const std::vector<CaptionCue>& captions);
+    [[nodiscard]] bool can_live_update_source_color_locked(
+        const std::vector<TimelineSpan>& timeline) const;
     void destroy_pipeline_locked() noexcept;
     void notify_state(PlaybackState state_value);
     void monitor(std::stop_token stop_token);
@@ -158,6 +164,8 @@ private:
     std::string color_output_space_;
     std::vector<std::string> registered_lut_ids_;
     std::vector<std::string> registered_ocio_shader_ids_;
+    std::vector<TimelineSpan> preview_spans_;
+    std::shared_ptr<const void> source_color_bake_;
     bool d3d11_color_lut_available_{};
     bool direct_d3d_compositor_enabled_{};
     std::uint64_t lut_generation_{};
