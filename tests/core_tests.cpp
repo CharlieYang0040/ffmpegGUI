@@ -6,6 +6,7 @@
 #include "color/color_frame_processor.hpp"
 #include "color/scope_analyzer.hpp"
 #include "color/look_export.hpp"
+#include "color/review_tools.hpp"
 #include "color/shot_matching.hpp"
 #include "media/oiio_probe.hpp"
 #include "media/oiio_frame_source.hpp"
@@ -338,7 +339,7 @@ void test_review_display_stages_scopes_and_overlays() {
     ffgui::FloatImageFrame hot;
     hot.width = 1;
     hot.height = 1;
-    hot.rgba = {1.8F, -0.2F, 0.4F, 1.0F};
+    hot.rgba = {1.8F, 1.2F, 0.4F, 1.0F};
     const auto displayScope = ffgui::analyze_scope_float(
         hot, 7, ffgui::ScopeReferenceStage::post_display);
     const auto sceneScope = ffgui::analyze_scope_float(

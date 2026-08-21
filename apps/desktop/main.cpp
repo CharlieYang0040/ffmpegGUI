@@ -627,7 +627,9 @@ int main(int argc, char* argv[]) {
         controller.undo();
         editedGradeNodes = controller.selectedGradeNodes();
         if (std::abs(editedGradeNodes.back().toMap().value("parameters").toMap()
-                         .value("exposure").toDouble() - 1.25) > 0.0001) {
+                          .value("exposure").toDouble() - 1.25) > 0.0001) {
+            qCritical() << "grade smoke: reset undo did not restore exposure"
+                        << editedGradeNodes;
             return EXIT_FAILURE;
         }
         controller.redo();

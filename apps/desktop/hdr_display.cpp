@@ -2,9 +2,13 @@
 
 #include <QColorSpace>
 #include <QFile>
+#include <QSurfaceFormat>
 #include <QWindow>
 
 #ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <dxgi1_6.h>
 #include <algorithm>
@@ -140,6 +144,8 @@ bool apply_window_color_space(
         break;
     }
     if (!space.isValid()) return false;
-    window->setColorSpace(space);
-    return window->colorSpace().isValid();
+    auto format = window->format();
+    format.setColorSpace(space);
+    window->setFormat(format);
+    return window->format().colorSpace().isValid();
 }

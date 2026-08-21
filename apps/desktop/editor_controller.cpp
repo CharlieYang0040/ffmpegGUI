@@ -1534,6 +1534,7 @@ void EditorController::removeGradeNode(const QString& nodeId) {
 
 void EditorController::moveGradeNode(const QString& nodeId, int direction) {
     if (selected_clip_id_.isEmpty() || direction == 0) return;
+    endCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1565,6 +1566,7 @@ void EditorController::copyGradeNode(const QString& nodeId) {
 
 void EditorController::pasteGradeNode() {
     if (selected_clip_id_.isEmpty() || !grade_node_clipboard_.has_value()) return;
+    endCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1586,6 +1588,7 @@ void EditorController::pasteGradeNode() {
 
 void EditorController::resetGradeNode(const QString& nodeId) {
     if (selected_clip_id_.isEmpty()) return;
+    endCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1607,6 +1610,7 @@ void EditorController::resetGradeNode(const QString& nodeId) {
 
 void EditorController::makeGradeNodeShared(const QString& nodeId) {
     if (selected_clip_id_.isEmpty()) return;
+    endCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1621,6 +1625,7 @@ void EditorController::makeGradeNodeShared(const QString& nodeId) {
 
 void EditorController::unlinkGradeNode(const QString& nodeId) {
     if (selected_clip_id_.isEmpty()) return;
+    endCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
@@ -1650,6 +1655,7 @@ void EditorController::setGradeNodeName(const QString& nodeId, const QString& na
     if (selected_clip_id_.isEmpty()) return;
     const auto cleaned = name.simplified().left(80);
     if (cleaned.isEmpty()) return;
+    endCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
     if (clip == timeline_.clips().end()) return;
