@@ -139,6 +139,11 @@ public:
     explicit EditorController(QObject* parent);
     ~EditorController() override;
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
+public:
+
     [[nodiscard]] QVariantList clips() const;
     [[nodiscard]] QVariantList mediaAssets() const;
     [[nodiscard]] QVariantList captions() const;
@@ -480,6 +485,14 @@ private:
     void setStatus(QString status);
     void queuePreviewOperation(bool restorePosition);
     void startPreviewOperation();
+    void startShuttle(qreal rate);
+    void requestAudioSkim(qint64 timelinePosition);
+    void startAudioSkim();
+    void stopAudioSkim(bool restorePosition);
+    void cancelAudioSkim();
+    [[nodiscard]] std::optional<qint64> timelineTimeForAssetSource(
+        const QString& asset_id, qint64 source_time) const;
+    [[nodiscard]] bool transportTextInputFocused() const;
     void queueLiveSeek(qint64 timelinePosition);
     void pumpLiveSeek();
     void submitCachedScrubFrame(qint64 timelinePosition);
@@ -569,6 +582,9 @@ private:
     std::optional<qint64> transport_range_end_;
     bool transport_range_loop_{};
     bool transport_boundary_pending_{};
+    bool j_key_down_{};
+    bool k_key_down_{};
+    bool l_key_down_{};
     bool scrubbing_{};
     bool preview_busy_{};
     bool preview_failed_{};
@@ -632,6 +648,11 @@ private:
     QTimer model_update_timer_;
     QTimer selection_update_timer_;
     QTimer float_playback_timer_;
+    QTimer audio_skim_debounce_timer_;
+    QTimer audio_skim_stop_timer_;
+    std::optional<qint64> pending_audio_skim_ns_;
+    bool audio_skim_hover_active_{};
+    bool audio_skimming_{};
     QElapsedTimer float_playback_clock_;
     qint64 float_playback_origin_ns_{};
     bool float_playback_running_{};

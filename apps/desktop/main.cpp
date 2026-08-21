@@ -14,6 +14,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QKeyEvent>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
@@ -441,15 +442,61 @@ int main(int argc, char* argv[]) {
     if (transportSmoke) {
         if (controller.clips().isEmpty() || controller.durationNs() <= 0) return EXIT_FAILURE;
         controller.seek(controller.durationNs() / 2);
+        const auto skimPlayhead = controller.playheadNs();
         const auto deliveredBefore = controller.videoFramesDelivered();
         const auto audioBefore = controller.audioBuffersReceived();
-        QTimer::singleShot(300, &controller, &EditorController::shuttleForward);
-        QTimer::singleShot(900, &controller, &EditorController::shuttleForward);
-        QTimer::singleShot(1500, &controller, &EditorController::shuttleStop);
-        QTimer::singleShot(1800, &controller, &EditorController::shuttleReverse);
-        QTimer::singleShot(2500, &controller, &EditorController::shuttleStop);
-        QTimer::singleShot(2800, &controller, &EditorController::playAround);
-        QTimer::singleShot(5500, &application, [&] {
+        bool skimAudioPassed = false;
+        bool slowComboPassed = false;
+        bool frameComboPassed = false;
+        qint64 frameStepOrigin = 0;
+        auto sendTransportKey = [&](QEvent::Type type, int key) {
+            if (engine.rootObjects().isEmpty()) return;
+            QKeyEvent event(type, key, Qt::NoModifier);
+            QCoreApplication::sendEvent(engine.rootObjects().front(), &event);
+        };
+        const auto assets = controller.mediaAssets();
+        const auto asset = assets.isEmpty() ? QVariantMap{} : assets.front().toMap();
+        QTimer::singleShot(100, &controller, [&] {
+            controller.skim(skimPlayhead + 500'000'000, true);
+        });
+        QTimer::singleShot(250, &controller, [&, asset] {
+            if (!asset.isEmpty()) {
+                controller.skimAsset(
+                    asset.value("id").toString(), asset.value("durationNs").toLongLong() / 3, true);
+            }
+        });
+        QTimer::singleShot(650, &controller, [&] { controller.skim(skimPlayhead, false); });
+        QTimer::singleShot(1000, &controller, [&] {
+            skimAudioPassed = controller.audioBuffersReceived() > audioBefore &&
+                controller.playheadNs() == skimPlayhead && !controller.playing();
+        });
+        QTimer::singleShot(1200, &controller, &EditorController::shuttleForward);
+        QTimer::singleShot(1800, &controller, &EditorController::shuttleForward);
+        QTimer::singleShot(2400, &controller, &EditorController::shuttleStop);
+        QTimer::singleShot(2700, &controller, &EditorController::shuttleReverse);
+        QTimer::singleShot(3300, &controller, &EditorController::shuttleStop);
+        QTimer::singleShot(3600, &controller, [&] { sendTransportKey(QEvent::KeyPress, Qt::Key_J); });
+        QTimer::singleShot(3700, &controller, [&] { sendTransportKey(QEvent::KeyPress, Qt::Key_K); });
+        QTimer::singleShot(3800, &controller, [&] {
+            slowComboPassed = std::abs(controller.shuttleRate() + 0.25) < 0.001;
+        });
+        QTimer::singleShot(3900, &controller, [&] { sendTransportKey(QEvent::KeyRelease, Qt::Key_K); });
+        QTimer::singleShot(3950, &controller, [&] { sendTransportKey(QEvent::KeyRelease, Qt::Key_J); });
+        QTimer::singleShot(4000, &controller, [&] { sendTransportKey(QEvent::KeyPress, Qt::Key_K); });
+        QTimer::singleShot(4050, &controller, [&] { sendTransportKey(QEvent::KeyRelease, Qt::Key_K); });
+        QTimer::singleShot(4300, &controller, [&] {
+            controller.seek(controller.durationNs() / 2);
+            frameStepOrigin = controller.playheadNs();
+        });
+        QTimer::singleShot(4400, &controller, [&] { sendTransportKey(QEvent::KeyPress, Qt::Key_K); });
+        QTimer::singleShot(4500, &controller, [&] { sendTransportKey(QEvent::KeyPress, Qt::Key_J); });
+        QTimer::singleShot(4520, &controller, [&] { sendTransportKey(QEvent::KeyRelease, Qt::Key_J); });
+        QTimer::singleShot(4540, &controller, [&] { sendTransportKey(QEvent::KeyRelease, Qt::Key_K); });
+        QTimer::singleShot(4700, &controller, [&] {
+            frameComboPassed = controller.playheadNs() < frameStepOrigin;
+        });
+        QTimer::singleShot(5000, &controller, &EditorController::playAround);
+        QTimer::singleShot(7800, &application, [&] {
             qInfo().noquote() << "transport smoke counters"
                               << "delivered_delta="
                               << controller.videoFramesDelivered() - deliveredBefore
@@ -457,9 +504,13 @@ int main(int argc, char* argv[]) {
                               << controller.audioBuffersReceived() - audioBefore
                               << "playhead_ns=" << controller.playheadNs()
                               << "rate=" << controller.shuttleRate()
+                              << "skim_audio=" << skimAudioPassed
+                              << "slow_combo=" << slowComboPassed
+                              << "frame_combo=" << frameComboPassed
                               << "failed=" << controller.previewFailed();
             const bool passed = !controller.previewFailed() &&
                 controller.shuttleRate() == 0.0 &&
+                skimAudioPassed && slowComboPassed && frameComboPassed &&
                 controller.videoFramesDelivered() > deliveredBefore &&
                 controller.audioBuffersReceived() > audioBefore;
             application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);

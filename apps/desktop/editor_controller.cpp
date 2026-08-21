@@ -21,6 +21,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QMetaObject>
 #include <QPointer>
 #include <QJSEngine>
@@ -245,6 +246,9 @@ void EditorController::setSingletonInstance(EditorController* instance) {
 }
 
 EditorController::EditorController(QObject* parent) : QObject(parent) {
+    if (auto* application = QCoreApplication::instance()) {
+        application->installEventFilter(this);
+    }
     connect(this, &EditorController::playheadChanged, this, [this] {
         if (!playing_ && !scrubbing_) emit gradeUiChanged();
     });
@@ -532,6 +536,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         QMetaObject::invokeMethod(
             this,
             [this, position] {
+                if (audio_skimming_) return;
                 if (playhead_ns_ != position) {
                     playhead_ns_ = position;
                     emit playheadChanged();
@@ -558,6 +563,17 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         QMetaObject::invokeMethod(
             this,
             [this, state] {
+                if (audio_skimming_) {
+                    if (state == ffgui::PlaybackState::playing) {
+                        audio_skim_stop_timer_.start();
+                    } else {
+                        audio_skimming_ = false;
+                        if (audio_skim_hover_active_ && pending_audio_skim_ns_.has_value()) {
+                            audio_skim_debounce_timer_.start();
+                        }
+                    }
+                    return;
+                }
                 const bool nowPlaying = state == ffgui::PlaybackState::playing;
                 if (playing_ != nowPlaying) {
                     playing_ = nowPlaying;
@@ -604,6 +620,20 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     float_playback_timer_.setTimerType(Qt::PreciseTimer);
     float_playback_timer_.setInterval(8);
     connect(&float_playback_timer_, &QTimer::timeout, this, &EditorController::advanceFloatPlayback);
+    audio_skim_debounce_timer_.setSingleShot(true);
+    audio_skim_debounce_timer_.setInterval(75);
+    connect(&audio_skim_debounce_timer_, &QTimer::timeout,
+            this, &EditorController::startAudioSkim);
+    audio_skim_stop_timer_.setSingleShot(true);
+    audio_skim_stop_timer_.setInterval(140);
+    connect(&audio_skim_stop_timer_, &QTimer::timeout, this, [this] {
+#ifdef FFGUI_HAS_GES
+        if (!audio_skimming_) return;
+        preview_should_play_ = false;
+        pending_preview_seek_ = playhead_ns_;
+        queuePreviewOperation(false);
+#endif
+    });
 #ifdef FFGUI_HAS_GES
     connect(
         &preview_watcher_,
@@ -816,6 +846,11 @@ void EditorController::openLogFolder() {
 }
 
 EditorController::~EditorController() {
+    if (auto* application = QCoreApplication::instance()) {
+        application->removeEventFilter(this);
+    }
+    audio_skim_debounce_timer_.stop();
+    audio_skim_stop_timer_.stop();
 #ifdef FFGUI_HAS_GES
     stopFloatPlayback();
     if (float_export_cancel_) float_export_cancel_->store(true);
@@ -843,6 +878,75 @@ EditorController::~EditorController() {
     if (!export_concat_path_.isEmpty()) QFile::remove(export_concat_path_);
     if (!export_subtitle_path_.isEmpty()) QFile::remove(export_subtitle_path_);
     removeExportColorArtifacts(export_color_lut_paths_);
+}
+
+bool EditorController::transportTextInputFocused() const {
+    auto* object = QGuiApplication::focusObject();
+    while (object != nullptr) {
+        const auto className = QString::fromLatin1(object->metaObject()->className());
+        if (className.contains(QStringLiteral("TextInput"), Qt::CaseInsensitive) ||
+            className.contains(QStringLiteral("TextEdit"), Qt::CaseInsensitive) ||
+            className.contains(QStringLiteral("TextField"), Qt::CaseInsensitive) ||
+            className.contains(QStringLiteral("SpinBox"), Qt::CaseInsensitive) ||
+            className.contains(QStringLiteral("ComboBox"), Qt::CaseInsensitive)) {
+            return true;
+        }
+        object = object->parent();
+    }
+    return false;
+}
+
+bool EditorController::eventFilter(QObject* watched, QEvent* event) {
+    static_cast<void>(watched);
+    if (event == nullptr ||
+        (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease)) {
+        return QObject::eventFilter(watched, event);
+    }
+    auto* keyEvent = static_cast<QKeyEvent*>(event);
+    if (keyEvent->isAutoRepeat()) return QObject::eventFilter(watched, event);
+    const auto key = keyEvent->key();
+    if (key != Qt::Key_J && key != Qt::Key_K && key != Qt::Key_L) {
+        return QObject::eventFilter(watched, event);
+    }
+
+    const bool pressed = event->type() == QEvent::KeyPress;
+    if (pressed && (keyEvent->modifiers() != Qt::NoModifier || transportTextInputFocused())) {
+        return QObject::eventFilter(watched, event);
+    }
+    if (!pressed &&
+        ((key == Qt::Key_J && !j_key_down_) || (key == Qt::Key_K && !k_key_down_) ||
+         (key == Qt::Key_L && !l_key_down_))) {
+        return QObject::eventFilter(watched, event);
+    }
+    if (key == Qt::Key_J) {
+        j_key_down_ = pressed;
+        if (pressed) {
+            if (k_key_down_) stepFrame(-1);
+            else shuttleReverse();
+        } else if (k_key_down_) {
+            shuttleStop();
+        }
+    } else if (key == Qt::Key_L) {
+        l_key_down_ = pressed;
+        if (pressed) {
+            if (k_key_down_) stepFrame(1);
+            else shuttleForward();
+        } else if (k_key_down_) {
+            shuttleStop();
+        }
+    } else {
+        k_key_down_ = pressed;
+        if (pressed) {
+            if (j_key_down_) startShuttle(-0.25);
+            else if (l_key_down_) startShuttle(0.25);
+            else shuttleStop();
+        } else if (j_key_down_) {
+            startShuttle(-1.0);
+        } else if (l_key_down_) {
+            startShuttle(1.0);
+        }
+    }
+    return true;
 }
 
 std::uint64_t EditorController::videoFramesReceived() const noexcept {
@@ -2092,6 +2196,7 @@ void EditorController::setAssetInputColorSpace(
 }
 
 void EditorController::seek(qint64 timelinePosition) {
+    cancelAudioSkim();
     stopFloatPlayback();
     playhead_ns_ = std::clamp<qint64>(timelinePosition, 0, durationNs());
     emit playheadChanged();
@@ -2104,6 +2209,7 @@ void EditorController::seek(qint64 timelinePosition) {
 }
 
 void EditorController::scrub(qint64 timelinePosition, bool finalPosition) {
+    cancelAudioSkim();
     stopFloatPlayback();
     playhead_ns_ = std::clamp<qint64>(timelinePosition, 0, durationNs());
     emit playheadChanged();
@@ -2308,6 +2414,7 @@ void EditorController::submitCachedAssetFrame(
 
 void EditorController::togglePlayback() {
 #ifdef FFGUI_HAS_GES
+    cancelAudioSkim();
     transport_range_start_.reset();
     transport_range_end_.reset();
     transport_range_loop_ = false;
@@ -2336,39 +2443,35 @@ void EditorController::togglePlayback() {
 
 void EditorController::shuttleForward() {
 #ifdef FFGUI_HAS_GES
-    transport_range_start_.reset();
-    transport_range_end_.reset();
-    transport_range_loop_ = false;
-    shuttle_rate_ = playing_ && shuttle_rate_ > 0.0
+    const auto rate = (playing_ || preview_should_play_) && shuttle_rate_ > 0.0
         ? (shuttle_rate_ < 1.5 ? 2.0 : shuttle_rate_ < 3.0 ? 4.0 : 1.0)
         : 1.0;
-    emit shuttleRateChanged();
-    if (canUseFloatPlayback()) {
-        if (float_playback_running_) stopFloatPlayback();
-        startFloatPlayback();
-        return;
-    }
-    preview_should_play_ = true;
-    if (playhead_ns_ >= durationNs()) {
-        playhead_ns_ = 0;
-        emit playheadChanged();
-    }
-    pending_preview_seek_ = playhead_ns_;
-    queuePreviewOperation(false);
+    startShuttle(rate);
 #endif
 }
 
 void EditorController::shuttleReverse() {
 #ifdef FFGUI_HAS_GES
+    const auto rate = (playing_ || preview_should_play_) && shuttle_rate_ < 0.0
+        ? (shuttle_rate_ > -1.5 ? -2.0 : shuttle_rate_ > -3.0 ? -4.0 : -1.0)
+        : -1.0;
+    startShuttle(rate);
+#endif
+}
+
+void EditorController::startShuttle(qreal rate) {
+#ifdef FFGUI_HAS_GES
+    cancelAudioSkim();
     transport_range_start_.reset();
     transport_range_end_.reset();
     transport_range_loop_ = false;
-    shuttle_rate_ = playing_ && shuttle_rate_ < 0.0
-        ? (shuttle_rate_ > -1.5 ? -2.0 : shuttle_rate_ > -3.0 ? -4.0 : -1.0)
-        : -1.0;
+    shuttle_rate_ = rate;
     emit shuttleRateChanged();
-    if (playhead_ns_ <= 0) {
+    if (rate < 0.0 && playhead_ns_ <= 0) {
         playhead_ns_ = durationNs();
+        emit playheadChanged();
+    } else if (rate > 0.0 && playhead_ns_ >= durationNs()) {
+        playhead_ns_ = 0;
         emit playheadChanged();
     }
     if (canUseFloatPlayback()) {
@@ -2384,6 +2487,7 @@ void EditorController::shuttleReverse() {
 
 void EditorController::shuttleStop() {
 #ifdef FFGUI_HAS_GES
+    cancelAudioSkim();
     shuttle_rate_ = 0.0;
     transport_range_start_.reset();
     transport_range_end_.reset();
@@ -2432,6 +2536,7 @@ void EditorController::seekTimecode(const QString& value) {
 
 void EditorController::playAround() {
 #ifdef FFGUI_HAS_GES
+    cancelAudioSkim();
     if (durationNs() <= 0) return;
     if (in_point_ns_ >= 0 && out_point_ns_ > in_point_ns_) {
         transport_range_start_ = in_point_ns_;
@@ -3205,6 +3310,8 @@ void EditorController::skim(qint64 timelinePosition, bool active) {
         ? std::clamp<qint64>(timelinePosition, 0, durationNs())
         : playhead_ns_;
     if (!submitFloatScrubFrame(target)) submitCachedScrubFrame(target);
+    if (active) requestAudioSkim(target);
+    else stopAudioSkim(true);
 }
 
 void EditorController::skimAsset(const QString& assetId, qint64 sourceTime, bool active) {
@@ -3215,8 +3322,92 @@ void EditorController::skimAsset(const QString& assetId, qint64 sourceTime, bool
     }
     const auto* asset = timeline_.asset(assetId.toStdString());
     if (asset == nullptr || asset->duration() <= 0) return;
-    submitCachedAssetFrame(
-        assetId, std::clamp<qint64>(sourceTime, 0, asset->duration()), playhead_ns_);
+    const auto clamped = std::clamp<qint64>(sourceTime, 0, asset->duration());
+    submitCachedAssetFrame(assetId, clamped, playhead_ns_);
+    if (const auto timelineTime = timelineTimeForAssetSource(assetId, clamped)) {
+        requestAudioSkim(*timelineTime);
+    }
+}
+
+std::optional<qint64> EditorController::timelineTimeForAssetSource(
+    const QString& assetId, qint64 sourceTime) const {
+    const auto id = assetId.toStdString();
+    for (const auto& span : preview_snapshot_) {
+        if (span.clip.asset_id != id || sourceTime < span.clip.source_in ||
+            sourceTime > span.clip.source_out()) {
+            continue;
+        }
+        const auto sourceOffset = std::clamp<qint64>(
+            sourceTime - span.clip.source_in, 0, span.clip.duration);
+        return std::clamp<qint64>(
+            span.timeline_in + span.clip.timeline_offset_for_source(sourceOffset),
+            span.timeline_in,
+            span.timeline_out);
+    }
+    return std::nullopt;
+}
+
+void EditorController::requestAudioSkim(qint64 timelinePosition) {
+#ifdef FFGUI_HAS_GES
+    if (player_ == nullptr || preview_failed_ || durationNs() <= 0 ||
+        (playing_ && !audio_skimming_)) {
+        return;
+    }
+    audio_skim_hover_active_ = true;
+    pending_audio_skim_ns_ = std::clamp<qint64>(timelinePosition, 0, durationNs());
+    audio_skim_debounce_timer_.start();
+#else
+    static_cast<void>(timelinePosition);
+#endif
+}
+
+void EditorController::startAudioSkim() {
+#ifdef FFGUI_HAS_GES
+    if (!audio_skim_hover_active_ || !pending_audio_skim_ns_.has_value() ||
+        player_ == nullptr || preview_failed_) {
+        return;
+    }
+    if (preview_watcher_.isRunning() || live_seek_watcher_.isRunning()) {
+        audio_skim_debounce_timer_.start(30);
+        return;
+    }
+    const auto target = *pending_audio_skim_ns_;
+    pending_audio_skim_ns_.reset();
+    audio_skimming_ = true;
+    preview_should_play_ = true;
+    pending_preview_seek_ = target;
+    queuePreviewOperation(false);
+    audio_skim_stop_timer_.start();
+#endif
+}
+
+void EditorController::stopAudioSkim(bool restorePosition) {
+    audio_skim_hover_active_ = false;
+    pending_audio_skim_ns_.reset();
+    audio_skim_debounce_timer_.stop();
+    audio_skim_stop_timer_.stop();
+#ifdef FFGUI_HAS_GES
+    if (!audio_skimming_) return;
+    preview_should_play_ = false;
+    if (restorePosition) pending_preview_seek_ = playhead_ns_;
+    queuePreviewOperation(false);
+#else
+    static_cast<void>(restorePosition);
+#endif
+}
+
+void EditorController::cancelAudioSkim() {
+    const bool wasAudioSkimming = audio_skimming_;
+    audio_skim_hover_active_ = false;
+    pending_audio_skim_ns_.reset();
+    audio_skim_debounce_timer_.stop();
+    audio_skim_stop_timer_.stop();
+    audio_skimming_ = false;
+#ifdef FFGUI_HAS_GES
+    if (wasAudioSkimming) preview_should_play_ = false;
+#else
+    static_cast<void>(wasAudioSkimming);
+#endif
 }
 
 void EditorController::trimClip(const QString& clipId, qint64 sourceIn, qint64 duration) {

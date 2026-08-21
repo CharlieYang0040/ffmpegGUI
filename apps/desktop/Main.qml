@@ -194,9 +194,6 @@ ApplicationWindow {
     Shortcut { sequences: [StandardKey.Undo]; enabled: EditorController.canUndo; onActivated: EditorController.undo() }
     Shortcut { sequences: [StandardKey.Redo]; enabled: EditorController.canRedo; onActivated: EditorController.redo() }
     Shortcut { sequence: "Space"; onActivated: EditorController.togglePlayback() }
-    Shortcut { sequence: "J"; autoRepeat: false; enabled: !root.transportTextEditing; onActivated: EditorController.shuttleReverse() }
-    Shortcut { sequence: "K"; autoRepeat: false; enabled: !root.transportTextEditing; onActivated: EditorController.shuttleStop() }
-    Shortcut { sequence: "L"; autoRepeat: false; enabled: !root.transportTextEditing; onActivated: EditorController.shuttleForward() }
     Shortcut { sequence: "Home"; enabled: !root.transportTextEditing; onActivated: EditorController.seekToStart() }
     Shortcut { sequence: "End"; enabled: !root.transportTextEditing; onActivated: EditorController.seekToEnd() }
     Shortcut { sequence: "Shift+Z"; enabled: !root.transportTextEditing; onActivated: timeline.fitToTimeline() }

@@ -245,7 +245,7 @@ $transport = Start-Process -FilePath $application `
 if ($transport.ExitCode -ne 0) {
     throw "JKL shuttle transport failed with code $($transport.ExitCode)"
 }
-Write-Output "JKL transport passed: forward 1x/2x, stop, reverse and play-around delivered video/audio"
+Write-Output "JKL/skimming passed: slow and frame combinations, play-around, and head-stable skim audio delivered real buffers"
 
 $managedColorPlayback = Start-Process -FilePath $application `
     -ArgumentList @("--float-video-smoke", $clipA, $clipB, $clipVfr) `
@@ -257,7 +257,7 @@ Write-Output "Managed color preview passed: explicit input spaces and clip LUTs 
 
 # Qt Quick and GStreamer own separate D3D11 devices. Give the driver a brief turn to retire
 # the previous process resources before creating the offscreen zero-copy verification device.
-Start-Sleep -Milliseconds 1500
+Start-Sleep -Milliseconds 3000
 $previousCpuPreview = $env:FFGUI_FORCE_CPU_PREVIEW
 try {
     Remove-Item Env:FFGUI_FORCE_CPU_PREVIEW -ErrorAction SilentlyContinue
