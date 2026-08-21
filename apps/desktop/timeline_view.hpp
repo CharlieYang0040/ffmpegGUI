@@ -13,6 +13,9 @@ class TimelineView : public QQuickItem {
     Q_PROPERTY(QVariantList clips READ clips WRITE setClips NOTIFY clipsChanged)
     Q_PROPERTY(qint64 durationNs READ durationNs WRITE setDurationNs NOTIFY durationNsChanged)
     Q_PROPERTY(qint64 playheadNs READ playheadNs WRITE setPlayheadNs NOTIFY playheadNsChanged)
+    Q_PROPERTY(bool skimmingEnabled READ skimmingEnabled WRITE setSkimmingEnabled NOTIFY skimmingEnabledChanged)
+    Q_PROPERTY(bool skimmerActive READ skimmerActive NOTIFY skimmerChanged)
+    Q_PROPERTY(qint64 skimmerNs READ skimmerNs NOTIFY skimmerChanged)
     Q_PROPERTY(qint64 inPointNs READ inPointNs WRITE setInPointNs NOTIFY rangeChanged)
     Q_PROPERTY(qint64 outPointNs READ outPointNs WRITE setOutPointNs NOTIFY rangeChanged)
     Q_PROPERTY(QString selectedClipId READ selectedClipId WRITE setSelectedClipId NOTIFY selectedClipIdChanged)
@@ -37,6 +40,10 @@ public:
 
     [[nodiscard]] qint64 playheadNs() const noexcept { return playhead_ns_; }
     void setPlayheadNs(qint64 position);
+    [[nodiscard]] bool skimmingEnabled() const noexcept { return skimming_enabled_; }
+    void setSkimmingEnabled(bool enabled);
+    [[nodiscard]] bool skimmerActive() const noexcept { return skimmer_active_; }
+    [[nodiscard]] qint64 skimmerNs() const noexcept { return skimmer_ns_; }
     [[nodiscard]] qint64 inPointNs() const noexcept { return in_point_ns_; }
     void setInPointNs(qint64 position);
     [[nodiscard]] qint64 outPointNs() const noexcept { return out_point_ns_; }
@@ -57,17 +64,22 @@ public:
     [[nodiscard]] qint64 interactionDeltaNs() const noexcept { return drag_delta_ns_; }
     [[nodiscard]] qreal interactionX() const noexcept { return interaction_x_; }
     Q_INVOKABLE qint64 timelineTimeAt(qreal x) const;
+    Q_INVOKABLE void fitToTimeline();
 
 signals:
     void clipsChanged();
     void durationNsChanged();
     void playheadNsChanged();
+    void skimmingEnabledChanged();
+    void skimmerChanged();
     void rangeChanged();
     void selectedClipIdChanged();
     void selectedClipIdsChanged();
     void zoomLevelChanged();
     void viewportChanged();
     void seekRequested(qint64 timelineTime, bool finalPosition);
+    void skimRequested(qint64 timelineTime, bool active);
+    void skimCommitted(qint64 timelineTime);
     void clipSelected(QString clipId, int selectionMode);
     void trimCommitted(QString clipId, qint64 sourceIn, qint64 duration);
     void moveCommitted(QStringList clipIds, int insertionIndex);
@@ -96,6 +108,9 @@ private:
     QVariantList clips_;
     qint64 duration_ns_{};
     qint64 playhead_ns_{};
+    bool skimming_enabled_{true};
+    bool skimmer_active_{};
+    qint64 skimmer_ns_{};
     qint64 in_point_ns_{-1};
     qint64 out_point_ns_{-1};
     QString selected_clip_id_;

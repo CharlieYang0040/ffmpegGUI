@@ -61,6 +61,7 @@ public:
     void seek(TimeNs timeline_position) override;
     void seek(TimeNs timeline_position, PreviewSeekMode mode);
     void play() override;
+    void play(double rate);
     void pause() override;
     void stop() override;
     void set_position_callback(PositionCallback callback) override;
@@ -126,6 +127,7 @@ private:
     void notify_state(PlaybackState state_value);
     void monitor(std::stop_token stop_token);
     static void audio_handoff(GstElement*, GstBuffer*, GstPad*, void* user_data);
+    static void audio_identity_handoff(GstElement*, GstBuffer*, void* user_data);
     static GstFlowReturn new_video_sample(GstAppSink* sink, void* user_data);
 
     std::string video_sink_factory_;

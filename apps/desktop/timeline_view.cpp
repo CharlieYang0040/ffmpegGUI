@@ -50,6 +50,18 @@ qint64 TimelineView::timelineTimeAt(qreal x) const {
     return timeAt(x);
 }
 
+void TimelineView::fitToTimeline() {
+    const bool changed = !qFuzzyCompare(zoom_level_, 1.0) || viewport_start_ns_ != 0;
+    zoom_level_ = 1.0;
+    viewport_start_ns_ = 0;
+    timeline_geometry_dirty_ = true;
+    if (changed) {
+        emit zoomLevelChanged();
+        emit viewportChanged();
+    }
+    update();
+}
+
 void TimelineView::setClips(QVariantList clips) {
     // QML only publishes this property when the timeline revision changes. A deep QVariant
     // comparison walks every clip and every waveform sample and can freeze the UI on large edits.
@@ -94,6 +106,18 @@ void TimelineView::setPlayheadNs(qint64 position) {
     }
     playhead_ns_ = position;
     emit playheadNsChanged();
+    update();
+}
+
+void TimelineView::setSkimmingEnabled(bool enabled) {
+    if (skimming_enabled_ == enabled) return;
+    skimming_enabled_ = enabled;
+    if (!enabled && skimmer_active_) {
+        skimmer_active_ = false;
+        emit skimmerChanged();
+        emit skimRequested(skimmer_ns_, false);
+    }
+    emit skimmingEnabledChanged();
     update();
 }
 
@@ -145,6 +169,11 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     if (playheadNode == nullptr) {
         playheadNode = new QSGSimpleRectNode(QRectF{}, QColor("#f4f7fb"));
         root->appendChildNode(playheadNode);
+    }
+    auto* skimmerNode = static_cast<QSGSimpleRectNode*>(playheadNode->nextSibling());
+    if (skimmerNode == nullptr) {
+        skimmerNode = new QSGSimpleRectNode(QRectF{}, QColor("#f0c66a"));
+        root->appendChildNode(skimmerNode);
     }
 
     const qreal contentWidth = std::max<qreal>(1.0, width() - kHorizontalPadding * 2.0);
@@ -384,6 +413,15 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     } else {
         playheadNode->setRect(QRectF{});
     }
+    if (skimmer_active_ && skimmer_ns_ >= painted_view_start_ns_ &&
+        skimmer_ns_ <= paintedViewEnd) {
+        const auto skimmerX = kHorizontalPadding +
+            contentWidth * static_cast<qreal>(skimmer_ns_ - painted_view_start_ns_) /
+                static_cast<qreal>(painted_view_duration_ns_);
+        skimmerNode->setRect(QRectF(skimmerX - 1.0, 4.0, 2.0, height() - 8.0));
+    } else {
+        skimmerNode->setRect(QRectF{});
+    }
     return root;
 }
 
@@ -475,6 +513,19 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
 }
 
 void TimelineView::hoverMoveEvent(QHoverEvent* event) {
+    if (skimming_enabled_ && duration_ns_ > 0 &&
+        event->position().x() >= kHorizontalPadding &&
+        event->position().x() <= width() - kHorizontalPadding) {
+        const auto position = timeAt(event->position().x());
+        const bool changed = !skimmer_active_ || skimmer_ns_ != position;
+        skimmer_active_ = true;
+        skimmer_ns_ = position;
+        if (changed) {
+            emit skimmerChanged();
+            emit skimRequested(skimmer_ns_, true);
+            update();
+        }
+    }
     if (event->position().y() < kTrackTop) {
         if (hover_clip_index_ >= 0) {
             hover_clip_index_ = -1;
@@ -516,6 +567,12 @@ void TimelineView::hoverMoveEvent(QHoverEvent* event) {
 }
 
 void TimelineView::hoverLeaveEvent(QHoverEvent* event) {
+    if (skimmer_active_) {
+        skimmer_active_ = false;
+        emit skimmerChanged();
+        emit skimRequested(skimmer_ns_, false);
+        update();
+    }
     if (hover_clip_index_ >= 0) {
         hover_clip_index_ = -1;
         timeline_geometry_dirty_ = true;
@@ -633,6 +690,7 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
                 : QStringList{clipId};
             emit moveCommitted(movingIds, move_target_index_);
         }
+        if (drag_delta_ns_ == 0 && skimmer_active_) emit skimCommitted(skimmer_ns_);
     }
     drag_mode_ = DragMode::none;
     drag_clip_index_ = -1;

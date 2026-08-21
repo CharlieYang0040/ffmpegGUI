@@ -45,6 +45,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(qint64 inPointNs READ inPointNs NOTIFY rangeChanged)
     Q_PROPERTY(qint64 outPointNs READ outPointNs NOTIFY rangeChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
+    Q_PROPERTY(qreal shuttleRate READ shuttleRate NOTIFY shuttleRateChanged)
     Q_PROPERTY(bool previewBusy READ previewBusy NOTIFY previewBusyChanged)
     Q_PROPERTY(bool previewFailed READ previewFailed NOTIFY previewFailedChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
@@ -146,6 +147,7 @@ public:
     [[nodiscard]] qint64 inPointNs() const noexcept { return in_point_ns_; }
     [[nodiscard]] qint64 outPointNs() const noexcept { return out_point_ns_; }
     [[nodiscard]] bool playing() const noexcept { return playing_; }
+    [[nodiscard]] qreal shuttleRate() const noexcept { return shuttle_rate_; }
     [[nodiscard]] bool previewBusy() const noexcept { return preview_busy_; }
     [[nodiscard]] bool previewFailed() const noexcept { return preview_failed_; }
     [[nodiscard]] QString status() const { return status_; }
@@ -259,6 +261,7 @@ public:
     [[nodiscard]] std::uint64_t videoFramesDelivered() const noexcept {
         return video_frames_delivered_;
     }
+    [[nodiscard]] std::uint64_t audioBuffersReceived() const noexcept;
     [[nodiscard]] std::uint64_t videoFramesReceived() const noexcept;
     [[nodiscard]] std::uint64_t previewRebuildCount() const noexcept {
         return preview_rebuild_count_;
@@ -288,7 +291,16 @@ public:
 public slots:
     void seek(qint64 timelinePosition);
     void scrub(qint64 timelinePosition, bool finalPosition);
+    void skim(qint64 timelinePosition, bool active);
+    void skimAsset(const QString& assetId, qint64 sourceTime, bool active);
     void togglePlayback();
+    void shuttleForward();
+    void shuttleReverse();
+    void shuttleStop();
+    void seekToStart();
+    void seekToEnd();
+    void seekTimecode(const QString& value);
+    void playAround();
     void stepFrame(int direction);
     void jumpEditPoint(int direction);
     void setInPoint();
@@ -426,6 +438,7 @@ signals:
     void playheadChanged();
     void rangeChanged();
     void playingChanged();
+    void shuttleRateChanged();
     void previewBusyChanged();
     void previewFailedChanged();
     void statusChanged();
@@ -470,6 +483,8 @@ private:
     void queueLiveSeek(qint64 timelinePosition);
     void pumpLiveSeek();
     void submitCachedScrubFrame(qint64 timelinePosition);
+    void submitCachedAssetFrame(
+        const QString& asset_id, qint64 source_time, qint64 presentation_time);
     bool submitFloatScrubFrame(qint64 timelinePosition);
     void startFloatScrubFrame(qint64 timelinePosition);
     [[nodiscard]] bool canUseFloatPlayback() const;
@@ -549,6 +564,11 @@ private:
     qint64 in_point_ns_{-1};
     qint64 out_point_ns_{-1};
     bool playing_{};
+    qreal shuttle_rate_{};
+    std::optional<qint64> transport_range_start_;
+    std::optional<qint64> transport_range_end_;
+    bool transport_range_loop_{};
+    bool transport_boundary_pending_{};
     bool scrubbing_{};
     bool preview_busy_{};
     bool preview_failed_{};

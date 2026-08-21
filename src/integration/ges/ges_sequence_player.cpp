@@ -904,12 +904,40 @@ void GesSequencePlayer::seek(TimeNs timeline_position, PreviewSeekMode mode) {
 }
 
 void GesSequencePlayer::play() {
+    play(1.0);
+}
+
+void GesSequencePlayer::play(double rate) {
+    if (!std::isfinite(rate) || std::abs(rate) < 0.01) {
+        throw std::invalid_argument("playback rate must be finite and non-zero");
+    }
     {
         std::scoped_lock lock(mutex_);
         if (pipeline_ == nullptr) {
             return;
         }
-        const auto result = gst_element_set_state(GST_ELEMENT(pipeline_), GST_STATE_PLAYING);
+        auto* pipeline = GST_ELEMENT(pipeline_);
+        if (std::abs(rate - 1.0) > 0.001) {
+            const auto position = std::clamp<TimeNs>(
+                position_ns_.load(), 0, duration_ns_.load());
+            const auto seekWithFlags = [&](GstSeekFlags flags) {
+                return rate > 0.0
+                    ? gst_element_seek(
+                        pipeline, rate, GST_FORMAT_TIME, flags,
+                        GST_SEEK_TYPE_SET, position,
+                        GST_SEEK_TYPE_SET, duration_ns_.load())
+                    : gst_element_seek(
+                        pipeline, rate, GST_FORMAT_TIME, flags,
+                        GST_SEEK_TYPE_SET, 0, GST_SEEK_TYPE_SET, position);
+            };
+            auto seeked = seekWithFlags(static_cast<GstSeekFlags>(
+                GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE));
+            if (!seeked) {
+                seeked = seekWithFlags(static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH));
+            }
+            if (!seeked) throw std::runtime_error("GES shuttle seek failed");
+        }
+        const auto result = gst_element_set_state(pipeline, GST_STATE_PLAYING);
         if (result == GST_STATE_CHANGE_FAILURE) {
             throw std::runtime_error("GES pipeline failed to start playback");
         }
@@ -1098,6 +1126,11 @@ void GesSequencePlayer::audio_handoff(GstElement*, GstBuffer* buffer, GstPad*, v
     while (gap > maximum &&
            !player->audio_maximum_gap_ns_.compare_exchange_weak(maximum, gap)) {
     }
+}
+
+void GesSequencePlayer::audio_identity_handoff(
+    GstElement*, GstBuffer* buffer, void* user_data) {
+    audio_handoff(nullptr, buffer, nullptr, user_data);
 }
 
 GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_data) {
@@ -1522,13 +1555,46 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 gst_object_unref(new_pipeline);
                 throw std::runtime_error("missing audio sink: " + audio_sink_factory_);
             }
-            gst_object_ref_sink(sink);
             if (audio_sink_factory_ == "fakesink") {
+                gst_object_ref_sink(sink);
                 g_object_set(sink, "sync", TRUE, "signal-handoffs", TRUE, nullptr);
                 g_signal_connect(sink, "handoff", G_CALLBACK(GesSequencePlayer::audio_handoff), this);
+                ges_pipeline_preview_set_audio_sink(new_pipeline, sink);
+                gst_object_unref(sink);
+            } else {
+                auto* meter = gst_element_factory_make("identity", nullptr);
+                auto* output = gst_bin_new(nullptr);
+                if (meter == nullptr || output == nullptr) {
+                    if (meter != nullptr) gst_object_unref(meter);
+                    if (output != nullptr) gst_object_unref(output);
+                    gst_object_unref(sink);
+                    gst_object_unref(new_pipeline);
+                    throw std::runtime_error("failed to create metered audio preview sink");
+                }
+                gst_object_ref_sink(output);
+                g_object_set(meter, "signal-handoffs", TRUE, nullptr);
+                g_signal_connect(
+                    meter, "handoff",
+                    G_CALLBACK(GesSequencePlayer::audio_identity_handoff), this);
+                gst_bin_add_many(GST_BIN(output), meter, sink, nullptr);
+                if (!gst_element_link(meter, sink)) {
+                    gst_object_unref(output);
+                    gst_object_unref(new_pipeline);
+                    throw std::runtime_error("failed to link metered audio preview sink");
+                }
+                auto* meterPad = gst_element_get_static_pad(meter, "sink");
+                auto* ghostPad = meterPad != nullptr
+                    ? gst_ghost_pad_new("sink", meterPad) : nullptr;
+                if (meterPad != nullptr) gst_object_unref(meterPad);
+                if (ghostPad == nullptr || !gst_element_add_pad(output, ghostPad)) {
+                    if (ghostPad != nullptr) gst_object_unref(ghostPad);
+                    gst_object_unref(output);
+                    gst_object_unref(new_pipeline);
+                    throw std::runtime_error("failed to expose metered audio preview sink pad");
+                }
+                ges_pipeline_preview_set_audio_sink(new_pipeline, output);
+                gst_object_unref(output);
             }
-            ges_pipeline_preview_set_audio_sink(new_pipeline, sink);
-            gst_object_unref(sink);
         }
 
         timeline_ = new_timeline;

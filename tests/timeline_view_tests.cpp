@@ -1,6 +1,7 @@
 #include "timeline_view.hpp"
 
 #include <QGuiApplication>
+#include <QHoverEvent>
 #include <QMouseEvent>
 #include <QSGNode>
 #include <QVariantMap>
@@ -33,6 +34,16 @@ public:
             QEvent::MouseButtonRelease, position, position, position,
             Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
         mouseReleaseEvent(&event);
+    }
+    void hover(QPointF position, QPointF oldPosition = {}) {
+        QHoverEvent event(
+            QEvent::HoverMove, position, position, oldPosition, Qt::NoModifier);
+        hoverMoveEvent(&event);
+    }
+    void leave(QPointF position) {
+        QHoverEvent event(
+            QEvent::HoverLeave, position, position, position, Qt::NoModifier);
+        hoverLeaveEvent(&event);
     }
 };
 
@@ -70,10 +81,18 @@ int main(int argc, char* argv[]) {
     require(
         timeline.timelineTimeAt(1908) == static_cast<qint64>(clipCount) * clipDuration,
         "right track edge must map to sequence end for media drops");
+    timeline.setZoomLevel(4.0);
+    timeline.fitToTimeline();
+    require(timeline.zoomLevel() == 1.0 && timeline.viewportStartNs() == 0,
+            "fit-to-timeline must restore the complete sequence viewport");
 
     int seekEvents = 0;
     bool finalSeek = false;
     int selectionEvents = 0;
+    int skimEvents = 0;
+    int skimCommitEvents = 0;
+    bool skimActive = false;
+    qint64 skimTime = -1;
     QObject::connect(&timeline, &TimelineView::seekRequested,
         [&](qint64, bool finalPosition) {
             ++seekEvents;
@@ -81,6 +100,22 @@ int main(int argc, char* argv[]) {
         });
     QObject::connect(&timeline, &TimelineView::clipSelected,
         [&](const QString&, int) { ++selectionEvents; });
+    QObject::connect(&timeline, &TimelineView::skimRequested,
+        [&](qint64 position, bool active) {
+            ++skimEvents;
+            skimTime = position;
+            skimActive = active;
+        });
+    QObject::connect(&timeline, &TimelineView::skimCommitted,
+        [&](qint64 position) {
+            ++skimCommitEvents;
+            skimTime = position;
+        });
+    timeline.hover(QPointF{500, 80});
+    require(timeline.skimmerActive() && skimActive && skimEvents == 1,
+            "timeline hover must activate the independent skimmer");
+    require(skimTime == timeline.timelineTimeAt(500),
+            "skimmer time must follow the hovered timeline coordinate");
     timeline.press(QPointF{300, 10});
     timeline.move(QPointF{420, 10});
     timeline.release(QPointF{420, 10});
@@ -90,8 +125,11 @@ int main(int argc, char* argv[]) {
     timeline.release(QPointF{300, 80});
     require(selectionEvents == 1,
             "clip body click must select instead of entering a separate scrub tool");
-    require(seekEvents == 3,
-            "clip body click must not move the playhead or request a seek");
+    require(seekEvents == 3 && skimCommitEvents == 1,
+            "clip body click must commit the skimmer without using drag-scrub seeks");
+    timeline.leave(QPointF{300, 80});
+    require(!timeline.skimmerActive() && !skimActive && skimEvents == 2,
+            "leaving the timeline must clear the skimmer and restore the program frame");
 
     auto* root = timeline.render(nullptr);
     require(root != nullptr, "timeline must create a scene graph root");

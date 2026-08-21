@@ -153,6 +153,7 @@ int main(int argc, char* argv[]) {
     bool gifExportSmoke = false;
     bool floatExportSmoke = false;
     bool floatVideoSmoke = false;
+    bool transportSmoke = false;
     int editingSoakSeconds = 0;
     QString exrSelectionSmokeProject;
     const auto arguments = application.arguments();
@@ -194,6 +195,10 @@ int main(int argc, char* argv[]) {
         }
         if (arguments[index] == "--float-video-smoke") {
             floatVideoSmoke = true;
+            continue;
+        }
+        if (arguments[index] == "--transport-smoke") {
+            transportSmoke = true;
             continue;
         }
         if (arguments[index] == "--editing-soak" && index + 1 < arguments.size()) {
@@ -242,7 +247,8 @@ int main(int argc, char* argv[]) {
         if (controller.durationNs() <= 0) return EXIT_FAILURE;
     }
     if ((!roundtripProject.isEmpty() || !exportSmokeOutput.isEmpty() || playbackSmoke ||
-         floatVideoSmoke || editingSoakSeconds > 0 || !exrSelectionSmokeProject.isEmpty()) &&
+         floatVideoSmoke || transportSmoke || editingSoakSeconds > 0 ||
+         !exrSelectionSmokeProject.isEmpty()) &&
         controller.importing()) {
         QEventLoop importLoop;
         QTimer importTimeout;
@@ -431,6 +437,34 @@ int main(int argc, char* argv[]) {
                           << "passed=" << passed;
         controller.togglePlayback();
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    if (transportSmoke) {
+        if (controller.clips().isEmpty() || controller.durationNs() <= 0) return EXIT_FAILURE;
+        controller.seek(controller.durationNs() / 2);
+        const auto deliveredBefore = controller.videoFramesDelivered();
+        const auto audioBefore = controller.audioBuffersReceived();
+        QTimer::singleShot(300, &controller, &EditorController::shuttleForward);
+        QTimer::singleShot(900, &controller, &EditorController::shuttleForward);
+        QTimer::singleShot(1500, &controller, &EditorController::shuttleStop);
+        QTimer::singleShot(1800, &controller, &EditorController::shuttleReverse);
+        QTimer::singleShot(2500, &controller, &EditorController::shuttleStop);
+        QTimer::singleShot(2800, &controller, &EditorController::playAround);
+        QTimer::singleShot(5500, &application, [&] {
+            qInfo().noquote() << "transport smoke counters"
+                              << "delivered_delta="
+                              << controller.videoFramesDelivered() - deliveredBefore
+                              << "audio_delta="
+                              << controller.audioBuffersReceived() - audioBefore
+                              << "playhead_ns=" << controller.playheadNs()
+                              << "rate=" << controller.shuttleRate()
+                              << "failed=" << controller.previewFailed();
+            const bool passed = !controller.previewFailed() &&
+                controller.shuttleRate() == 0.0 &&
+                controller.videoFramesDelivered() > deliveredBefore &&
+                controller.audioBuffersReceived() > audioBefore;
+            application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
+        });
+        return application.exec();
     }
     if (editingSoakSeconds > 0) {
         const auto initialClips = controller.clips();

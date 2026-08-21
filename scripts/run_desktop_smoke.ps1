@@ -239,6 +239,14 @@ if ($playback.ExitCode -ne 0) {
 }
 Write-Output "Preview refresh and end loop passed: playback continued from the sequence start after EOS"
 
+$transport = Start-Process -FilePath $application `
+    -ArgumentList @("--transport-smoke", $clipA, $clipB) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($transport.ExitCode -ne 0) {
+    throw "JKL shuttle transport failed with code $($transport.ExitCode)"
+}
+Write-Output "JKL transport passed: forward 1x/2x, stop, reverse and play-around delivered video/audio"
+
 $managedColorPlayback = Start-Process -FilePath $application `
     -ArgumentList @("--float-video-smoke", $clipA, $clipB, $clipVfr) `
     -WindowStyle Hidden -Wait -PassThru
@@ -247,6 +255,9 @@ if ($managedColorPlayback.ExitCode -ne 0) {
 }
 Write-Output "Managed color preview passed: explicit input spaces and clip LUTs were applied before composition without post-grade duplication"
 
+# Qt Quick and GStreamer own separate D3D11 devices. Give the driver a brief turn to retire
+# the previous process resources before creating the offscreen zero-copy verification device.
+Start-Sleep -Milliseconds 1500
 $previousCpuPreview = $env:FFGUI_FORCE_CPU_PREVIEW
 try {
     Remove-Item Env:FFGUI_FORCE_CPU_PREVIEW -ErrorAction SilentlyContinue

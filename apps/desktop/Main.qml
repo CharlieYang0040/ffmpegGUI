@@ -30,6 +30,7 @@ ApplicationWindow {
     property bool showOutputSettingsNode: false
     property string expandedNode: ""
     property string expandedGradeNode: ""
+    property bool transportTextEditing: false
     property bool colorWorkspace: false
     readonly property bool hasLegacyClipColor:
         EditorController.selectedClipIds.length > 0 && (
@@ -193,6 +194,14 @@ ApplicationWindow {
     Shortcut { sequences: [StandardKey.Undo]; enabled: EditorController.canUndo; onActivated: EditorController.undo() }
     Shortcut { sequences: [StandardKey.Redo]; enabled: EditorController.canRedo; onActivated: EditorController.redo() }
     Shortcut { sequence: "Space"; onActivated: EditorController.togglePlayback() }
+    Shortcut { sequence: "J"; autoRepeat: false; enabled: !root.transportTextEditing; onActivated: EditorController.shuttleReverse() }
+    Shortcut { sequence: "K"; autoRepeat: false; enabled: !root.transportTextEditing; onActivated: EditorController.shuttleStop() }
+    Shortcut { sequence: "L"; autoRepeat: false; enabled: !root.transportTextEditing; onActivated: EditorController.shuttleForward() }
+    Shortcut { sequence: "Home"; enabled: !root.transportTextEditing; onActivated: EditorController.seekToStart() }
+    Shortcut { sequence: "End"; enabled: !root.transportTextEditing; onActivated: EditorController.seekToEnd() }
+    Shortcut { sequence: "Shift+Z"; enabled: !root.transportTextEditing; onActivated: timeline.fitToTimeline() }
+    Shortcut { sequence: "\\"; enabled: !root.transportTextEditing; onActivated: EditorController.playAround() }
+    Shortcut { sequence: "Shift+/"; enabled: !root.transportTextEditing; onActivated: EditorController.playAround() }
     Shortcut { sequence: "Left"; autoRepeat: true; onActivated: EditorController.stepFrame(-1) }
     Shortcut { sequence: "Right"; autoRepeat: true; onActivated: EditorController.stepFrame(1) }
     Shortcut { sequence: "Up"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(-1) }
@@ -518,6 +527,7 @@ ApplicationWindow {
                                 spacing: 9
 
                                 Image {
+                                    id: mediaThumbnail
                                     Layout.preferredWidth: 76
                                     Layout.fillHeight: true
                                     source: mediaCard.modelData.thumbnailAtlas.length > 0
@@ -526,6 +536,26 @@ ApplicationWindow {
                                     fillMode: Image.PreserveAspectCrop
                                     asynchronous: true
                                     cache: true
+                                    Rectangle {
+                                        visible: thumbnailHover.containsMouse &&
+                                                 mediaCard.modelData.durationNs > 0
+                                        x: Math.max(0, Math.min(parent.width - 2, thumbnailHover.mouseX))
+                                        width: 2
+                                        height: parent.height
+                                        color: "#f0c66a"
+                                    }
+                                    MouseArea {
+                                        id: thumbnailHover
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        acceptedButtons: Qt.NoButton
+                                        onPositionChanged: (mouse) => EditorController.skimAsset(
+                                            mediaCard.assetId,
+                                            Math.round(Math.max(0, Math.min(1, mouse.x / width)) *
+                                                       mediaCard.modelData.durationNs), true)
+                                        onExited: EditorController.skimAsset(
+                                            mediaCard.assetId, 0, false)
+                                    }
                                 }
                                 ColumnLayout {
                                     Layout.fillWidth: true
@@ -2228,6 +2258,38 @@ ApplicationWindow {
                         ToolTip.text: "전체 타임라인 재생/일시정지  Space"
                     }
                     AppButton {
+                        text: "J"
+                        compact: true
+                        highlighted: EditorController.shuttleRate < 0
+                        enabled: EditorController.durationNs > 0
+                        onClicked: EditorController.shuttleReverse()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "역방향 셔틀 · 반복 시 1×/2×/4×"
+                    }
+                    AppButton {
+                        text: "K"
+                        compact: true
+                        enabled: EditorController.durationNs > 0
+                        onClicked: EditorController.shuttleStop()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "셔틀 정지"
+                    }
+                    AppButton {
+                        text: "L"
+                        compact: true
+                        highlighted: EditorController.shuttleRate > 0
+                        enabled: EditorController.durationNs > 0
+                        onClicked: EditorController.shuttleForward()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "정방향 셔틀 · 반복 시 1×/2×/4×"
+                    }
+                    Label {
+                        visible: EditorController.shuttleRate !== 0
+                        text: Math.abs(EditorController.shuttleRate) + "×"
+                        color: "#f0c66a"
+                        font.family: "Consolas"
+                    }
+                    AppButton {
                         text: "‹"
                         compact: true
                         enabled: EditorController.durationNs > 0
@@ -2312,8 +2374,26 @@ ApplicationWindow {
                         ToolTip.text: "인/아웃 구간을 삭제하고 빈자리 닫기  Shift+Delete"
                     }
                     Item { Layout.fillWidth: true }
+                    TextField {
+                        id: transportTimecode
+                        Layout.preferredWidth: 108
+                        text: EditorController.timeText(EditorController.playheadNs)
+                        selectByMouse: true
+                        horizontalAlignment: TextInput.AlignHCenter
+                        font.family: "Consolas"
+                        onActiveFocusChanged: {
+                            root.transportTextEditing = activeFocus
+                            if (activeFocus) selectAll()
+                        }
+                        onAccepted: {
+                            EditorController.seekTimecode(text)
+                            focus = false
+                        }
+                        ToolTip.visible: hovered
+                        ToolTip.text: "재생 헤드 타임코드 입력"
+                    }
                     Label {
-                        text: "눈금 드래그 탐색  ·  클립 드래그 이동  ·  Ctrl+휠 확대"
+                        text: "호버 스키밍  ·  JKL 셔틀  ·  Shift+Z 맞춤"
                         color: "#687484"
                         font.pixelSize: 10
                     }
@@ -2442,6 +2522,7 @@ ApplicationWindow {
                         anchors.fill: parent
                         durationNs: EditorController.durationNs
                         playheadNs: EditorController.playheadNs
+                        skimmingEnabled: !EditorController.playing
                         inPointNs: EditorController.inPointNs
                         outPointNs: EditorController.outPointNs
                         clips: EditorController.clips
@@ -2449,6 +2530,9 @@ ApplicationWindow {
                         selectedClipIds: EditorController.selectedClipIds
                         onSeekRequested: (position, finalPosition) =>
                             EditorController.scrub(position, finalPosition)
+                        onSkimRequested: (position, active) =>
+                            EditorController.skim(position, active)
+                        onSkimCommitted: (position) => EditorController.seek(position)
                         onClipSelected: (clipId, selectionMode) =>
                             EditorController.selectClip(clipId, selectionMode)
                         onTrimCommitted: (clipId, sourceIn, duration) =>

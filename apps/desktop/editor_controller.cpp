@@ -536,6 +536,21 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                     playhead_ns_ = position;
                     emit playheadChanged();
                 }
+                if (transport_boundary_pending_ && transport_range_start_.has_value() &&
+                    position <= *transport_range_start_ + 50'000'000) {
+                    transport_boundary_pending_ = false;
+                }
+                if (transport_range_end_.has_value() && !transport_boundary_pending_ &&
+                    shuttle_rate_ > 0.0 && position >= *transport_range_end_) {
+                    transport_boundary_pending_ = true;
+                    if (transport_range_loop_ && transport_range_start_.has_value()) {
+                        pending_preview_seek_ = *transport_range_start_;
+                        preview_should_play_ = true;
+                        queuePreviewOperation(false);
+                    } else {
+                        shuttleStop();
+                    }
+                }
             },
             Qt::QueuedConnection);
     });
@@ -2230,12 +2245,30 @@ void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
 
 void EditorController::submitCachedScrubFrame(qint64 timelinePosition) {
 #ifdef FFGUI_HAS_GES
-    auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
     const auto mapped = timeline_.locate(timelinePosition);
-    if (item == nullptr || !mapped.has_value()) return;
-    const auto assetId = QString::fromStdString(mapped->asset_id);
+    if (!mapped.has_value()) return;
+    submitCachedAssetFrame(
+        QString::fromStdString(mapped->asset_id), mapped->source_time, timelinePosition);
+#else
+    static_cast<void>(timelinePosition);
+#endif
+}
+
+std::uint64_t EditorController::audioBuffersReceived() const noexcept {
+#ifdef FFGUI_HAS_GES
+    return player_ ? player_->audio_continuity_metrics().buffer_count : 0;
+#else
+    return 0;
+#endif
+}
+
+void EditorController::submitCachedAssetFrame(
+    const QString& assetId, qint64 sourceTime, qint64 presentationTime) {
+#ifdef FFGUI_HAS_GES
+    auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
+    if (item == nullptr) return;
     const auto atlasPath = thumbnail_atlases_.value(assetId);
-    const auto* asset = timeline_.asset(mapped->asset_id);
+    const auto* asset = timeline_.asset(assetId.toStdString());
     if (atlasPath.isEmpty() || asset == nullptr || asset->duration() <= 0) return;
     auto found = thumbnail_images_.find(assetId);
     if (found == thumbnail_images_.end()) {
@@ -2248,7 +2281,7 @@ void EditorController::submitCachedScrubFrame(qint64 timelinePosition) {
     constexpr int tileHeight = 90;
     const auto tileCount = std::max(1, atlas.width() / tileWidth);
     const auto ratio = std::clamp(
-        static_cast<double>(mapped->source_time) / static_cast<double>(asset->duration()),
+        static_cast<double>(sourceTime) / static_cast<double>(asset->duration()),
         0.0,
         0.999999);
     const auto tileIndex = std::clamp(
@@ -2262,33 +2295,165 @@ void EditorController::submitCachedScrubFrame(qint64 timelinePosition) {
     frame.cpu_pixels = std::make_shared<std::vector<std::uint8_t>>(
         static_cast<std::size_t>(frame.cpu_stride) * frame.height);
     std::memcpy(frame.cpu_pixels->data(), tile.constBits(), frame.cpu_pixels->size());
-    frame.pts = timelinePosition;
+    frame.pts = presentationTime;
     frame.serial = ++scrub_frame_serial_;
     ++scrub_frames_submitted_;
     presentPreviewFrame(std::move(frame));
 #else
-    static_cast<void>(timelinePosition);
+    static_cast<void>(assetId);
+    static_cast<void>(sourceTime);
+    static_cast<void>(presentationTime);
 #endif
 }
 
 void EditorController::togglePlayback() {
 #ifdef FFGUI_HAS_GES
+    transport_range_start_.reset();
+    transport_range_end_.reset();
+    transport_range_loop_ = false;
     if (float_playback_running_) {
         stopFloatPlayback();
         setStatus(QStringLiteral("일시 정지"));
         return;
     }
     if (canUseFloatPlayback()) {
+        shuttle_rate_ = 1.0;
+        emit shuttleRateChanged();
         startFloatPlayback();
         return;
     }
     preview_should_play_ = !(preview_should_play_ || playing_);
+    shuttle_rate_ = preview_should_play_ ? 1.0 : 0.0;
+    emit shuttleRateChanged();
     if (preview_should_play_ && playhead_ns_ >= durationNs()) {
         playhead_ns_ = 0;
         emit playheadChanged();
     }
     if (preview_should_play_) pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
+#endif
+}
+
+void EditorController::shuttleForward() {
+#ifdef FFGUI_HAS_GES
+    transport_range_start_.reset();
+    transport_range_end_.reset();
+    transport_range_loop_ = false;
+    shuttle_rate_ = playing_ && shuttle_rate_ > 0.0
+        ? (shuttle_rate_ < 1.5 ? 2.0 : shuttle_rate_ < 3.0 ? 4.0 : 1.0)
+        : 1.0;
+    emit shuttleRateChanged();
+    if (canUseFloatPlayback()) {
+        if (float_playback_running_) stopFloatPlayback();
+        startFloatPlayback();
+        return;
+    }
+    preview_should_play_ = true;
+    if (playhead_ns_ >= durationNs()) {
+        playhead_ns_ = 0;
+        emit playheadChanged();
+    }
+    pending_preview_seek_ = playhead_ns_;
+    queuePreviewOperation(false);
+#endif
+}
+
+void EditorController::shuttleReverse() {
+#ifdef FFGUI_HAS_GES
+    transport_range_start_.reset();
+    transport_range_end_.reset();
+    transport_range_loop_ = false;
+    shuttle_rate_ = playing_ && shuttle_rate_ < 0.0
+        ? (shuttle_rate_ > -1.5 ? -2.0 : shuttle_rate_ > -3.0 ? -4.0 : -1.0)
+        : -1.0;
+    emit shuttleRateChanged();
+    if (playhead_ns_ <= 0) {
+        playhead_ns_ = durationNs();
+        emit playheadChanged();
+    }
+    if (canUseFloatPlayback()) {
+        if (float_playback_running_) stopFloatPlayback();
+        startFloatPlayback();
+        return;
+    }
+    preview_should_play_ = true;
+    pending_preview_seek_ = playhead_ns_;
+    queuePreviewOperation(false);
+#endif
+}
+
+void EditorController::shuttleStop() {
+#ifdef FFGUI_HAS_GES
+    shuttle_rate_ = 0.0;
+    transport_range_start_.reset();
+    transport_range_end_.reset();
+    transport_range_loop_ = false;
+    transport_boundary_pending_ = false;
+    emit shuttleRateChanged();
+    if (float_playback_running_) {
+        stopFloatPlayback();
+        return;
+    }
+    preview_should_play_ = false;
+    queuePreviewOperation(false);
+#endif
+}
+
+void EditorController::seekToStart() {
+    seek(0);
+}
+
+void EditorController::seekToEnd() {
+    seek(durationNs());
+}
+
+void EditorController::seekTimecode(const QString& value) {
+    const auto match = QRegularExpression(
+        QStringLiteral(R"(^\s*(?:(\d+):)?(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\s*$)"))
+        .match(value);
+    if (!match.hasMatch()) {
+        setStatus(QStringLiteral("타임코드는 HH:MM:SS.mmm 형식으로 입력하세요"));
+        return;
+    }
+    const auto hours = match.captured(1).isEmpty() ? 0LL : match.captured(1).toLongLong();
+    const auto minutes = match.captured(2).toLongLong();
+    const auto seconds = match.captured(3).toLongLong();
+    auto millisecondsText = match.captured(4);
+    while (millisecondsText.size() < 3) millisecondsText.append('0');
+    const auto milliseconds = millisecondsText.isEmpty() ? 0LL : millisecondsText.toLongLong();
+    if (minutes >= 60 || seconds >= 60) {
+        setStatus(QStringLiteral("분과 초는 0–59 범위여야 합니다"));
+        return;
+    }
+    const auto target = ((hours * 60 + minutes) * 60 + seconds) * 1'000'000'000LL +
+        milliseconds * 1'000'000LL;
+    seek(target);
+}
+
+void EditorController::playAround() {
+#ifdef FFGUI_HAS_GES
+    if (durationNs() <= 0) return;
+    if (in_point_ns_ >= 0 && out_point_ns_ > in_point_ns_) {
+        transport_range_start_ = in_point_ns_;
+        transport_range_end_ = out_point_ns_;
+        transport_range_loop_ = true;
+    } else {
+        constexpr qint64 around = 1'000'000'000;
+        transport_range_start_ = std::max<qint64>(0, playhead_ns_ - around);
+        transport_range_end_ = std::min<qint64>(durationNs(), playhead_ns_ + around);
+        transport_range_loop_ = false;
+    }
+    transport_boundary_pending_ = false;
+    playhead_ns_ = *transport_range_start_;
+    emit playheadChanged();
+    shuttle_rate_ = 1.0;
+    emit shuttleRateChanged();
+    preview_should_play_ = true;
+    pending_preview_seek_ = playhead_ns_;
+    queuePreviewOperation(false);
+    setStatus(transport_range_loop_
+        ? QStringLiteral("인/아웃 구간 반복 재생")
+        : QStringLiteral("재생 헤드 전후 미리보기"));
 #endif
 }
 
@@ -2308,8 +2473,11 @@ void EditorController::startFloatPlayback() {
 #ifdef FFGUI_HAS_GES
     if (!canUseFloatPlayback() || durationNs() <= 0) return;
     preview_should_play_ = false;
-    if (playhead_ns_ >= durationNs()) {
+    if (shuttle_rate_ >= 0.0 && playhead_ns_ >= durationNs()) {
         playhead_ns_ = 0;
+        emit playheadChanged();
+    } else if (shuttle_rate_ < 0.0 && playhead_ns_ <= 0) {
+        playhead_ns_ = durationNs();
         emit playheadChanged();
     }
     float_playback_origin_ns_ = playhead_ns_;
@@ -2319,7 +2487,7 @@ void EditorController::startFloatPlayback() {
         playing_ = true;
         emit playingChanged();
     }
-    setStatus(QStringLiteral("재생 중 · float 프레임"));
+    setStatus(QStringLiteral("셔틀 %1x · float 프레임").arg(shuttle_rate_, 0, 'g', 2));
     submitFloatScrubFrame(playhead_ns_);
     float_playback_timer_.start();
 #endif
@@ -2345,15 +2513,19 @@ void EditorController::advanceFloatPlayback() {
 #ifdef FFGUI_HAS_GES
     if (!float_playback_running_) return;
     const auto elapsedNs = float_playback_clock_.nsecsElapsed();
-    const auto target = std::min<qint64>(
-        durationNs(), float_playback_origin_ns_ + elapsedNs);
+    const auto target = std::clamp<qint64>(
+        float_playback_origin_ns_ + static_cast<qint64>(elapsedNs * shuttle_rate_),
+        0, durationNs());
     if (target != playhead_ns_) {
         playhead_ns_ = target;
         emit playheadChanged();
     }
-    if (target >= durationNs()) {
-        stopFloatPlayback(true);
-        setStatus(QStringLiteral("재생 완료 · 처음으로 이동"));
+    if ((shuttle_rate_ >= 0.0 && target >= durationNs()) ||
+        (shuttle_rate_ < 0.0 && target <= 0)) {
+        stopFloatPlayback(false);
+        shuttle_rate_ = 0.0;
+        emit shuttleRateChanged();
+        setStatus(QStringLiteral("셔틀 재생 완료"));
         return;
     }
     submitFloatScrubFrame(target);
@@ -3025,6 +3197,26 @@ void EditorController::selectClip(const QString& clipId, int mode) {
         setSingleSelection(clipId);
     }
     selection_update_timer_.start();
+}
+
+void EditorController::skim(qint64 timelinePosition, bool active) {
+    if (playing_ || durationNs() <= 0) return;
+    const auto target = active
+        ? std::clamp<qint64>(timelinePosition, 0, durationNs())
+        : playhead_ns_;
+    if (!submitFloatScrubFrame(target)) submitCachedScrubFrame(target);
+}
+
+void EditorController::skimAsset(const QString& assetId, qint64 sourceTime, bool active) {
+    if (playing_) return;
+    if (!active) {
+        skim(playhead_ns_, false);
+        return;
+    }
+    const auto* asset = timeline_.asset(assetId.toStdString());
+    if (asset == nullptr || asset->duration() <= 0) return;
+    submitCachedAssetFrame(
+        assetId, std::clamp<qint64>(sourceTime, 0, asset->duration()), playhead_ns_);
 }
 
 void EditorController::trimClip(const QString& clipId, qint64 sourceIn, qint64 duration) {
@@ -5260,6 +5452,7 @@ void EditorController::startPreviewOperation() {
     const auto seekTarget = pending_preview_seek_;
     const auto fallbackSeek = playhead_ns_;
     const bool shouldPlay = preview_should_play_;
+    const auto playbackRate = shuttle_rate_ == 0.0 ? 1.0 : shuttle_rate_;
     const bool shouldStop = preview_stop_requested_;
     const auto colorSettings = color_pipeline_;
     pending_preview_seek_.reset();
@@ -5289,6 +5482,7 @@ void EditorController::startPreviewOperation() {
          fallbackSeek,
          shouldPlay,
          shouldStop,
+         playbackRate,
          colorSettings]() mutable {
             PreviewOperationResult result;
             result.generation = generation;
@@ -5338,7 +5532,7 @@ void EditorController::startPreviewOperation() {
                         player->seek(target);
                     }
                     if (shouldPlay) {
-                        player->play();
+                        player->play(playbackRate);
                     } else if (player->state() == ffgui::PlaybackState::playing) {
                         player->pause();
                     }
