@@ -159,6 +159,112 @@ void TimelineModel::insert_clip_at(
     normalize_transitions();
 }
 
+void TimelineModel::overwrite_clip_at(
+    TimeNs timeline_position,
+    Clip clip,
+    std::string right_remainder_id) {
+    const auto total = duration();
+    const auto overwriteDuration = clip.timeline_duration();
+    if (timeline_position < 0 || timeline_position >= total || overwriteDuration <= 0 ||
+        overwriteDuration > total - timeline_position) {
+        throw std::invalid_argument("timeline overwrite range is invalid");
+    }
+    validate_clip(clip);
+    const auto timelineOut = checked_add(timeline_position, overwriteDuration);
+    const auto spans = snapshot();
+    for (const auto& span : spans) {
+        if (span.clip.transition_in <= 0) continue;
+        const auto transitionOut = checked_add(span.timeline_in, span.clip.transition_in);
+        if (timeline_position < transitionOut && timelineOut > span.timeline_in) {
+            throw std::invalid_argument("overwrite across a dissolve is not supported");
+        }
+    }
+    std::vector<Clip> candidate;
+    candidate.reserve(clips_.size() + 2);
+    bool inserted = false;
+
+    for (const auto& span : spans) {
+        const auto& current = span.clip;
+        if (span.timeline_out <= timeline_position || span.timeline_in >= timelineOut) {
+            if (!inserted && span.timeline_in >= timelineOut) {
+                candidate.push_back(clip);
+                inserted = true;
+            }
+            candidate.push_back(current);
+            continue;
+        }
+
+        const auto leftTimelineDuration = timeline_position > span.timeline_in
+            ? timeline_position - span.timeline_in : TimeNs{0};
+        const auto rightTimelineDuration = timelineOut < span.timeline_out
+            ? span.timeline_out - timelineOut : TimeNs{0};
+        if (leftTimelineDuration > 0) {
+            auto left = current;
+            left.duration = std::clamp<TimeNs>(
+                current.source_offset_for_timeline(leftTimelineDuration), 1, current.duration);
+            left.audio.fade_out = 0;
+            candidate.push_back(std::move(left));
+        }
+        if (!inserted) {
+            candidate.push_back(clip);
+            inserted = true;
+        }
+        if (rightTimelineDuration > 0) {
+            auto right = current;
+            const auto rightSourceDuration = std::clamp<TimeNs>(
+                current.source_offset_for_timeline(rightTimelineDuration), 1, current.duration);
+            right.source_in = checked_add(
+                current.source_in, current.duration - rightSourceDuration);
+            right.duration = rightSourceDuration;
+            right.audio.fade_in = 0;
+            if (leftTimelineDuration > 0) {
+                if (right_remainder_id.empty()) {
+                    throw std::invalid_argument("overwrite split remainder id must not be empty");
+                }
+                right.id = right_remainder_id;
+                right.transition_in = 0;
+            }
+            candidate.push_back(std::move(right));
+        }
+    }
+    if (!inserted) throw std::invalid_argument("timeline overwrite position is outside clips");
+
+    std::unordered_set<std::string> ids;
+    for (const auto& candidateClip : candidate) {
+        if (!ids.insert(candidateClip.id).second) {
+            throw std::invalid_argument("timeline overwrite produced a duplicate clip id");
+        }
+        const auto* sourceAsset = asset(candidateClip.asset_id);
+        if (sourceAsset == nullptr ||
+            !sourceAsset->contains_range(candidateClip.source_in, candidateClip.duration)) {
+            throw std::invalid_argument("timeline overwrite produced an invalid source range");
+        }
+    }
+    record_edit();
+    clips_ = std::move(candidate);
+    normalize_transitions();
+}
+
+void TimelineModel::replace_clip_source(
+    const std::string& clip_id,
+    std::string asset_id,
+    TimeNs source_in,
+    TimeNs range_duration) {
+    const auto index = index_of(clip_id);
+    auto replacement = clips_[index];
+    replacement.asset_id = std::move(asset_id);
+    replacement.source_in = source_in;
+    replacement.duration = range_duration;
+    if (replacement.timeline_duration() != clips_[index].timeline_duration()) {
+        throw std::invalid_argument("replacement source must preserve the clip timeline duration");
+    }
+    validate_clip(replacement, index);
+    if (replacement == clips_[index]) return;
+    record_edit();
+    clips_[index] = std::move(replacement);
+    normalize_transitions();
+}
+
 void TimelineModel::trim_clip(const std::string& clip_id, TimeNs source_in, TimeNs range_duration) {
     const auto index = index_of(clip_id);
     Clip replacement = clips_[index];

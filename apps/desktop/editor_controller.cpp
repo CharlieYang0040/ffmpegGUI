@@ -634,6 +634,34 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         queuePreviewOperation(false);
 #endif
     });
+    source_playback_timer_.setTimerType(Qt::PreciseTimer);
+    source_playback_timer_.setInterval(33);
+    connect(&source_playback_timer_, &QTimer::timeout, this, [this] {
+        if (!source_playing_ || selected_source_asset_id_.isEmpty()) return;
+        const auto range = selectedSourceRange();
+        if (!range.has_value()) {
+            stopSourcePlayback();
+            return;
+        }
+        const auto target = source_playback_origin_ns_ +
+            source_playback_clock_.nsecsElapsed();
+        if (target >= range->second) {
+            source_position_ns_ = range->second;
+            stopSourcePlayback();
+            updateSourcePreview();
+            emit sourceViewerChanged();
+            return;
+        }
+        source_position_ns_ = target;
+        updateSourcePreview();
+        if (++source_audio_tick_ % 4 == 0) {
+            if (const auto timelineTime = timelineTimeForAssetSource(
+                    selected_source_asset_id_, source_position_ns_)) {
+                requestAudioSkim(*timelineTime);
+            }
+        }
+        emit sourceViewerChanged();
+    });
 #ifdef FFGUI_HAS_GES
     connect(
         &preview_watcher_,
@@ -851,6 +879,7 @@ EditorController::~EditorController() {
     }
     audio_skim_debounce_timer_.stop();
     audio_skim_stop_timer_.stop();
+    source_playback_timer_.stop();
 #ifdef FFGUI_HAS_GES
     stopFloatPlayback();
     if (float_export_cancel_) float_export_cancel_->store(true);
@@ -897,20 +926,56 @@ bool EditorController::transportTextInputFocused() const {
 }
 
 bool EditorController::eventFilter(QObject* watched, QEvent* event) {
-    static_cast<void>(watched);
     if (event == nullptr ||
         (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease)) {
         return QObject::eventFilter(watched, event);
     }
     auto* keyEvent = static_cast<QKeyEvent*>(event);
     if (keyEvent->isAutoRepeat()) return QObject::eventFilter(watched, event);
+    const bool pressed = event->type() == QEvent::KeyPress;
     const auto key = keyEvent->key();
+    const auto modifiers = keyEvent->modifiers();
+    if (pressed && transportTextInputFocused()) {
+        return QObject::eventFilter(watched, event);
+    }
+    if (pressed) {
+        if (source_viewer_open_ && modifiers == Qt::NoModifier && key == Qt::Key_Space) {
+            toggleSourcePlayback();
+            return true;
+        }
+        if (modifiers == Qt::NoModifier && key == Qt::Key_I) {
+            source_viewer_open_ ? setSourceInPoint() : setInPoint();
+            return true;
+        }
+        if (modifiers == Qt::NoModifier && key == Qt::Key_O) {
+            source_viewer_open_ ? setSourceOutPoint() : setOutPoint();
+            return true;
+        }
+        if (modifiers == Qt::NoModifier && key == Qt::Key_E) {
+            appendSelectedSource();
+            return true;
+        }
+        if (modifiers == Qt::NoModifier && (key == Qt::Key_W || key == Qt::Key_Comma)) {
+            insertSelectedSource();
+            return true;
+        }
+        if (modifiers == Qt::NoModifier && (key == Qt::Key_D || key == Qt::Key_Period)) {
+            overwriteSelectedSource();
+            return true;
+        }
+        if (modifiers == Qt::ShiftModifier && key == Qt::Key_R) {
+            replaceSelectedClipSource();
+            return true;
+        }
+        if (source_viewer_open_ && modifiers == Qt::NoModifier && key == Qt::Key_Escape) {
+            closeSourceViewer();
+            return true;
+        }
+    }
     if (key != Qt::Key_J && key != Qt::Key_K && key != Qt::Key_L) {
         return QObject::eventFilter(watched, event);
     }
-
-    const bool pressed = event->type() == QEvent::KeyPress;
-    if (pressed && (keyEvent->modifiers() != Qt::NoModifier || transportTextInputFocused())) {
+    if (pressed && modifiers != Qt::NoModifier) {
         return QObject::eventFilter(watched, event);
     }
     if (!pressed &&
@@ -1027,6 +1092,7 @@ QVariantList EditorController::clips() const {
         const auto& span = spans[index];
         QVariantMap value;
         value.insert("id", QString::fromStdString(span.clip.id));
+        value.insert("assetId", QString::fromStdString(span.clip.asset_id));
         value.insert("name", QString::fromStdWString(span.source_path.filename().wstring()));
         value.insert("timelineInNs", static_cast<qint64>(span.timeline_in));
         value.insert("sourceInNs", static_cast<qint64>(span.clip.source_in));
@@ -1195,6 +1261,27 @@ QVariantList EditorController::captions() const {
 
 qint64 EditorController::durationNs() const noexcept {
     return static_cast<qint64>(timeline_.duration());
+}
+
+QString EditorController::sourceAssetName() const {
+    const auto* asset = timeline_.asset(selected_source_asset_id_.toStdString());
+    return asset == nullptr ? QString{} : QFileInfo(
+        QString::fromStdWString(asset->path().wstring())).completeBaseName();
+}
+
+qint64 EditorController::sourceDurationNs() const {
+    const auto* asset = timeline_.asset(selected_source_asset_id_.toStdString());
+    return asset == nullptr ? 0 : static_cast<qint64>(asset->duration());
+}
+
+qint64 EditorController::sourceInNs() const {
+    const auto range = selectedSourceRange();
+    return range.has_value() ? range->first : -1;
+}
+
+qint64 EditorController::sourceOutNs() const {
+    const auto range = selectedSourceRange();
+    return range.has_value() ? range->second : -1;
 }
 
 int EditorController::selectedClipVolumePercent() const noexcept {
@@ -3309,6 +3396,8 @@ void EditorController::skim(qint64 timelinePosition, bool active) {
     const auto target = active
         ? std::clamp<qint64>(timelinePosition, 0, durationNs())
         : playhead_ns_;
+    if (active) skim_target_ns_ = target;
+    else skim_target_ns_.reset();
     if (!submitFloatScrubFrame(target)) submitCachedScrubFrame(target);
     if (active) requestAudioSkim(target);
     else stopAudioSkim(true);
@@ -3494,6 +3583,249 @@ void EditorController::insertAssetAtTime(const QString& assetId, qint64 timeline
         playhead_ns_ = insertionTime;
         publishTimeline();
         setStatus("미디어를 타임라인에 삽입했습니다");
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+std::optional<std::pair<qint64, qint64>> EditorController::selectedSourceRange() const {
+    if (selected_source_asset_id_.isEmpty()) return std::nullopt;
+    const auto* asset = timeline_.asset(selected_source_asset_id_.toStdString());
+    if (asset == nullptr || asset->duration() <= 0) return std::nullopt;
+    const auto found = source_ranges_.constFind(selected_source_asset_id_);
+    if (found == source_ranges_.cend()) {
+        return std::pair<qint64, qint64>{0, static_cast<qint64>(asset->duration())};
+    }
+    return std::pair<qint64, qint64>{found->first, found->second};
+}
+
+void EditorController::updateSourcePreview() {
+    if (!source_viewer_open_ || selected_source_asset_id_.isEmpty()) return;
+    submitCachedAssetFrame(
+        selected_source_asset_id_, source_position_ns_, playhead_ns_);
+}
+
+void EditorController::stopSourcePlayback() {
+    const bool changed = source_playing_;
+    source_playing_ = false;
+    source_playback_timer_.stop();
+    source_audio_tick_ = 0;
+    stopAudioSkim(false);
+    if (changed) emit sourceViewerChanged();
+}
+
+void EditorController::openSourceAsset(const QString& assetId) {
+    const auto* asset = timeline_.asset(assetId.toStdString());
+    if (asset == nullptr || asset->duration() <= 0) {
+        setStatus(QStringLiteral("소스 미디어를 열 수 없습니다"));
+        return;
+    }
+    stopSourcePlayback();
+    if (playing_ || preview_should_play_) shuttleStop();
+    selected_source_asset_id_ = assetId;
+    if (!source_ranges_.contains(assetId)) {
+        source_ranges_.insert(assetId, qMakePair<qint64, qint64>(0, asset->duration()));
+    }
+    const auto range = selectedSourceRange();
+    source_position_ns_ = range.has_value() ? range->first : 0;
+    source_viewer_open_ = true;
+    updateSourcePreview();
+    setStatus(QStringLiteral("소스 뷰어 · I/O로 사용할 구간을 표시하세요"));
+    emit sourceViewerChanged();
+}
+
+void EditorController::closeSourceViewer() {
+    stopSourcePlayback();
+    if (!source_viewer_open_) return;
+    source_viewer_open_ = false;
+    if (!submitFloatScrubFrame(playhead_ns_)) submitCachedScrubFrame(playhead_ns_);
+    setStatus(QStringLiteral("프로그램 모니터"));
+    emit sourceViewerChanged();
+}
+
+void EditorController::seekSource(qint64 sourcePosition) {
+    const auto* asset = timeline_.asset(selected_source_asset_id_.toStdString());
+    if (asset == nullptr) return;
+    stopSourcePlayback();
+    source_position_ns_ = std::clamp<qint64>(sourcePosition, 0, asset->duration());
+    updateSourcePreview();
+    emit sourceViewerChanged();
+}
+
+void EditorController::toggleSourcePlayback() {
+    if (!source_viewer_open_) return;
+    const auto range = selectedSourceRange();
+    if (!range.has_value()) return;
+    if (source_playing_) {
+        stopSourcePlayback();
+        setStatus(QStringLiteral("소스 일시 정지"));
+        return;
+    }
+    if (source_position_ns_ < range->first || source_position_ns_ >= range->second) {
+        source_position_ns_ = range->first;
+    }
+    source_playback_origin_ns_ = source_position_ns_;
+    source_playback_clock_.restart();
+    source_audio_tick_ = 0;
+    source_playing_ = true;
+    source_playback_timer_.start();
+    setStatus(QStringLiteral("소스 재생 중 · 타임라인 재생 헤드는 유지됩니다"));
+    emit sourceViewerChanged();
+}
+
+void EditorController::setSourceInPoint() {
+    const auto* asset = timeline_.asset(selected_source_asset_id_.toStdString());
+    if (asset == nullptr) return;
+    stopSourcePlayback();
+    auto range = selectedSourceRange().value_or(
+        std::pair<qint64, qint64>{0, static_cast<qint64>(asset->duration())});
+    auto snapped = asset->nearest_frame_boundary(source_position_ns_);
+    range.first = std::clamp<qint64>(snapped, 0, asset->duration() - 1);
+    if (range.second <= range.first) range.second = asset->duration();
+    source_ranges_.insert(selected_source_asset_id_, qMakePair(range.first, range.second));
+    source_position_ns_ = range.first;
+    updateSourcePreview();
+    emit sourceViewerChanged();
+}
+
+void EditorController::setSourceOutPoint() {
+    const auto* asset = timeline_.asset(selected_source_asset_id_.toStdString());
+    if (asset == nullptr) return;
+    stopSourcePlayback();
+    auto range = selectedSourceRange().value_or(
+        std::pair<qint64, qint64>{0, static_cast<qint64>(asset->duration())});
+    auto snapped = source_position_ns_ >= asset->duration()
+        ? static_cast<qint64>(asset->duration())
+        : static_cast<qint64>(asset->nearest_frame_boundary(source_position_ns_));
+    range.second = std::clamp<qint64>(snapped, range.first + 1, asset->duration());
+    source_ranges_.insert(selected_source_asset_id_, qMakePair(range.first, range.second));
+    source_position_ns_ = range.second;
+    updateSourcePreview();
+    emit sourceViewerChanged();
+}
+
+void EditorController::clearSourceRange() {
+    const auto* asset = timeline_.asset(selected_source_asset_id_.toStdString());
+    if (asset == nullptr) return;
+    stopSourcePlayback();
+    source_ranges_.insert(
+        selected_source_asset_id_, qMakePair<qint64, qint64>(0, asset->duration()));
+    source_position_ns_ = 0;
+    updateSourcePreview();
+    emit sourceViewerChanged();
+}
+
+std::optional<ffgui::Clip> EditorController::makeSelectedSourceClip(
+    const std::string& prefix) {
+    const auto range = selectedSourceRange();
+    if (!range.has_value() || range->second <= range->first) {
+        setStatus(QStringLiteral("소스 인/아웃 구간을 먼저 지정하세요"));
+        return std::nullopt;
+    }
+    const auto* asset = timeline_.asset(selected_source_asset_id_.toStdString());
+    if (asset == nullptr || !asset->contains_range(range->first, range->second - range->first)) {
+        setStatus(QStringLiteral("선택한 소스 구간이 유효하지 않습니다"));
+        return std::nullopt;
+    }
+    return ffgui::Clip{
+        makeUniqueClipId(prefix), selected_source_asset_id_.toStdString(),
+        range->first, range->second - range->first};
+}
+
+qint64 EditorController::sourceEditTimelinePosition() const {
+    return std::clamp<qint64>(skim_target_ns_.value_or(playhead_ns_), 0, durationNs());
+}
+
+void EditorController::appendSelectedSource() {
+    auto clip = makeSelectedSourceClip("append");
+    if (!clip.has_value()) return;
+    try {
+        const auto insertionTime = durationNs();
+        const auto insertedId = clip->id;
+        timeline_.append_clip(std::move(*clip));
+        setSingleSelection(QString::fromStdString(insertedId));
+        playhead_ns_ = insertionTime;
+        closeSourceViewer();
+        publishTimeline();
+        setStatus(QStringLiteral("선택 소스를 타임라인 끝에 추가했습니다"));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::insertSelectedSource() {
+    auto clip = makeSelectedSourceClip("insert");
+    if (!clip.has_value()) return;
+    try {
+        const auto clamped = sourceEditTimelinePosition();
+        const auto insertionTime = timeline_.nearest_frame_time(clamped).value_or(clamped);
+        const auto insertedId = clip->id;
+        timeline_.insert_clip_at(
+            insertionTime, std::move(*clip),
+            makeUniqueClipId("insert-left"), makeUniqueClipId("insert-right"));
+        setSingleSelection(QString::fromStdString(insertedId));
+        playhead_ns_ = insertionTime;
+        closeSourceViewer();
+        publishTimeline();
+        setStatus(QStringLiteral("선택 소스를 재생 헤드 위치에 삽입했습니다"));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::overwriteSelectedSource() {
+    auto clip = makeSelectedSourceClip("overwrite");
+    if (!clip.has_value()) return;
+    if (durationNs() <= 0) {
+        appendSelectedSource();
+        return;
+    }
+    try {
+        const bool fourPoint = in_point_ns_ >= 0 && out_point_ns_ > in_point_ns_;
+        const auto requested = fourPoint ? in_point_ns_ : sourceEditTimelinePosition();
+        const auto position = timeline_.nearest_frame_time(
+            std::clamp<qint64>(requested, 0, durationNs() - 1)).value_or(requested);
+        const auto sourceDuration = clip->duration;
+        clip->duration = std::min<qint64>(clip->duration, durationNs() - position);
+        if (clip->duration <= 0) throw std::invalid_argument("overwrite has no timeline room");
+        const auto insertedId = clip->id;
+        timeline_.overwrite_clip_at(
+            position, std::move(*clip), makeUniqueClipId("overwrite-right"));
+        setSingleSelection(QString::fromStdString(insertedId));
+        playhead_ns_ = position;
+        closeSourceViewer();
+        publishTimeline();
+        const bool conflict = fourPoint && out_point_ns_ - in_point_ns_ != sourceDuration;
+        setStatus(conflict
+            ? QStringLiteral("4점 길이가 달라 소스 길이 기준으로 덮어썼습니다")
+            : QStringLiteral("선택 소스로 덮어썼습니다 · 타임라인 길이 유지"));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::replaceSelectedClipSource() {
+    if (selected_clip_ids_.size() != 1) {
+        setStatus(QStringLiteral("교체할 타임라인 클립 하나를 선택하세요"));
+        return;
+    }
+    const auto range = selectedSourceRange();
+    if (!range.has_value()) return;
+    const auto id = selected_clip_ids_.front().toStdString();
+    const auto found = std::ranges::find_if(timeline_.clips(), [&id](const auto& clip) {
+        return clip.id == id;
+    });
+    if (found == timeline_.clips().end()) return;
+    if (range->second - range->first < found->duration) {
+        setStatus(QStringLiteral("선택 소스의 핸들이 짧아 클립 길이를 유지할 수 없습니다"));
+        return;
+    }
+    try {
+        timeline_.replace_clip_source(
+            id, selected_source_asset_id_.toStdString(), range->first, found->duration);
+        closeSourceViewer();
+        publishTimeline();
+        setStatus(QStringLiteral("선택 클립의 소스를 교체했습니다 · 길이와 효과 유지"));
     } catch (const std::exception& error) {
         setStatus(QString::fromUtf8(error.what()));
     }

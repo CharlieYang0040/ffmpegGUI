@@ -204,8 +204,6 @@ ApplicationWindow {
     Shortcut { sequence: "Up"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(-1) }
     Shortcut { sequence: "Down"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(1) }
     Shortcut { sequence: "Ctrl+K"; onActivated: EditorController.splitAtPlayhead() }
-    Shortcut { sequence: "I"; onActivated: EditorController.setInPoint() }
-    Shortcut { sequence: "O"; onActivated: EditorController.setOutPoint() }
     Shortcut { sequence: "Shift+Delete"; enabled: EditorController.inPointNs >= 0 && EditorController.outPointNs > EditorController.inPointNs; onActivated: EditorController.extractMarkedRange() }
     Shortcut { sequence: "Ctrl+Shift+X"; onActivated: EditorController.clearRange() }
     Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.duplicateSelectedClip() }
@@ -479,6 +477,13 @@ ApplicationWindow {
                         }
                         Item { Layout.fillWidth: true }
                         AppButton {
+                            text: mediaBin.filmstripMode ? "필름" : "목록"
+                            compact: true
+                            onClicked: mediaBin.filmstripMode = !mediaBin.filmstripMode
+                            ToolTip.visible: hovered
+                            ToolTip.text: "보관함 목록/필름스트립 전환"
+                        }
+                        AppButton {
                             text: "+"
                             implicitWidth: 34
                             onClicked: mediaDialog.open()
@@ -494,6 +499,7 @@ ApplicationWindow {
 
                     ListView {
                         id: mediaBin
+                        property bool filmstripMode: true
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
@@ -505,10 +511,14 @@ ApplicationWindow {
                             required property var modelData
                             property string assetId: modelData.id
                             width: ListView.view.width
-                            height: modelData.exrPartOptions.length > 0 ? 140 : 106
+                            height: modelData.exrPartOptions.length > 0
+                                ? (mediaBin.filmstripMode ? 154 : 140)
+                                : (mediaBin.filmstripMode ? 120 : 106)
                             radius: 7
                             color: dragHandler.active ? "#2a3545" : "#1d232b"
-                            border.color: dragHandler.active ? "#6d9cff" : "#2a323d"
+                            border.color: dragHandler.active ? "#6d9cff"
+                                : EditorController.selectedSourceAssetId === mediaCard.assetId
+                                  ? "#f0c66a" : "#2a323d"
 
                             Drag.active: dragHandler.active
                             Drag.keys: ["ffgui/media-asset"]
@@ -525,12 +535,12 @@ ApplicationWindow {
 
                                 Image {
                                     id: mediaThumbnail
-                                    Layout.preferredWidth: 76
+                                    Layout.preferredWidth: mediaBin.filmstripMode ? 142 : 76
                                     Layout.fillHeight: true
                                     source: mediaCard.modelData.thumbnailAtlas.length > 0
                                         ? "file:///" + mediaCard.modelData.thumbnailAtlas.replace(/\\/g, "/")
                                         : ""
-                                    fillMode: Image.PreserveAspectCrop
+                                    fillMode: mediaBin.filmstripMode ? Image.Stretch : Image.PreserveAspectCrop
                                     asynchronous: true
                                     cache: true
                                     Rectangle {
@@ -672,9 +682,11 @@ ApplicationWindow {
                                     text: "+"
                                     implicitWidth: 30
                                     ToolTip.visible: hovered
-                                    ToolTip.text: "재생 헤드 위치에 삽입"
-                                    onClicked: EditorController.insertAssetAtTime(
-                                        mediaCard.assetId, EditorController.playheadNs)
+                                    ToolTip.text: "타임라인 끝에 추가  E"
+                                    onClicked: {
+                                        EditorController.openSourceAsset(mediaCard.assetId)
+                                        EditorController.appendSelectedSource()
+                                    }
                                 }
                             }
 
@@ -683,8 +695,7 @@ ApplicationWindow {
                                 target: null
                             }
                             TapHandler {
-                                onDoubleTapped: EditorController.insertAssetAtTime(
-                                    mediaCard.assetId, EditorController.playheadNs)
+                                onDoubleTapped: EditorController.openSourceAsset(mediaCard.assetId)
                             }
                         }
                     }
@@ -729,6 +740,8 @@ ApplicationWindow {
                             Label {
                                 text: EditorController.previewFailed ? "미리보기 오류"
                                     : EditorController.previewBusy ? "미리보기 준비 중"
+                                    : EditorController.sourceViewerOpen
+                                      ? "소스 모니터 · " + EditorController.sourceAssetName
                                     : EditorController.playing ? "재생 중" : "프로그램 모니터"
                                 color: "#c7d0db"
                                 font.pixelSize: 12
@@ -832,6 +845,115 @@ ApplicationWindow {
                             text: EditorController.importing ? "미디어 분석 중…" : "미디어를 추가하세요"
                             color: "#718094"
                             font.pixelSize: 15
+                        }
+                        Rectangle {
+                            z: 40
+                            visible: EditorController.sourceViewerOpen
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            height: 52
+                            color: "#10151ddd"
+                            border.color: "#354150"
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                spacing: 5
+                                AppButton {
+                                    text: "프로그램"
+                                    compact: true
+                                    onClicked: EditorController.closeSourceViewer()
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "프로그램 모니터로 돌아가기  Esc"
+                                }
+                                AppButton {
+                                    text: EditorController.sourcePlaying ? "Ⅱ" : "▶"
+                                    compact: true
+                                    onClicked: EditorController.toggleSourcePlayback()
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "소스 구간 재생/일시정지  Space"
+                                }
+                                AppButton {
+                                    text: "[ I"
+                                    compact: true
+                                    highlighted: EditorController.sourceInNs >= 0
+                                    onClicked: EditorController.setSourceInPoint()
+                                }
+                                AppButton {
+                                    text: "O ]"
+                                    compact: true
+                                    highlighted: EditorController.sourceOutNs >= 0
+                                    onClicked: EditorController.setSourceOutPoint()
+                                }
+                                Slider {
+                                    Layout.fillWidth: true
+                                    from: 0
+                                    to: Math.max(1, EditorController.sourceDurationNs)
+                                    value: EditorController.sourcePositionNs
+                                    onMoved: EditorController.seekSource(value)
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "소스 " + root.durationText(EditorController.sourceInNs)
+                                                  + " – " + root.durationText(EditorController.sourceOutNs)
+                                }
+                                Label {
+                                    text: root.durationText(EditorController.sourcePositionNs)
+                                    color: "#d3dbe5"
+                                    font.family: "Consolas"
+                                    font.pixelSize: 11
+                                }
+                                Rectangle {
+                                    Layout.preferredWidth: 44
+                                    Layout.preferredHeight: 28
+                                    radius: 4
+                                    color: sourceRangeDrag.active ? "#36547b" : "#27313d"
+                                    border.color: "#526273"
+                                    Drag.active: sourceRangeDrag.active
+                                    Drag.keys: ["ffgui/source-range"]
+                                    Drag.mimeData: {
+                                        "application/x-ffgui-source-range":
+                                            EditorController.selectedSourceAssetId
+                                    }
+                                    Drag.hotSpot.x: width / 2
+                                    Drag.hotSpot.y: height / 2
+                                    Label {
+                                        anchors.centerIn: parent
+                                        text: "끌기"
+                                        color: "#dbe6f2"
+                                        font.pixelSize: 10
+                                    }
+                                    DragHandler { id: sourceRangeDrag; target: null }
+                                }
+                                AppButton {
+                                    text: "E 끝"
+                                    compact: true
+                                    visible: previewSurface.width > 720
+                                    onClicked: EditorController.appendSelectedSource()
+                                }
+                                AppButton {
+                                    text: "W 삽입"
+                                    compact: true
+                                    visible: previewSurface.width > 720
+                                    onClicked: EditorController.insertSelectedSource()
+                                }
+                                AppButton {
+                                    text: "D 덮기"
+                                    compact: true
+                                    visible: previewSurface.width > 720
+                                    enabled: EditorController.durationNs > 0
+                                    onClicked: EditorController.overwriteSelectedSource()
+                                }
+                                AppButton {
+                                    text: "교체"
+                                    compact: true
+                                    visible: previewSurface.width > 820
+                                    enabled: EditorController.selectedClipIds.length === 1
+                                    onClicked: EditorController.replaceSelectedClipSource()
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "선택 클립 길이를 유지하며 소스 교체  Shift+R"
+                                }
+                            }
                         }
                         Label {
                             anchors.left: parent.left
@@ -2610,23 +2732,67 @@ ApplicationWindow {
                         id: mediaDropArea
                         anchors.fill: parent
                         z: 5
-                        keys: ["ffgui/media-asset"]
+                        keys: ["ffgui/media-asset", "ffgui/source-range"]
                         property real indicatorX: 0
-                        onPositionChanged: drag => indicatorX = drag.x
+                        property bool sourceRangeDrag: false
+                        onEntered: drag => sourceRangeDrag = drag.keys.indexOf("ffgui/source-range") >= 0
+                        onExited: sourceRangeDrag = false
+                        onPositionChanged: drag => {
+                            indicatorX = drag.x
+                            sourceRangeDrag = drag.keys.indexOf("ffgui/source-range") >= 0
+                        }
                         onDropped: drop => {
-                            EditorController.insertAssetAtTime(
-                                drop.getDataAsString("application/x-ffgui-asset-id"),
-                                timeline.timelineTimeAt(drop.x))
+                            if (drop.keys.indexOf("ffgui/source-range") >= 0) {
+                                if (drop.x < width / 3) {
+                                    EditorController.appendSelectedSource()
+                                } else {
+                                    EditorController.seek(timeline.timelineTimeAt(drop.x))
+                                    if (drop.x < width * 2 / 3)
+                                        EditorController.insertSelectedSource()
+                                    else
+                                        EditorController.overwriteSelectedSource()
+                                }
+                            } else {
+                                EditorController.insertAssetAtTime(
+                                    drop.getDataAsString("application/x-ffgui-asset-id"),
+                                    timeline.timelineTimeAt(drop.x))
+                            }
+                            sourceRangeDrag = false
                             drop.acceptProposedAction()
                         }
 
                         Rectangle {
-                            visible: mediaDropArea.containsDrag
+                            visible: mediaDropArea.containsDrag && !mediaDropArea.sourceRangeDrag
                             x: Math.max(12, Math.min(parent.width - 12, mediaDropArea.indicatorX)) - 1
                             y: 8
                             width: 2
                             height: parent.height - 18
                             color: "#78a5ff"
+                        }
+                        Row {
+                            anchors.fill: parent
+                            visible: mediaDropArea.containsDrag && mediaDropArea.sourceRangeDrag
+                            spacing: 2
+                            Repeater {
+                                model: ["E  끝에 추가", "W  삽입", "D  덮어쓰기"]
+                                delegate: Rectangle {
+                                    required property string modelData
+                                    required property int index
+                                    width: (mediaDropArea.width - 4) / 3
+                                    height: mediaDropArea.height
+                                    color: index === 0 ? "#234231dd"
+                                         : index === 1 ? "#213b5add" : "#5a3521dd"
+                                    border.color: index === 0 ? "#61c47d"
+                                                : index === 1 ? "#78a5ff" : "#e49a5c"
+                                    Label {
+                                        anchors.centerIn: parent
+                                        text: modelData
+                                        color: "white"
+                                        font.bold: true
+                                        font.pixelSize: 14
+                                    }
+                                }
+                            }
                         }
                     }
                 }

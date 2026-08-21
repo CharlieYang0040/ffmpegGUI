@@ -247,6 +247,14 @@ if ($transport.ExitCode -ne 0) {
 }
 Write-Output "JKL/skimming passed: slow and frame combinations, play-around, and head-stable skim audio delivered real buffers"
 
+$sourceEdit = Start-Process -FilePath $application `
+    -ArgumentList @("--source-edit-smoke", $clipA, $clipB) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($sourceEdit.ExitCode -ne 0) {
+    throw "source viewer and E/W/D edit modes failed with code $($sourceEdit.ExitCode)"
+}
+Write-Output "Source editing passed: source I/O, head-stable playback, append, insert, overwrite, replace and one-step undo"
+
 $managedColorPlayback = Start-Process -FilePath $application `
     -ArgumentList @("--float-video-smoke", $clipA, $clipB, $clipVfr) `
     -WindowStyle Hidden -Wait -PassThru

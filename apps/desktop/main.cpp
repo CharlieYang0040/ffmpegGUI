@@ -155,6 +155,7 @@ int main(int argc, char* argv[]) {
     bool floatExportSmoke = false;
     bool floatVideoSmoke = false;
     bool transportSmoke = false;
+    bool sourceEditSmoke = false;
     int editingSoakSeconds = 0;
     QString exrSelectionSmokeProject;
     const auto arguments = application.arguments();
@@ -200,6 +201,10 @@ int main(int argc, char* argv[]) {
         }
         if (arguments[index] == "--transport-smoke") {
             transportSmoke = true;
+            continue;
+        }
+        if (arguments[index] == "--source-edit-smoke") {
+            sourceEditSmoke = true;
             continue;
         }
         if (arguments[index] == "--editing-soak" && index + 1 < arguments.size()) {
@@ -248,7 +253,7 @@ int main(int argc, char* argv[]) {
         if (controller.durationNs() <= 0) return EXIT_FAILURE;
     }
     if ((!roundtripProject.isEmpty() || !exportSmokeOutput.isEmpty() || playbackSmoke ||
-         floatVideoSmoke || transportSmoke || editingSoakSeconds > 0 ||
+         floatVideoSmoke || transportSmoke || sourceEditSmoke || editingSoakSeconds > 0 ||
          !exrSelectionSmokeProject.isEmpty()) &&
         controller.importing()) {
         QEventLoop importLoop;
@@ -513,6 +518,108 @@ int main(int argc, char* argv[]) {
                 skimAudioPassed && slowComboPassed && frameComboPassed &&
                 controller.videoFramesDelivered() > deliveredBefore &&
                 controller.audioBuffersReceived() > audioBefore;
+            application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
+        });
+        return application.exec();
+    }
+    if (sourceEditSmoke) {
+        const auto assets = controller.mediaAssets();
+        const auto originalClips = controller.clips();
+        if (assets.size() < 2 || originalClips.size() < 2) return EXIT_FAILURE;
+        auto sourceAsset = assets.front().toMap();
+        for (const auto& value : assets) {
+            if (value.toMap().value("durationNs").toLongLong() >
+                sourceAsset.value("durationNs").toLongLong()) {
+                sourceAsset = value.toMap();
+            }
+        }
+        const auto sourceId = sourceAsset.value("id").toString();
+        const auto sourceDuration = sourceAsset.value("durationNs").toLongLong();
+        QVariantMap replacementTarget;
+        for (const auto& value : originalClips) {
+            const auto candidate = value.toMap();
+            if (candidate.value("assetId").toString() != sourceId &&
+                candidate.value("sourceDurationNs").toLongLong() <= sourceDuration) {
+                replacementTarget = candidate;
+                break;
+            }
+        }
+        if (replacementTarget.isEmpty()) return EXIT_FAILURE;
+        const auto baselineDuration = controller.durationNs();
+        controller.openSourceAsset(sourceId);
+        controller.seekSource(sourceDuration / 4);
+        controller.setSourceInPoint();
+        controller.seekSource(sourceDuration * 3 / 4);
+        controller.setSourceOutPoint();
+        const auto selectedDuration = controller.sourceOutNs() - controller.sourceInNs();
+        if (selectedDuration <= 0) return EXIT_FAILURE;
+
+        controller.appendSelectedSource();
+        const bool appendPassed = controller.durationNs() == baselineDuration + selectedDuration &&
+            controller.canUndo();
+        controller.undo();
+        const bool appendUndoPassed = controller.durationNs() == baselineDuration &&
+            controller.clips().size() == originalClips.size();
+
+        controller.openSourceAsset(sourceId);
+        controller.seek(baselineDuration / 3);
+        controller.insertSelectedSource();
+        const bool insertPassed = controller.durationNs() == baselineDuration + selectedDuration;
+        controller.undo();
+        const bool insertUndoPassed = controller.durationNs() == baselineDuration &&
+            controller.clips().size() == originalClips.size();
+
+        controller.openSourceAsset(sourceId);
+        controller.seek(baselineDuration / 4);
+        controller.overwriteSelectedSource();
+        const bool overwritePassed = controller.durationNs() == baselineDuration &&
+            controller.clips().size() >= originalClips.size();
+        controller.undo();
+        const bool overwriteUndoPassed = controller.durationNs() == baselineDuration &&
+            controller.clips().size() == originalClips.size();
+
+        controller.openSourceAsset(sourceId);
+        controller.clearSourceRange();
+        controller.selectClip(replacementTarget.value("id").toString());
+        controller.replaceSelectedClipSource();
+        const auto replacedClips = controller.clips();
+        const auto replaced = std::ranges::find_if(replacedClips, [&](const auto& value) {
+            return value.toMap().value("id") == replacementTarget.value("id");
+        });
+        const bool replacePassed = controller.durationNs() == baselineDuration &&
+            replaced != replacedClips.end() &&
+            replaced->toMap().value("assetId").toString() == sourceId;
+        controller.undo();
+        const auto restoredClips = controller.clips();
+        const auto restored = std::ranges::find_if(restoredClips, [&](const auto& value) {
+            return value.toMap().value("id") == replacementTarget.value("id");
+        });
+        const bool replaceUndoPassed = restored != restoredClips.end() &&
+            restored->toMap().value("assetId") == replacementTarget.value("assetId");
+
+        controller.openSourceAsset(sourceId);
+        controller.seekSource(sourceDuration / 3);
+        const auto sourceStart = controller.sourcePositionNs();
+        const auto timelineHead = controller.playheadNs();
+        const auto audioBefore = controller.audioBuffersReceived();
+        controller.toggleSourcePlayback();
+        QTimer::singleShot(900, &application, [&] {
+            controller.toggleSourcePlayback();
+            const bool sourcePlaybackPassed = controller.sourcePositionNs() > sourceStart &&
+                controller.playheadNs() == timelineHead &&
+                controller.audioBuffersReceived() > audioBefore;
+            const bool passed = appendPassed && appendUndoPassed && insertPassed &&
+                insertUndoPassed && overwritePassed && overwriteUndoPassed &&
+                replacePassed && replaceUndoPassed && sourcePlaybackPassed &&
+                !controller.previewFailed();
+            qInfo().noquote() << "source edit smoke"
+                              << "append=" << appendPassed << appendUndoPassed
+                              << "insert=" << insertPassed << insertUndoPassed
+                              << "overwrite=" << overwritePassed << overwriteUndoPassed
+                              << "replace=" << replacePassed << replaceUndoPassed
+                              << "source_playback=" << sourcePlaybackPassed
+                              << "audio_delta=" << controller.audioBuffersReceived() - audioBefore
+                              << "passed=" << passed;
             application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
         });
         return application.exec();

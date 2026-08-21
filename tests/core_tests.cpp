@@ -1155,6 +1155,58 @@ void test_time_insert_splits_once_and_is_single_step_undoable() {
     require(timeline.clips().back().id == "tail", "inserting at the end must append");
 }
 
+void test_overwrite_preserves_duration_remainders_grades_and_single_undo() {
+    auto timeline = make_timeline();
+    Clip original{"original", "asset-a", seconds(1), seconds(6)};
+    original.audio.gain = 0.75;
+    original.color.saturation = 1.2;
+    original.grade.add(ffgui::make_default_grade_node(
+        ffgui::GradeNodeType::primary, "original-grade"));
+    timeline.append_clip(std::move(original));
+    timeline.clear_history();
+
+    timeline.overwrite_clip_at(
+        seconds(2), Clip{"overwrite", "asset-b", seconds(3), seconds(2)}, "right");
+    const auto& clips = timeline.clips();
+    require(clips.size() == 3, "overwrite inside a clip must keep both remainders");
+    require(clips[0].id == "original" && clips[0].source_in == seconds(1) &&
+                clips[0].duration == seconds(2),
+            "overwrite left remainder must preserve its original source range");
+    require(clips[1].id == "overwrite" && clips[1].asset_id == "asset-b",
+            "overwrite media must occupy the requested range");
+    require(clips[2].id == "right" && clips[2].source_in == seconds(5) &&
+                clips[2].duration == seconds(2),
+            "overwrite right remainder must resume after the removed source range");
+    require(clips[0].grade.nodes().size() == 1 && clips[2].grade.nodes().size() == 1 &&
+                clips[0].audio.gain == 0.75 && clips[2].color.saturation == 1.2,
+            "overwrite remainders must preserve grade, audio and color settings");
+    require(timeline.duration() == seconds(6), "overwrite must preserve timeline duration");
+    require(timeline.undo(), "overwrite must be one undoable edit");
+    require(timeline.clips().size() == 1 && timeline.clips()[0].id == "original",
+            "one undo must restore the original unsplit clip");
+}
+
+void test_replace_source_preserves_clip_timing_settings_and_single_undo() {
+    auto timeline = make_timeline();
+    Clip original{"original", "asset-a", seconds(1), seconds(4)};
+    original.audio.muted = true;
+    original.color.contrast = 1.3;
+    timeline.append_clip(std::move(original));
+    timeline.clear_history();
+
+    timeline.replace_clip_source("original", "asset-b", seconds(3), seconds(4));
+    const auto& replaced = timeline.clips().front();
+    require(replaced.asset_id == "asset-b" && replaced.source_in == seconds(3) &&
+                replaced.duration == seconds(4),
+            "source replacement must use the selected source range");
+    require(replaced.audio.muted && replaced.color.contrast == 1.3 &&
+                timeline.duration() == seconds(4),
+            "source replacement must preserve clip settings and timeline duration");
+    require(timeline.undo(), "source replacement must be one undoable edit");
+    require(timeline.clips().front().asset_id == "asset-a",
+            "one undo must restore the original source");
+}
+
 void test_multi_clip_delete_is_atomic_magnetic_and_undoable() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"a", "asset-a", 0, seconds(1)});
@@ -2040,6 +2092,8 @@ int main() {
         {"reorder_uses_insertion_index_after_removal", test_reorder_uses_insertion_index_after_removal},
         {"duplicate_style_insert_is_magnetic_and_undoable", test_duplicate_style_insert_is_magnetic_and_undoable},
         {"time_insert_splits_once_and_is_single_step_undoable", test_time_insert_splits_once_and_is_single_step_undoable},
+        {"overwrite_preserves_duration_remainders_grades_and_single_undo", test_overwrite_preserves_duration_remainders_grades_and_single_undo},
+        {"replace_source_preserves_clip_timing_settings_and_single_undo", test_replace_source_preserves_clip_timing_settings_and_single_undo},
         {"multi_clip_delete_is_atomic_magnetic_and_undoable", test_multi_clip_delete_is_atomic_magnetic_and_undoable},
         {"multi_clip_insert_is_atomic_ordered_and_undoable", test_multi_clip_insert_is_atomic_ordered_and_undoable},
         {"multi_clip_move_preserves_order_and_skips_noop_history", test_multi_clip_move_preserves_order_and_skips_noop_history},

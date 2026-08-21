@@ -28,6 +28,7 @@
 #include <atomic>
 #include <mutex>
 #include <optional>
+#include <utility>
 
 class QQmlEngine;
 class QJSEngine;
@@ -44,6 +45,14 @@ class EditorController final : public QObject {
     Q_PROPERTY(qint64 playheadNs READ playheadNs NOTIFY playheadChanged)
     Q_PROPERTY(qint64 inPointNs READ inPointNs NOTIFY rangeChanged)
     Q_PROPERTY(qint64 outPointNs READ outPointNs NOTIFY rangeChanged)
+    Q_PROPERTY(QString selectedSourceAssetId READ selectedSourceAssetId NOTIFY sourceViewerChanged)
+    Q_PROPERTY(QString sourceAssetName READ sourceAssetName NOTIFY sourceViewerChanged)
+    Q_PROPERTY(qint64 sourceDurationNs READ sourceDurationNs NOTIFY sourceViewerChanged)
+    Q_PROPERTY(qint64 sourcePositionNs READ sourcePositionNs NOTIFY sourceViewerChanged)
+    Q_PROPERTY(qint64 sourceInNs READ sourceInNs NOTIFY sourceViewerChanged)
+    Q_PROPERTY(qint64 sourceOutNs READ sourceOutNs NOTIFY sourceViewerChanged)
+    Q_PROPERTY(bool sourceViewerOpen READ sourceViewerOpen NOTIFY sourceViewerChanged)
+    Q_PROPERTY(bool sourcePlaying READ sourcePlaying NOTIFY sourceViewerChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
     Q_PROPERTY(qreal shuttleRate READ shuttleRate NOTIFY shuttleRateChanged)
     Q_PROPERTY(bool previewBusy READ previewBusy NOTIFY previewBusyChanged)
@@ -151,6 +160,14 @@ public:
     [[nodiscard]] qint64 playheadNs() const noexcept { return playhead_ns_; }
     [[nodiscard]] qint64 inPointNs() const noexcept { return in_point_ns_; }
     [[nodiscard]] qint64 outPointNs() const noexcept { return out_point_ns_; }
+    [[nodiscard]] QString selectedSourceAssetId() const { return selected_source_asset_id_; }
+    [[nodiscard]] QString sourceAssetName() const;
+    [[nodiscard]] qint64 sourceDurationNs() const;
+    [[nodiscard]] qint64 sourcePositionNs() const noexcept { return source_position_ns_; }
+    [[nodiscard]] qint64 sourceInNs() const;
+    [[nodiscard]] qint64 sourceOutNs() const;
+    [[nodiscard]] bool sourceViewerOpen() const noexcept { return source_viewer_open_; }
+    [[nodiscard]] bool sourcePlaying() const noexcept { return source_playing_; }
     [[nodiscard]] bool playing() const noexcept { return playing_; }
     [[nodiscard]] qreal shuttleRate() const noexcept { return shuttle_rate_; }
     [[nodiscard]] bool previewBusy() const noexcept { return preview_busy_; }
@@ -318,6 +335,17 @@ public slots:
     void moveClip(const QString& clipId, int insertionIndex);
     void moveClips(const QStringList& clipIds, int insertionIndex);
     void insertAssetAtTime(const QString& assetId, qint64 timelinePosition);
+    void openSourceAsset(const QString& assetId);
+    void closeSourceViewer();
+    void seekSource(qint64 sourcePosition);
+    void toggleSourcePlayback();
+    void setSourceInPoint();
+    void setSourceOutPoint();
+    void clearSourceRange();
+    void appendSelectedSource();
+    void insertSelectedSource();
+    void overwriteSelectedSource();
+    void replaceSelectedClipSource();
     void updateExrSelection(
         const QString& assetId,
         const QString& part,
@@ -442,6 +470,7 @@ signals:
     void captionsChanged();
     void playheadChanged();
     void rangeChanged();
+    void sourceViewerChanged();
     void playingChanged();
     void shuttleRateChanged();
     void previewBusyChanged();
@@ -493,6 +522,11 @@ private:
     [[nodiscard]] std::optional<qint64> timelineTimeForAssetSource(
         const QString& asset_id, qint64 source_time) const;
     [[nodiscard]] bool transportTextInputFocused() const;
+    [[nodiscard]] std::optional<std::pair<qint64, qint64>> selectedSourceRange() const;
+    [[nodiscard]] qint64 sourceEditTimelinePosition() const;
+    [[nodiscard]] std::optional<ffgui::Clip> makeSelectedSourceClip(const std::string& prefix);
+    void updateSourcePreview();
+    void stopSourcePlayback();
     void queueLiveSeek(qint64 timelinePosition);
     void pumpLiveSeek();
     void submitCachedScrubFrame(qint64 timelinePosition);
@@ -650,9 +684,19 @@ private:
     QTimer float_playback_timer_;
     QTimer audio_skim_debounce_timer_;
     QTimer audio_skim_stop_timer_;
+    QTimer source_playback_timer_;
+    QElapsedTimer source_playback_clock_;
+    qint64 source_playback_origin_ns_{};
+    int source_audio_tick_{};
     std::optional<qint64> pending_audio_skim_ns_;
     bool audio_skim_hover_active_{};
     bool audio_skimming_{};
+    QString selected_source_asset_id_;
+    QHash<QString, QPair<qint64, qint64>> source_ranges_;
+    qint64 source_position_ns_{};
+    bool source_viewer_open_{};
+    bool source_playing_{};
+    std::optional<qint64> skim_target_ns_;
     QElapsedTimer float_playback_clock_;
     qint64 float_playback_origin_ns_{};
     bool float_playback_running_{};

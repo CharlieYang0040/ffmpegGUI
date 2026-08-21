@@ -110,6 +110,15 @@ public:
         Clip clip,
         std::string left_clip_id,
         std::string right_clip_id);
+    void overwrite_clip_at(
+        TimeNs timeline_position,
+        Clip clip,
+        std::string right_remainder_id);
+    void replace_clip_source(
+        const std::string& clip_id,
+        std::string asset_id,
+        TimeNs source_in,
+        TimeNs duration);
     void trim_clip(const std::string& clip_id, TimeNs source_in, TimeNs duration);
     void trim_clip_to_frame_boundaries(
         const std::string& clip_id, TimeNs source_in, TimeNs duration);
