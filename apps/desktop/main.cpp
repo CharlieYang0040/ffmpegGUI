@@ -11,6 +11,7 @@
 #include <QMutexLocker>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QStandardPaths>
@@ -108,22 +109,26 @@ int main(int argc, char* argv[]) {
     const auto logPath = initializeApplicationLog();
     qInfo().noquote() << "application started; log=" << logPath;
     std::atomic<qint64> uiHeartbeat{monotonicMilliseconds()};
+    std::atomic<qint64> uiMaximumDelay{0};
     QTimer uiHeartbeatTimer;
-    uiHeartbeatTimer.setInterval(250);
+    uiHeartbeatTimer.setInterval(50);
     QObject::connect(&uiHeartbeatTimer, &QTimer::timeout, &application, [&uiHeartbeat] {
         uiHeartbeat.store(monotonicMilliseconds(), std::memory_order_relaxed);
     });
     uiHeartbeatTimer.start();
-    std::jthread uiWatchdog([&uiHeartbeat](std::stop_token stopToken) {
+    std::jthread uiWatchdog([&uiHeartbeat, &uiMaximumDelay](std::stop_token stopToken) {
         bool reported = false;
         while (!stopToken.stop_requested()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             const auto delay = monotonicMilliseconds() -
                 uiHeartbeat.load(std::memory_order_relaxed);
+            auto maximum = uiMaximumDelay.load(std::memory_order_relaxed);
+            while (delay > maximum && !uiMaximumDelay.compare_exchange_weak(
+                       maximum, delay, std::memory_order_relaxed)) {}
             if (delay >= 2'000 && !reported) {
                 qWarning().noquote() << "UI event loop stalled for at least" << delay << "ms";
                 reported = true;
-            } else if (delay < 750 && reported) {
+            } else if (delay < 250 && reported) {
                 qInfo().noquote() << "UI event loop recovered";
                 reported = false;
             }
@@ -148,6 +153,7 @@ int main(int argc, char* argv[]) {
     bool gifExportSmoke = false;
     bool floatExportSmoke = false;
     bool floatVideoSmoke = false;
+    int editingSoakSeconds = 0;
     QString exrSelectionSmokeProject;
     const auto arguments = application.arguments();
     for (int index = 1; index < arguments.size(); ++index) {
@@ -188,6 +194,10 @@ int main(int argc, char* argv[]) {
         }
         if (arguments[index] == "--float-video-smoke") {
             floatVideoSmoke = true;
+            continue;
+        }
+        if (arguments[index] == "--editing-soak" && index + 1 < arguments.size()) {
+            editingSoakSeconds = std::max(1, arguments[++index].toInt());
             continue;
         }
         if (arguments[index] == "--exr-selection-smoke" && index + 1 < arguments.size()) {
@@ -232,7 +242,7 @@ int main(int argc, char* argv[]) {
         if (controller.durationNs() <= 0) return EXIT_FAILURE;
     }
     if ((!roundtripProject.isEmpty() || !exportSmokeOutput.isEmpty() || playbackSmoke ||
-         floatVideoSmoke || !exrSelectionSmokeProject.isEmpty()) &&
+         floatVideoSmoke || editingSoakSeconds > 0 || !exrSelectionSmokeProject.isEmpty()) &&
         controller.importing()) {
         QEventLoop importLoop;
         QTimer importTimeout;
@@ -421,6 +431,158 @@ int main(int argc, char* argv[]) {
                           << "passed=" << passed;
         controller.togglePlayback();
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    if (editingSoakSeconds > 0) {
+        const auto initialClips = controller.clips();
+        if (initialClips.size() < 2 || engine.rootObjects().isEmpty()) return EXIT_FAILURE;
+        const auto primaryClipId = initialClips.front().toMap().value("id").toString();
+        controller.selectClip(primaryClipId);
+        controller.addGradeNode(static_cast<int>(ffgui::GradeNodeType::primary));
+        controller.addGradeNode(static_cast<int>(ffgui::GradeNodeType::log_wheels));
+        const auto nodes = controller.selectedGradeNodes();
+        if (nodes.size() < 2) return EXIT_FAILURE;
+        const auto primaryGradeId = nodes.front().toMap().value("id").toString();
+        const auto logGradeId = nodes.back().toMap().value("id").toString();
+        auto* rootObject = engine.rootObjects().front();
+        auto* previewSurface = rootObject->findChild<QQuickItem*>("previewSurface");
+        auto* previewLoader = rootObject->findChild<QQuickItem*>("previewVideoLoader");
+        if (previewSurface == nullptr || previewLoader == nullptr) return EXIT_FAILURE;
+
+        uiHeartbeat.store(monotonicMilliseconds(), std::memory_order_relaxed);
+        uiMaximumDelay.store(0, std::memory_order_relaxed);
+        const auto deliveredBefore = controller.videoFramesDelivered();
+        qint64 maximumOperationMs = 0;
+        qint64 maximumStructureMs = 0;
+        int tick = 0;
+        int structureOperations = 0;
+        bool pendingUndo = false;
+        bool gradeEnabled = true;
+        bool expanded = false;
+        QTimer editingTimer;
+        editingTimer.setInterval(250);
+        QObject::connect(&editingTimer, &QTimer::timeout, &application, [&] {
+            QElapsedTimer elapsed;
+            elapsed.start();
+            bool structureOperation = false;
+            QString operationKind = "interactive";
+            const auto currentClips = controller.clips();
+            if (currentClips.size() < 2) {
+                application.exit(31);
+                return;
+            }
+            if (pendingUndo) {
+                structureOperation = true;
+                operationKind = "undo";
+                controller.undo();
+                pendingUndo = false;
+                controller.selectClip(primaryClipId);
+            } else if (tick > 0 && tick % 80 == 0) {
+                structureOperation = true;
+                operationKind = "split";
+                const auto first = currentClips.front().toMap();
+                controller.seek(first.value("timelineInNs").toLongLong() +
+                    first.value("durationNs").toLongLong() / 2);
+                controller.splitAtPlayhead();
+                pendingUndo = true;
+            } else if (tick > 0 && tick % 80 == 40) {
+                structureOperation = true;
+                operationKind = "trim";
+                const auto first = currentClips.front().toMap();
+                const auto duration = first.value("durationNs").toLongLong();
+                if (duration > 200'000'000) {
+                    controller.trimClip(first.value("id").toString(),
+                        first.value("sourceInNs").toLongLong() + 33'000'000,
+                        duration - 66'000'000);
+                    pendingUndo = true;
+                }
+            } else if (tick > 0 && tick % 40 == 20) {
+                structureOperation = true;
+                operationKind = "move";
+                controller.moveClip(currentClips.front().toMap().value("id").toString(),
+                    currentClips.size() - 1);
+            } else {
+                switch (tick % 10) {
+                case 0:
+                    controller.scrub((static_cast<qint64>(tick) * 97'000'000) %
+                        std::max<qint64>(1, controller.durationNs()), false);
+                    break;
+                case 1:
+                    controller.selectClip(primaryClipId);
+                    controller.setGradeParameter(primaryGradeId, "exposure",
+                        -0.75 + static_cast<double>(tick % 31) * 0.05);
+                    break;
+                case 2:
+                    expanded = !expanded;
+                    rootObject->setProperty("expandedNode", expanded ? "effects" : "");
+                    rootObject->setProperty(
+                        "expandedGradeNode", expanded ? primaryGradeId : QString{});
+                    break;
+                case 3:
+                    controller.selectClip(currentClips.at((tick / 10) % currentClips.size())
+                        .toMap().value("id").toString());
+                    break;
+                case 4:
+                    controller.scrub((static_cast<qint64>(tick) * 131'000'000) %
+                        std::max<qint64>(1, controller.durationNs()), true);
+                    break;
+                case 5:
+                    gradeEnabled = !gradeEnabled;
+                    controller.selectClip(primaryClipId);
+                    controller.setGradeNodeEnabled(logGradeId, gradeEnabled);
+                    break;
+                case 6:
+                    controller.setSelectedClipVolumePercent(80 + tick % 40);
+                    break;
+                case 7:
+                    controller.setScopesVisible(!controller.scopesVisible());
+                    break;
+                default:
+                    if (!controller.previewBusy() && !controller.playing()) {
+                        controller.togglePlayback();
+                    }
+                    break;
+                }
+            }
+            maximumOperationMs = std::max(maximumOperationMs, elapsed.elapsed());
+            if (structureOperation) {
+                maximumStructureMs = std::max(maximumStructureMs, elapsed.elapsed());
+                ++structureOperations;
+                qInfo().noquote() << "editing soak structure operation"
+                                  << "kind=" << operationKind
+                                  << "elapsed_ms=" << elapsed.elapsed();
+            }
+            ++tick;
+        });
+        editingTimer.start();
+        QTimer::singleShot(editingSoakSeconds * 1000, &application, [&] {
+            editingTimer.stop();
+            QTimer::singleShot(5'000, &application, [&] {
+                const bool previewContained =
+                    previewLoader->x() >= -0.5 && previewLoader->y() >= -0.5 &&
+                    previewLoader->x() + previewLoader->width() <= previewSurface->width() + 0.5 &&
+                    previewLoader->y() + previewLoader->height() <= previewSurface->height() + 0.5;
+                const auto delivered = controller.videoFramesDelivered() - deliveredBefore;
+                const auto uiDelay = uiMaximumDelay.load(std::memory_order_relaxed);
+                qInfo().noquote() << "editing soak counters"
+                                  << "seconds=" << editingSoakSeconds
+                                  << "operations=" << tick
+                                  << "structure_operations=" << structureOperations
+                                  << "max_operation_ms=" << maximumOperationMs
+                                  << "max_structure_ms=" << maximumStructureMs
+                                  << "ui_max_delay_ms=" << uiDelay
+                                  << "delivered_delta=" << delivered
+                                  << "preview_busy=" << controller.previewBusy()
+                                  << "preview_failed=" << controller.previewFailed()
+                                  << "preview_contained=" << previewContained;
+                if (controller.previewFailed()) application.exit(32);
+                else if (!previewContained) application.exit(33);
+                else if (maximumStructureMs >= 50) application.exit(34);
+                else if (uiDelay >= 500) application.exit(35);
+                else if (delivered < 30) application.exit(36);
+                else application.exit(EXIT_SUCCESS);
+            });
+        });
+        return application.exec();
     }
     if (!roundtripProject.isEmpty()) {
         const auto importedClips = controller.clips();

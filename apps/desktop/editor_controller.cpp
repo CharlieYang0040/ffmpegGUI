@@ -253,8 +253,21 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     });
     connect(this, &EditorController::selectedClipChanged,
             this, &EditorController::gradeUiChanged);
-    connect(this, &EditorController::timelineChanged,
-            this, &EditorController::gradeUiChanged);
+    model_update_timer_.setSingleShot(true);
+    model_update_timer_.setInterval(0);
+    connect(&model_update_timer_, &QTimer::timeout, this, [this] {
+        emit clipsChanged();
+        emit mediaAssetsChanged();
+        emit captionsChanged();
+        emit selectedClipChanged();
+        emit captionSelectionChanged();
+        emit historyChanged();
+    });
+    selection_update_timer_.setSingleShot(true);
+    selection_update_timer_.setInterval(0);
+    connect(&selection_update_timer_, &QTimer::timeout, this, [this] {
+        emit selectedClipChanged();
+    });
     QSettings settings;
     output_directory_ = settings.value(QStringLiteral("output/lastDirectory")).toString();
     if (output_directory_.isEmpty()) {
@@ -3011,7 +3024,7 @@ void EditorController::selectClip(const QString& clipId, int mode) {
     } else {
         setSingleSelection(clipId);
     }
-    emit selectedClipChanged();
+    selection_update_timer_.start();
 }
 
 void EditorController::trimClip(const QString& clipId, qint64 sourceIn, qint64 duration) {
@@ -3562,11 +3575,19 @@ void EditorController::duplicateSelectedClip() {
 }
 
 void EditorController::undo() {
+    QElapsedTimer undoElapsed;
+    undoElapsed.start();
     if (timeline_.undo()) {
+        const auto modelElapsed = undoElapsed.elapsed();
         setSingleSelection(timeline_.clips().empty()
             ? QString{}
             : QString::fromStdString(timeline_.clips().front().id));
         publishTimeline();
+        if (undoElapsed.elapsed() >= 50) {
+            qWarning().noquote() << "undo blocked the UI"
+                                 << "model_ms=" << modelElapsed
+                                 << "publish_ms=" << undoElapsed.elapsed() - modelElapsed;
+        }
     }
 }
 
@@ -5374,10 +5395,10 @@ void EditorController::publishTimeline(bool resetPlayhead) {
         out_point_ns_ = -1;
     }
     emit timelineChanged();
+    model_update_timer_.start();
     emit gifEstimateChanged();
     emit playheadChanged();
     if (previousIn != in_point_ns_ || previousOut != out_point_ns_) emit rangeChanged();
-    emit selectedClipChanged();
     if (!selected_caption_id_.isEmpty()) {
         const auto selected = selected_caption_id_.toStdString();
         if (std::ranges::none_of(timeline_.captions(),
@@ -5385,8 +5406,6 @@ void EditorController::publishTimeline(bool resetPlayhead) {
             selected_caption_id_.clear();
         }
     }
-    emit captionSelectionChanged();
-    emit historyChanged();
 #ifdef FFGUI_HAS_GES
     preview_update_timer_.start();
     setStatus(timeline_.clips().empty() ? "미디어를 추가하세요" : "미리보기 갱신 중");

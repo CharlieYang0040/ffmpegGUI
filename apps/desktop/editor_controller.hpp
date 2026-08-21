@@ -37,9 +37,9 @@ class EditorController final : public QObject {
     Q_OBJECT
     QML_ELEMENT
     QML_SINGLETON
-    Q_PROPERTY(QVariantList clips READ clips NOTIFY timelineChanged)
-    Q_PROPERTY(QVariantList mediaAssets READ mediaAssets NOTIFY timelineChanged)
-    Q_PROPERTY(QVariantList captions READ captions NOTIFY timelineChanged)
+    Q_PROPERTY(QVariantList clips READ clips NOTIFY clipsChanged)
+    Q_PROPERTY(QVariantList mediaAssets READ mediaAssets NOTIFY mediaAssetsChanged)
+    Q_PROPERTY(QVariantList captions READ captions NOTIFY captionsChanged)
     Q_PROPERTY(qint64 durationNs READ durationNs NOTIFY timelineChanged)
     Q_PROPERTY(qint64 playheadNs READ playheadNs NOTIFY playheadChanged)
     Q_PROPERTY(qint64 inPointNs READ inPointNs NOTIFY rangeChanged)
@@ -420,6 +420,9 @@ public slots:
 
 signals:
     void timelineChanged();
+    void clipsChanged();
+    void mediaAssetsChanged();
+    void captionsChanged();
     void playheadChanged();
     void rangeChanged();
     void playingChanged();
@@ -606,6 +609,8 @@ private:
     QFutureWatcher<std::vector<PendingImport>> import_watcher_;
     QTimer preview_update_timer_;
     QTimer grade_coalesce_timer_;
+    QTimer model_update_timer_;
+    QTimer selection_update_timer_;
     QTimer float_playback_timer_;
     QElapsedTimer float_playback_clock_;
     qint64 float_playback_origin_ns_{};

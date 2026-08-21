@@ -746,6 +746,7 @@ ApplicationWindow {
 
                     Item {
                         id: previewSurface
+                        objectName: "previewSurface"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
@@ -758,6 +759,7 @@ ApplicationWindow {
 
                         Loader {
                             id: previewVideoLoader
+                            objectName: "previewVideoLoader"
                             x: 0
                             y: previewSurface.videoTop
                             width: parent.width
