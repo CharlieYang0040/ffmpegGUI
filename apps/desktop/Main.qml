@@ -32,11 +32,37 @@ ApplicationWindow {
     property string expandedGradeNode: ""
     property bool transportTextEditing: false
     property bool colorWorkspace: false
+    property int timelineClipAppearance: 0
+    property int timelineClipHeight: 1
+    property int viewerZoomMode: 0
+    property bool viewerSafeArea: false
+    property bool programFullscreen: false
     readonly property bool hasLegacyClipColor:
         EditorController.selectedClipIds.length > 0 && (
             EditorController.selectedClipBrightness !== 0 ||
             EditorController.selectedClipContrast !== 100 ||
             EditorController.selectedClipSaturation !== 100)
+    readonly property var activeWindowNode: {
+        for (let i = 0; i < EditorController.selectedGradeNodes.length; ++i)
+            if (EditorController.selectedGradeNodes[i].type === 9)
+                return EditorController.selectedGradeNodes[i]
+        return null
+    }
+    readonly property var activeQualifierNode: {
+        for (let i = 0; i < EditorController.selectedGradeNodes.length; ++i)
+            if (EditorController.selectedGradeNodes[i].type === 8)
+                return EditorController.selectedGradeNodes[i]
+        return null
+    }
+    readonly property var programClipAtPlayhead: {
+        for (let i = EditorController.clips.length - 1; i >= 0; --i) {
+            const clip = EditorController.clips[i]
+            if (EditorController.playheadNs >= clip.timelineInNs &&
+                EditorController.playheadNs < clip.timelineInNs + clip.durationNs)
+                return clip
+        }
+        return null
+    }
 
     onColorWorkspaceChanged: {
         if (colorWorkspace)
@@ -65,6 +91,160 @@ ApplicationWindow {
             gifSizeWarning.open()
         else
             EditorController.exportTimeline()
+    }
+
+    component ColorWheel: Item {
+        property string nodeId
+        property string label
+        property string redKey
+        property string greenKey
+        property string blueKey
+        property real redValue: 0
+        property real greenValue: 0
+        property real blueValue: 0
+        property real neutralValue: 0
+        property real range: 0.5
+        property var keyframedParameters: []
+        property var keyframesAtPlayhead: []
+        implicitWidth: 92
+        implicitHeight: 116
+        Canvas {
+            id: wheelCanvas
+            anchors.top: parent.top
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: 84; height: 84
+            onPaint: {
+                const ctx = getContext("2d")
+                ctx.clearRect(0, 0, width, height)
+                for (let ring = 40; ring > 2; ring -= 2) {
+                    for (let angle = 0; angle < 360; angle += 10) {
+                        ctx.beginPath()
+                        ctx.strokeStyle = Qt.hsla(angle / 360, ring / 40, 0.5, 0.9)
+                        ctx.lineWidth = 3
+                        ctx.arc(42, 42, ring, angle * Math.PI / 180,
+                                (angle + 11) * Math.PI / 180)
+                        ctx.stroke()
+                    }
+                }
+                const dx = Math.max(-1, Math.min(1, (redValue - blueValue) / (2 * range)))
+                const dy = Math.max(-1, Math.min(1, (neutralValue - greenValue) / range))
+                ctx.beginPath(); ctx.fillStyle = "white"
+                ctx.arc(42 + dx * 34, 42 + dy * 34, 4, 0, Math.PI * 2); ctx.fill()
+                ctx.strokeStyle = "#111"; ctx.stroke()
+            }
+        }
+        MouseArea {
+            anchors.fill: wheelCanvas
+            onPressed: updateValues(mouse)
+            onPositionChanged: if (pressed) updateValues(mouse)
+            function updateValues(mouse) {
+                const dx = Math.max(-1, Math.min(1, (mouse.x - width / 2) / (width * 0.42)))
+                const dy = Math.max(-1, Math.min(1, (mouse.y - height / 2) / (height * 0.42)))
+                EditorController.setGradeParameter(nodeId, redKey, neutralValue + dx * range)
+                EditorController.setGradeParameter(nodeId, greenKey, neutralValue - dy * range)
+                EditorController.setGradeParameter(nodeId, blueKey, neutralValue - dx * range)
+            }
+        }
+        Row {
+            anchors.bottom: parent.bottom
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: 4
+            Label { text: parent.parent.label; color: "#c4ced9"; font.pixelSize: 11 }
+            Label {
+                text: parent.parent.keyframesAtPlayhead.indexOf(parent.parent.redKey) >= 0 &&
+                      parent.parent.keyframesAtPlayhead.indexOf(parent.parent.greenKey) >= 0 &&
+                      parent.parent.keyframesAtPlayhead.indexOf(parent.parent.blueKey) >= 0 ? "◆" : "◇"
+                color: "#f0c66a"
+                TapHandler {
+                    onTapped: {
+                        EditorController.toggleGradeParameterKeyframe(parent.parent.parent.nodeId,
+                            parent.parent.parent.redKey)
+                        EditorController.toggleGradeParameterKeyframe(parent.parent.parent.nodeId,
+                            parent.parent.parent.greenKey)
+                        EditorController.toggleGradeParameterKeyframe(parent.parent.parent.nodeId,
+                            parent.parent.parent.blueKey)
+                    }
+                }
+            }
+        }
+    }
+
+    component CurveEditor: Item {
+        property string nodeId
+        property string curveName
+        property var points: []
+        property int activePoint: -1
+        implicitHeight: 170
+        function commit() {
+            EditorController.setGradeCurvePoints(nodeId, curveName, points)
+            curveCanvas.requestPaint()
+        }
+        Canvas {
+            id: curveCanvas
+            anchors.fill: parent
+            onPaint: {
+                const ctx = getContext("2d")
+                ctx.clearRect(0, 0, width, height)
+                ctx.fillStyle = "#0c1117"; ctx.fillRect(0, 0, width, height)
+                ctx.strokeStyle = "#273342"; ctx.lineWidth = 1
+                for (let i = 1; i < 4; ++i) {
+                    ctx.beginPath(); ctx.moveTo(width * i / 4, 0); ctx.lineTo(width * i / 4, height); ctx.stroke()
+                    ctx.beginPath(); ctx.moveTo(0, height * i / 4); ctx.lineTo(width, height * i / 4); ctx.stroke()
+                }
+                if (!points || points.length < 2) return
+                ctx.strokeStyle = curveName === "red" ? "#ef6b6b" :
+                                  curveName === "green" ? "#69d28a" :
+                                  curveName === "blue" ? "#6c9df2" : "#f0d47a"
+                ctx.lineWidth = 2; ctx.beginPath()
+                for (let p = 0; p < points.length; ++p) {
+                    const x = points[p].x * width
+                    const y = (1 - points[p].y) * height
+                    if (p === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+                }
+                ctx.stroke()
+                for (let p = 0; p < points.length; ++p) {
+                    ctx.beginPath(); ctx.fillStyle = p === activePoint ? "white" : "#b7c3d1"
+                    ctx.arc(points[p].x * width, (1 - points[p].y) * height, 4, 0, Math.PI * 2); ctx.fill()
+                }
+            }
+        }
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onPressed: function(mouse) {
+                let nearest = -1; let distance = 14
+                for (let i = 0; i < parent.points.length; ++i) {
+                    const dx = parent.points[i].x * width - mouse.x
+                    const dy = (1 - parent.points[i].y) * height - mouse.y
+                    const d = Math.sqrt(dx * dx + dy * dy)
+                    if (d < distance) { distance = d; nearest = i }
+                }
+                if (mouse.button === Qt.RightButton) {
+                    if (nearest > 0 && nearest < parent.points.length - 1) {
+                        const copy = parent.points.slice(); copy.splice(nearest, 1)
+                        parent.points = copy; parent.activePoint = -1; parent.commit()
+                    }
+                    return
+                }
+                if (nearest < 0) {
+                    const copy = parent.points.slice()
+                    copy.push({x: mouse.x / width, y: 1 - mouse.y / height})
+                    copy.sort((a, b) => a.x - b.x); parent.points = copy
+                    nearest = copy.findIndex(p => Math.abs(p.x - mouse.x / width) < 0.0001)
+                }
+                parent.activePoint = nearest; updatePoint(mouse)
+            }
+            onPositionChanged: function(mouse) { if (pressed && parent.activePoint >= 0) updatePoint(mouse) }
+            onReleased: parent.activePoint = -1
+            function updatePoint(mouse) {
+                const copy = parent.points.slice(); const i = parent.activePoint
+                const minX = i === 0 ? 0 : copy[i - 1].x + 0.002
+                const maxX = i === copy.length - 1 ? 1 : copy[i + 1].x - 0.002
+                copy[i] = {x: Math.max(minX, Math.min(maxX, mouse.x / width)),
+                           y: Math.max(0, Math.min(1, 1 - mouse.y / height))}
+                parent.points = copy; parent.commit()
+            }
+        }
     }
 
     palette.window: "#111419"
@@ -193,22 +373,24 @@ ApplicationWindow {
 
     Shortcut { sequences: [StandardKey.Undo]; enabled: EditorController.canUndo; onActivated: EditorController.undo() }
     Shortcut { sequences: [StandardKey.Redo]; enabled: EditorController.canRedo; onActivated: EditorController.redo() }
-    Shortcut { sequence: "Space"; onActivated: EditorController.togglePlayback() }
+    Shortcut { sequence: "Space"; onActivated: { if (EditorController.editingShortcutAllowed()) EditorController.togglePlayback() } }
     Shortcut { sequence: "Home"; enabled: !root.transportTextEditing; onActivated: EditorController.seekToStart() }
     Shortcut { sequence: "End"; enabled: !root.transportTextEditing; onActivated: EditorController.seekToEnd() }
     Shortcut { sequence: "Shift+Z"; enabled: !root.transportTextEditing; onActivated: timeline.fitToTimeline() }
     Shortcut { sequence: "\\"; enabled: !root.transportTextEditing; onActivated: EditorController.playAround() }
     Shortcut { sequence: "Shift+/"; enabled: !root.transportTextEditing; onActivated: EditorController.playAround() }
-    Shortcut { sequence: "Left"; autoRepeat: true; onActivated: EditorController.stepFrame(-1) }
-    Shortcut { sequence: "Right"; autoRepeat: true; onActivated: EditorController.stepFrame(1) }
-    Shortcut { sequence: "Up"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(-1) }
-    Shortcut { sequence: "Down"; autoRepeat: true; onActivated: EditorController.jumpEditPoint(1) }
-    Shortcut { sequence: "Ctrl+K"; onActivated: EditorController.splitAtPlayhead() }
+    Shortcut { sequence: "Left"; autoRepeat: true; onActivated: { if (EditorController.editingShortcutAllowed()) EditorController.stepFrame(-1) } }
+    Shortcut { sequence: "Right"; autoRepeat: true; onActivated: { if (EditorController.editingShortcutAllowed()) EditorController.stepFrame(1) } }
+    Shortcut { sequence: "Up"; autoRepeat: true; onActivated: { if (EditorController.editingShortcutAllowed()) EditorController.jumpEditPoint(-1) } }
+    Shortcut { sequence: "Down"; autoRepeat: true; onActivated: { if (EditorController.editingShortcutAllowed()) EditorController.jumpEditPoint(1) } }
+    Shortcut { sequence: "Ctrl+K"; onActivated: { if (EditorController.editingShortcutAllowed()) EditorController.splitAtPlayhead() } }
     Shortcut { sequence: "Shift+Delete"; enabled: EditorController.inPointNs >= 0 && EditorController.outPointNs > EditorController.inPointNs; onActivated: EditorController.extractMarkedRange() }
     Shortcut { sequence: "Ctrl+Shift+X"; onActivated: EditorController.clearRange() }
     Shortcut { sequence: "Ctrl+D"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.duplicateSelectedClip() }
     Shortcut { sequence: "Delete"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.deleteSelectedClip() }
     Shortcut { sequence: "M"; enabled: EditorController.selectedClipIds.length > 0; onActivated: EditorController.setSelectedClipMuted(!EditorController.selectedClipMuted) }
+    Shortcut { sequence: "Alt+["; enabled: EditorController.selectedClipId.length > 0; onActivated: { if (EditorController.editingShortcutAllowed()) EditorController.trimSelectedStartToPlayhead() } }
+    Shortcut { sequence: "Alt+]"; enabled: EditorController.selectedClipId.length > 0; onActivated: { if (EditorController.editingShortcutAllowed()) EditorController.trimSelectedEndToPlayhead() } }
     Shortcut { sequence: "Ctrl+1"; onActivated: root.colorWorkspace = false }
     Shortcut { sequence: "Ctrl+2"; onActivated: root.colorWorkspace = true }
     FileDialog {
@@ -774,6 +956,34 @@ ApplicationWindow {
                                 onClicked: EditorController.scopesVisible =
                                     !EditorController.scopesVisible
                             }
+                            ComboBox {
+                                implicitWidth: 88
+                                model: ["맞춤", "100%", "200%"]
+                                currentIndex: root.viewerZoomMode
+                                onActivated: root.viewerZoomMode = currentIndex
+                            }
+                            ComboBox {
+                                implicitWidth: 108
+                                model: ["성능 1/2", "프록시", "품질 1:1"]
+                                currentIndex: EditorController.previewQuality
+                                onActivated: EditorController.setPreviewQuality(currentIndex)
+                            }
+                            AppButton {
+                                text: "Safe"
+                                compact: true
+                                highlighted: root.viewerSafeArea
+                                onClicked: root.viewerSafeArea = !root.viewerSafeArea
+                            }
+                            AppButton {
+                                text: root.programFullscreen ? "창" : "전체"
+                                compact: true
+                                enabled: !EditorController.sourceViewerOpen
+                                onClicked: {
+                                    root.programFullscreen = !root.programFullscreen
+                                    if (root.programFullscreen) root.showFullScreen()
+                                    else root.showNormal()
+                                }
+                            }
                             Label {
                                 text: EditorController.timeText(EditorController.playheadNs)
                                       + "  ·  F" + EditorController.frameNumberAt(EditorController.playheadNs)
@@ -796,14 +1006,19 @@ ApplicationWindow {
                             ? height * stampRatio / (1 + 2 * stampRatio) : 0
                         readonly property real videoTop: expandedBarHeight
                         readonly property real videoHeight: height - expandedBarHeight * 2
+                        readonly property bool dualViewer:
+                            EditorController.sourceViewerOpen && width >= 760 &&
+                            root.programClipAtPlayhead !== null
 
                         Loader {
                             id: previewVideoLoader
                             objectName: "previewVideoLoader"
                             x: 0
                             y: previewSurface.videoTop
-                            width: parent.width
+                            width: previewSurface.dualViewer ? parent.width / 2 : parent.width
                             height: previewSurface.videoHeight
+                            scale: root.viewerZoomMode === 2 ? 2.0 : 1.0
+                            transformOrigin: Item.Center
                             active: EditorController.inProcessPreview
                             sourceComponent: VideoPreviewItem {
                                 id: inProcessVideoPreview
@@ -815,9 +1030,15 @@ ApplicationWindow {
                                     acceptedButtons: Qt.LeftButton
                                     cursorShape: containsMouse ? Qt.CrossCursor : Qt.ArrowCursor
                                     onPressed: function(mouse) {
-                                        EditorController.inspectPreviewPixel(
-                                            mouse.x / Math.max(1, width),
-                                            mouse.y / Math.max(1, height))
+                                        if (root.colorWorkspace && root.activeQualifierNode !== null)
+                                            EditorController.sampleQualifierAt(
+                                                root.activeQualifierNode.id,
+                                                mouse.x / Math.max(1, width),
+                                                mouse.y / Math.max(1, height))
+                                        else
+                                            EditorController.inspectPreviewPixel(
+                                                mouse.x / Math.max(1, width),
+                                                mouse.y / Math.max(1, height))
                                     }
                                     onPositionChanged: function(mouse) {
                                         if (pressed)
@@ -832,12 +1053,57 @@ ApplicationWindow {
                             id: nativePreviewContainer
                             x: 0
                             y: previewSurface.videoTop
-                            width: parent.width
+                            width: previewSurface.dualViewer ? parent.width / 2 : parent.width
                             height: previewSurface.videoHeight
+                            scale: root.viewerZoomMode === 2 ? 2.0 : 1.0
+                            transformOrigin: Item.Center
                             visible: !EditorController.inProcessPreview
                             window: EditorController.videoWindow
                             Component.onCompleted: Qt.callLater(
                                 EditorController.refreshVideoWindowHandle)
+                        }
+                        Rectangle {
+                            visible: previewSurface.dualViewer
+                            x: parent.width / 2
+                            y: previewSurface.videoTop
+                            width: parent.width / 2
+                            height: previewSurface.videoHeight
+                            color: "#050608"
+                            border.color: "#2e3742"
+                            clip: true
+                            Image {
+                                anchors.fill: parent
+                                source: root.programClipAtPlayhead &&
+                                        root.programClipAtPlayhead.thumbnailAtlas.length > 0
+                                    ? "file:///" + root.programClipAtPlayhead.thumbnailAtlas.replace(/\\/g, "/")
+                                    : ""
+                                sourceClipRect: {
+                                    const clip = root.programClipAtPlayhead
+                                    if (!clip || clip.assetDurationNs <= 0) return Qt.rect(0, 0, 160, 90)
+                                    const local = Math.max(0, EditorController.playheadNs - clip.timelineInNs)
+                                    const sourceTime = clip.sourceInNs + local * clip.playbackRate
+                                    const center = 1920 * sourceTime / clip.assetDurationNs
+                                    return Qt.rect(Math.max(0, Math.min(1760, center - 80)), 0, 160, 90)
+                                }
+                                fillMode: Image.PreserveAspectFit
+                                asynchronous: true
+                            }
+                            Label {
+                                anchors.left: parent.left; anchors.top: parent.top
+                                anchors.margins: 8
+                                text: "프로그램 · 캐시 프레임"
+                                color: "white"; padding: 4
+                                background: Rectangle { color: "#99000000"; radius: 3 }
+                            }
+                        }
+                        Label {
+                            visible: previewSurface.dualViewer
+                            z: 30
+                            anchors.left: parent.left; anchors.top: parent.top
+                            anchors.margins: 8
+                            text: "소스"
+                            color: "white"; padding: 4
+                            background: Rectangle { color: "#99000000"; radius: 3 }
                         }
                         Label {
                             anchors.centerIn: parent
@@ -845,6 +1111,155 @@ ApplicationWindow {
                             text: EditorController.importing ? "미디어 분석 중…" : "미디어를 추가하세요"
                             color: "#718094"
                             font.pixelSize: 15
+                        }
+                        Rectangle {
+                            z: 25
+                            visible: root.viewerSafeArea
+                            anchors.centerIn: parent
+                            width: parent.width * 0.9
+                            height: parent.height * 0.9
+                            color: "transparent"
+                            border.width: 1
+                            border.color: "#aaffffff"
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: parent.width * 8 / 9
+                                height: parent.height * 8 / 9
+                                color: "transparent"
+                                border.width: 1
+                                border.color: "#66ffffff"
+                            }
+                        }
+                        Rectangle {
+                            z: 35
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            anchors.margins: 8
+                            width: 12
+                            radius: 4
+                            color: "#99070a0d"
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                height: parent.height * EditorController.programAudioPeak
+                                radius: 4
+                                color: EditorController.programAudioPeak > 0.9 ? "#ef5964"
+                                     : EditorController.programAudioPeak > 0.7 ? "#f5b942" : "#52d273"
+                            }
+                        }
+                        Item {
+                            id: windowOverlay
+                            z: 34
+                            visible: root.colorWorkspace && root.activeWindowNode !== null
+                            property var node: root.activeWindowNode
+                            property var parameters: node ? node.parameters : ({})
+                            x: (parameters.centerX || 0.5) * previewSurface.width - width / 2
+                            y: previewSurface.videoTop + (parameters.centerY || 0.5) *
+                               previewSurface.videoHeight - height / 2
+                            width: Math.max(24, (parameters.sizeX || 0.45) * previewSurface.width)
+                            height: Math.max(24, (parameters.sizeY || 0.45) * previewSurface.videoHeight)
+                            rotation: parameters.rotation || 0
+                            Canvas {
+                                anchors.fill: parent
+                                onWidthChanged: requestPaint()
+                                onHeightChanged: requestPaint()
+                                onPaint: {
+                                    const ctx = getContext("2d")
+                                    ctx.clearRect(0, 0, width, height)
+                                    ctx.strokeStyle = "#f0c66a"; ctx.lineWidth = 2
+                                    if ((windowOverlay.parameters.shape || 0) >= 0.5)
+                                        ctx.strokeRect(1, 1, width - 2, height - 2)
+                                    else {
+                                        ctx.beginPath(); ctx.ellipse(width / 2, height / 2,
+                                            width / 2 - 2, height / 2 - 2, 0, 0, Math.PI * 2); ctx.stroke()
+                                    }
+                                    const soft = Math.min(0.45, windowOverlay.parameters.softness || 0.12)
+                                    ctx.strokeStyle = "#77f0c66a"; ctx.lineWidth = 1
+                                    ctx.beginPath(); ctx.ellipse(width / 2, height / 2,
+                                        width * (0.5 + soft), height * (0.5 + soft),
+                                        0, 0, Math.PI * 2); ctx.stroke()
+                                }
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                property real startCenterX
+                                property real startCenterY
+                                property real startMouseX
+                                property real startMouseY
+                                onPressed: function(mouse) {
+                                    startCenterX = windowOverlay.parameters.centerX || 0.5
+                                    startCenterY = windowOverlay.parameters.centerY || 0.5
+                                    startMouseX = mapToItem(previewSurface, mouse.x, mouse.y).x
+                                    startMouseY = mapToItem(previewSurface, mouse.x, mouse.y).y
+                                    if (windowOverlay.node.keyframedParameters.indexOf("centerX") < 0)
+                                        EditorController.toggleGradeParameterKeyframe(windowOverlay.node.id, "centerX")
+                                    if (windowOverlay.node.keyframedParameters.indexOf("centerY") < 0)
+                                        EditorController.toggleGradeParameterKeyframe(windowOverlay.node.id, "centerY")
+                                }
+                                onPositionChanged: function(mouse) {
+                                    if (!pressed) return
+                                    const point = mapToItem(previewSurface, mouse.x, mouse.y)
+                                    EditorController.setGradeParameter(windowOverlay.node.id, "centerX",
+                                        Math.max(0, Math.min(1, startCenterX +
+                                            (point.x - startMouseX) / previewSurface.width)))
+                                    EditorController.setGradeParameter(windowOverlay.node.id, "centerY",
+                                        Math.max(0, Math.min(1, startCenterY +
+                                            (point.y - startMouseY) / previewSurface.videoHeight)))
+                                }
+                            }
+                            Rectangle {
+                                anchors.right: parent.right; anchors.bottom: parent.bottom
+                                width: 12; height: 12; radius: 6; color: "#f0c66a"
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onPositionChanged: function(mouse) {
+                                        if (!pressed) return
+                                        const point = mapToItem(windowOverlay, mouse.x, mouse.y)
+                                        EditorController.setGradeParameter(windowOverlay.node.id, "sizeX",
+                                            Math.max(0.02, Math.min(1.5, point.x * 2 / previewSurface.width)))
+                                        EditorController.setGradeParameter(windowOverlay.node.id, "sizeY",
+                                            Math.max(0.02, Math.min(1.5, point.y * 2 / previewSurface.videoHeight)))
+                                    }
+                                }
+                            }
+                        }
+                        DropArea {
+                            id: viewerEditDrop
+                            anchors.fill: parent
+                            z: 45
+                            keys: ["ffgui/source-range"]
+                            onDropped: drop => {
+                                if (drop.x < width / 3) EditorController.appendSelectedSource()
+                                else if (drop.x < width * 2 / 3) EditorController.insertSelectedSource()
+                                else EditorController.overwriteSelectedSource()
+                                drop.acceptProposedAction()
+                            }
+                            Row {
+                                anchors.fill: parent
+                                visible: viewerEditDrop.containsDrag
+                                spacing: 2
+                                Repeater {
+                                    model: ["E  끝에 추가", "W  삽입", "D  덮어쓰기"]
+                                    delegate: Rectangle {
+                                        required property string modelData
+                                        required property int index
+                                        width: (viewerEditDrop.width - 4) / 3
+                                        height: viewerEditDrop.height
+                                        color: index === 0 ? "#234231dd"
+                                             : index === 1 ? "#213b5add" : "#5a3521dd"
+                                        border.color: index === 0 ? "#61c47d"
+                                                    : index === 1 ? "#78a5ff" : "#e49a5c"
+                                        Label {
+                                            anchors.centerIn: parent
+                                            text: modelData
+                                            color: "white"
+                                            font.bold: true
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Rectangle {
                             z: 40
@@ -2039,6 +2454,80 @@ ApplicationWindow {
                                                 }
                                             }
                                         }
+                                        RowLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 0
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Lift"
+                                                redKey: "liftR"; greenKey: "liftG"; blueKey: "liftB"
+                                                redValue: gradeNode.modelData.parameters.liftR || 0
+                                                greenValue: gradeNode.modelData.parameters.liftG || 0
+                                                blueValue: gradeNode.modelData.parameters.liftB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Gamma"
+                                                redKey: "gammaR"; greenKey: "gammaG"; blueKey: "gammaB"
+                                                redValue: gradeNode.modelData.parameters.gammaR || 1
+                                                greenValue: gradeNode.modelData.parameters.gammaG || 1
+                                                blueValue: gradeNode.modelData.parameters.gammaB || 1
+                                                neutralValue: 1; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Gain"
+                                                redKey: "gainR"; greenKey: "gainG"; blueKey: "gainB"
+                                                redValue: gradeNode.modelData.parameters.gainR || 1
+                                                greenValue: gradeNode.modelData.parameters.gainG || 1
+                                                blueValue: gradeNode.modelData.parameters.gainB || 1
+                                                neutralValue: 1; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Offset"
+                                                redKey: "offsetR"; greenKey: "offsetG"; blueKey: "offsetB"
+                                                redValue: gradeNode.modelData.parameters.offsetR || 0
+                                                greenValue: gradeNode.modelData.parameters.offsetG || 0
+                                                blueValue: gradeNode.modelData.parameters.offsetB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 1
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Shadow"
+                                                redKey: "shadowR"; greenKey: "shadowG"; blueKey: "shadowB"
+                                                redValue: gradeNode.modelData.parameters.shadowR || 0
+                                                greenValue: gradeNode.modelData.parameters.shadowG || 0
+                                                blueValue: gradeNode.modelData.parameters.shadowB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Midtone"
+                                                redKey: "midtoneR"; greenKey: "midtoneG"; blueKey: "midtoneB"
+                                                redValue: gradeNode.modelData.parameters.midtoneR || 0
+                                                greenValue: gradeNode.modelData.parameters.midtoneG || 0
+                                                blueValue: gradeNode.modelData.parameters.midtoneB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Highlight"
+                                                redKey: "highlightR"; greenKey: "highlightG"; blueKey: "highlightB"
+                                                redValue: gradeNode.modelData.parameters.highlightR || 0
+                                                greenValue: gradeNode.modelData.parameters.highlightG || 0
+                                                blueValue: gradeNode.modelData.parameters.highlightB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Master"
+                                                redKey: "offsetR"; greenKey: "offsetG"; blueKey: "offsetB"
+                                                redValue: gradeNode.modelData.parameters.offsetR || 0
+                                                greenValue: gradeNode.modelData.parameters.offsetG || 0
+                                                blueValue: gradeNode.modelData.parameters.offsetB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                        }
                                         Label { text: "혼합"; color: "#9aa7b7" }
                                         SpinBox {
                                             Layout.fillWidth: true; from: 0; to: 100
@@ -2129,6 +2618,151 @@ ApplicationWindow {
                                             value: Math.round(gradeNode.modelData.parameters.tint || 0)
                                             onValueModified: EditorController.setGradeParameter(gradeNode.modelData.id, "tint", value)
                                         }
+                                        RowLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 5
+                                            Repeater {
+                                                model: [
+                                                    {label: "Black", key: "blackExposure"},
+                                                    {label: "Shadow", key: "shadowExposure"},
+                                                    {label: "Mid", key: "midtoneExposure"},
+                                                    {label: "High", key: "highlightExposure"},
+                                                    {label: "Spec", key: "specularExposure"}
+                                                ]
+                                                delegate: ColumnLayout {
+                                                    required property var modelData
+                                                    Layout.fillWidth: true
+                                                    Slider {
+                                                        Layout.alignment: Qt.AlignHCenter
+                                                        orientation: Qt.Vertical
+                                                        from: -10; to: 10
+                                                        value: gradeNode.modelData.parameters[modelData.key] || 0
+                                                        onMoved: EditorController.setGradeParameter(
+                                                            gradeNode.modelData.id, modelData.key, value)
+                                                    }
+                                                    Label {
+                                                        Layout.alignment: Qt.AlignHCenter
+                                                        text: modelData.label
+                                                        color: "#9aa7b7"; font.pixelSize: 9
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Item {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 210
+                                            visible: gradeNode.modelData.type === 6
+                                            Canvas {
+                                                anchors.centerIn: parent
+                                                width: 190; height: 190
+                                                onPaint: {
+                                                    const ctx = getContext("2d")
+                                                    ctx.clearRect(0, 0, width, height)
+                                                    for (let i = 0; i < 12; ++i) {
+                                                        ctx.beginPath(); ctx.moveTo(95, 95)
+                                                        ctx.fillStyle = Qt.hsla(i / 12, 0.8, 0.5, 0.85)
+                                                        ctx.arc(95, 95, 82, (i - 0.5) * Math.PI / 6,
+                                                                (i + 0.5) * Math.PI / 6); ctx.closePath(); ctx.fill()
+                                                        const sat = gradeNode.modelData.parameters["satScale" + i] || 1
+                                                        const shift = gradeNode.modelData.parameters["hueShift" + i] || 0
+                                                        const angle = (i * 30 + shift) * Math.PI / 180
+                                                        ctx.beginPath(); ctx.fillStyle = "white"
+                                                        ctx.arc(95 + Math.cos(angle) * Math.min(76, 46 * sat),
+                                                                95 + Math.sin(angle) * Math.min(76, 46 * sat),
+                                                                3, 0, Math.PI * 2); ctx.fill()
+                                                    }
+                                                    ctx.beginPath(); ctx.fillStyle = "#151a20"
+                                                    ctx.arc(95, 95, 26, 0, Math.PI * 2); ctx.fill()
+                                                }
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    onPressed: updateWarper(mouse)
+                                                    onPositionChanged: if (pressed) updateWarper(mouse)
+                                                    function updateWarper(mouse) {
+                                                        const dx = mouse.x - width / 2, dy = mouse.y - height / 2
+                                                        let angle = Math.atan2(dy, dx) * 180 / Math.PI
+                                                        if (angle < 0) angle += 360
+                                                        const cell = Math.round(angle / 30) % 12
+                                                        const radius = Math.sqrt(dx * dx + dy * dy)
+                                                        EditorController.setGradeParameter(gradeNode.modelData.id,
+                                                            "hueShift" + cell, angle - cell * 30)
+                                                        EditorController.setGradeParameter(gradeNode.modelData.id,
+                                                            "satScale" + cell, Math.max(0, Math.min(3, radius / 46)))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 6
+                                            Label { text: "Luma"; color: "#9aa7b7" }
+                                            Repeater {
+                                                model: 8
+                                                delegate: Slider {
+                                                    required property int index
+                                                    Layout.fillWidth: true
+                                                    orientation: Qt.Vertical
+                                                    from: 0; to: 2
+                                                    value: gradeNode.modelData.parameters["lumScale" + index] || 1
+                                                    onMoved: EditorController.setGradeParameter(
+                                                        gradeNode.modelData.id, "lumScale" + index, value)
+                                                }
+                                            }
+                                        }
+                                        Canvas {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 56
+                                            visible: gradeNode.modelData.type === 8
+                                            onPaint: {
+                                                const ctx = getContext("2d")
+                                                const gradient = ctx.createLinearGradient(0, 0, width, 0)
+                                                for (let i = 0; i <= 6; ++i)
+                                                    gradient.addColorStop(i / 6, Qt.hsla(i / 6, 1, 0.5, 1))
+                                                ctx.fillStyle = gradient; ctx.fillRect(0, 8, width, 28)
+                                                const center = (gradeNode.modelData.parameters.hueCenter || 0) / 360 * width
+                                                const span = (gradeNode.modelData.parameters.hueWidth || 40) / 360 * width
+                                                ctx.strokeStyle = "white"; ctx.lineWidth = 2
+                                                ctx.strokeRect(center - span, 4, span * 2, 36)
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 8 ||
+                                                     gradeNode.modelData.type === 9
+                                            Label {
+                                                Layout.fillWidth: true
+                                                text: gradeNode.modelData.type === 8
+                                                    ? "키 오버레이" : "윈도우 매트"
+                                                color: "#9aa7b7"
+                                            }
+                                            AppButton {
+                                                text: "끄기"; compact: true
+                                                highlighted: EditorController.gradeMatteMode === 0
+                                                onClicked: EditorController.setGradeMatteMode(
+                                                    gradeNode.modelData.id, 0)
+                                            }
+                                            AppButton {
+                                                text: "강조"; compact: true
+                                                highlighted: EditorController.gradeMatteNodeId ===
+                                                             gradeNode.modelData.id &&
+                                                             EditorController.gradeMatteMode === 1
+                                                onClicked: EditorController.setGradeMatteMode(
+                                                    gradeNode.modelData.id, 1)
+                                            }
+                                            AppButton {
+                                                text: "흑백"; compact: true
+                                                highlighted: EditorController.gradeMatteNodeId ===
+                                                             gradeNode.modelData.id &&
+                                                             EditorController.gradeMatteMode === 2
+                                                onClicked: EditorController.setGradeMatteMode(
+                                                    gradeNode.modelData.id, 2)
+                                            }
+                                        }
                                         Repeater {
                                             model: gradeNode.scalarControls(gradeNode.modelData.type)
                                             delegate: RowLayout {
@@ -2159,6 +2793,14 @@ ApplicationWindow {
                                                         gradeNode.modelData.id, modelData.key,
                                                         value / modelData.scale)
                                                 }
+                                                AppButton {
+                                                    text: gradeNode.modelData.keyframesAtPlayhead.indexOf(
+                                                              modelData.key) >= 0 ? "◆" : "◇"
+                                                    compact: true
+                                                    enabled: gradeNode.modelData.keyframeSupported
+                                                    onClicked: EditorController.toggleGradeParameterKeyframe(
+                                                        gradeNode.modelData.id, modelData.key)
+                                                }
                                             }
                                         }
                                         RowLayout {
@@ -2184,6 +2826,15 @@ ApplicationWindow {
                                                 onValueModified: EditorController.setGradeCurveMidpoint(
                                                     gradeNode.modelData.id, curvePicker.currentText, value)
                                             }
+                                        }
+                                        CurveEditor {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 3 ||
+                                                     gradeNode.modelData.type === 4
+                                            nodeId: gradeNode.modelData.id
+                                            curveName: curvePicker.currentText
+                                            points: gradeNode.modelData.curves[curvePicker.currentText] || []
                                         }
                                         ColumnLayout {
                                             Layout.columnSpan: 2
@@ -2426,6 +3077,71 @@ ApplicationWindow {
                     }
                     ToolDivider { }
                     AppButton {
+                        text: "A"
+                        compact: true
+                        highlighted: EditorController.timelineToolMode === 0
+                        onClicked: EditorController.setTimelineToolMode(0)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "선택 도구 · 누르고 있는 동안 임시 전환"
+                    }
+                    AppButton {
+                        text: "B"
+                        compact: true
+                        highlighted: EditorController.timelineToolMode === 1
+                        onClicked: EditorController.setTimelineToolMode(1)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "블레이드 · 클릭 위치에서 분할"
+                    }
+                    AppButton {
+                        text: "T"
+                        compact: true
+                        highlighted: EditorController.timelineToolMode === 2
+                        onClicked: EditorController.setTimelineToolMode(2)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "트림 · 컷=롤, 위=슬립, 아래=슬라이드"
+                    }
+                    AppButton {
+                        text: "R"
+                        compact: true
+                        highlighted: EditorController.timelineToolMode === 3
+                        onClicked: EditorController.setTimelineToolMode(3)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "범위 선택 · 드래그로 타임라인 I/O"
+                    }
+                    AppButton {
+                        text: "N"
+                        compact: true
+                        highlighted: EditorController.timelineSnapping
+                        onClicked: EditorController.setTimelineSnapping(
+                            !EditorController.timelineSnapping)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "스냅 켜기/끄기"
+                    }
+                    ComboBox {
+                        Layout.preferredWidth: 105
+                        model: ["필름+파형", "필름스트립", "파형", "이름만"]
+                        currentIndex: root.timelineClipAppearance
+                        onActivated: root.timelineClipAppearance = currentIndex
+                        ToolTip.visible: hovered
+                        ToolTip.text: "타임라인 클립 외형"
+                    }
+                    AppButton {
+                        text: root.timelineClipHeight === 0 ? "낮게" :
+                              root.timelineClipHeight === 1 ? "보통" : "높게"
+                        compact: true
+                        onClicked: root.timelineClipHeight = (root.timelineClipHeight + 1) % 3
+                        ToolTip.visible: hovered
+                        ToolTip.text: "클립 높이 3단계"
+                    }
+                    AppButton {
+                        text: "?"
+                        compact: true
+                        onClicked: shortcutHelp.open()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "편집 단축키"
+                    }
+                    ToolDivider { }
+                    AppButton {
                         text: "↶"
                         compact: true
                         enabled: EditorController.canUndo
@@ -2511,6 +3227,32 @@ ApplicationWindow {
                         ToolTip.visible: hovered
                         ToolTip.text: "재생 헤드 타임코드 입력"
                     }
+                    AppButton {
+                        text: EditorController.selectedClipVideoMuted ? "V 복원" : "V 검게"
+                        compact: true
+                        highlighted: EditorController.selectedClipVideoMuted
+                        enabled: EditorController.selectedClipIds.length > 0
+                        onClicked: EditorController.setSelectedClipVideoMuted(
+                            !EditorController.selectedClipVideoMuted)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "비디오는 검게 유지하고 오디오·길이는 보존"
+                    }
+                    AppButton {
+                        text: "[←"
+                        compact: true
+                        enabled: EditorController.selectedClipId.length > 0
+                        onClicked: EditorController.trimSelectedStartToPlayhead()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "선택 클립 시작을 재생 헤드까지 트림 · Alt+["
+                    }
+                    AppButton {
+                        text: "→]"
+                        compact: true
+                        enabled: EditorController.selectedClipId.length > 0
+                        onClicked: EditorController.trimSelectedEndToPlayhead()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "선택 클립 끝을 재생 헤드까지 트림 · Alt+]"
+                    }
                     Label {
                         text: "호버 스키밍  ·  JKL 셔틀  ·  Shift+Z 맞춤"
                         color: "#687484"
@@ -2557,10 +3299,11 @@ ApplicationWindow {
                                 x: 12 + timelineThumbnails.contentWidth *
                                    (modelData.timelineInNs - timeline.viewportStartNs) /
                                    Math.max(1, timeline.viewportDurationNs)
-                                y: 30
+                                y: 30 + (2 - root.timelineClipHeight) * 14
                                 width: timelineThumbnails.contentWidth * modelData.durationNs /
                                        Math.max(1, timeline.viewportDurationNs)
-                                height: Math.max(1, timelineThumbnails.height - 44)
+                                height: Math.max(36, timelineThumbnails.height - 44 -
+                                                 (2 - root.timelineClipHeight) * 28)
                                 visible: x + width > 12 && x < timelineThumbnails.width - 12
                                 clip: true
 
@@ -2576,7 +3319,8 @@ ApplicationWindow {
                                     anchors.top: parent.top
                                     anchors.bottom: parent.bottom
                                     anchors.topMargin: 23
-                                    visible: modelData.thumbnailAtlas.length > 0
+                                    visible: root.timelineClipAppearance < 2 &&
+                                             modelData.thumbnailAtlas.length > 0
                                     source: visible
                                         ? "file:///" + modelData.thumbnailAtlas.replace(/\\/g, "/")
                                         : ""
@@ -2591,6 +3335,37 @@ ApplicationWindow {
                                     fillMode: Image.Stretch
                                     asynchronous: true
                                     cache: true
+                                }
+                                Canvas {
+                                    id: clipWaveform
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    height: root.timelineClipAppearance === 2
+                                            ? parent.height - 23 : Math.min(38, parent.height - 23)
+                                    visible: (root.timelineClipAppearance === 0 ||
+                                              root.timelineClipAppearance === 2) &&
+                                             modelData.waveform.length > 1
+                                    opacity: root.timelineClipAppearance === 0 ? 0.82 : 1.0
+                                    onWidthChanged: requestPaint()
+                                    onHeightChanged: requestPaint()
+                                    onPaint: {
+                                        const ctx = getContext("2d")
+                                        ctx.clearRect(0, 0, width, height)
+                                        ctx.strokeStyle = "#72d2c5"
+                                        ctx.lineWidth = 1
+                                        ctx.beginPath()
+                                        const peaks = modelData.waveform
+                                        const center = height / 2
+                                        for (let x = 0; x < width; ++x) {
+                                            const index = Math.min(peaks.length - 1,
+                                                Math.floor(x * peaks.length / Math.max(1, width)))
+                                            const amplitude = Math.min(1, Math.abs(peaks[index])) * center
+                                            ctx.moveTo(x, center - amplitude)
+                                            ctx.lineTo(x, center + amplitude)
+                                        }
+                                        ctx.stroke()
+                                    }
                                 }
                                 Rectangle {
                                     anchors.left: parent.left
@@ -2632,6 +3407,13 @@ ApplicationWindow {
                                         width: 1; height: 18; color: "#171717"
                                     }
                                 }
+                                Rectangle {
+                                    visible: modelData.throughEditToNext
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 3; height: 24
+                                    color: "#f05d5d"
+                                }
                             }
                         }
                     }
@@ -2647,6 +3429,9 @@ ApplicationWindow {
                         clips: EditorController.clips
                         selectedClipId: EditorController.selectedClipId
                         selectedClipIds: EditorController.selectedClipIds
+                        markers: EditorController.timelineMarkers
+                        toolMode: EditorController.timelineToolMode
+                        snapping: EditorController.timelineSnapping
                         onSeekRequested: (position, finalPosition) =>
                             EditorController.scrub(position, finalPosition)
                         onSkimRequested: (position, active) =>
@@ -2658,6 +3443,94 @@ ApplicationWindow {
                             EditorController.trimClip(clipId, sourceIn, duration)
                         onMoveCommitted: (clipIds, insertionIndex) =>
                             EditorController.moveClips(clipIds, insertionIndex)
+                        onRollCommitted: (leftClipId, rightClipId, timelineDelta) =>
+                            EditorController.rollCut(leftClipId, rightClipId, timelineDelta)
+                        onSlipCommitted: (clipId, timelineDelta) =>
+                            EditorController.slipClip(clipId, timelineDelta)
+                        onSlideCommitted: (clipId, timelineDelta) =>
+                            EditorController.slideClip(clipId, timelineDelta)
+                        onBladeCommitted: position => EditorController.bladeAt(position)
+                        onRangeCommitted: (timelineIn, timelineOut) =>
+                            EditorController.setTimelineRange(timelineIn, timelineOut)
+                        onPrecisionEditRequested: (leftClipId, rightClipId) => {
+                            precisionEditor.leftClipId = leftClipId
+                            precisionEditor.rightClipId = rightClipId
+                            EditorController.beginDynamicRoll(leftClipId, rightClipId)
+                            precisionEditor.open()
+                        }
+                    }
+
+                    Dialog {
+                        id: precisionEditor
+                        property string leftClipId: ""
+                        property string rightClipId: ""
+                        title: "Precision Editor · J/L 동적 롤"
+                        modal: false
+                        anchors.centerIn: parent
+                        width: Math.min(620, timelineLayer.width - 40)
+                        onClosed: EditorController.endDynamicTrim()
+                        contentItem: ColumnLayout {
+                            spacing: 8
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Rectangle {
+                                    Layout.fillWidth: true; Layout.preferredHeight: 110
+                                    color: "#18212b"; border.color: "#78a5ff"
+                                    Label {
+                                        anchors.centerIn: parent
+                                        text: "나가는 클립\n" + precisionEditor.leftClipId
+                                        horizontalAlignment: Text.AlignHCenter
+                                        color: "white"
+                                    }
+                                }
+                                Rectangle {
+                                    Layout.fillWidth: true; Layout.preferredHeight: 110
+                                    color: "#18212b"; border.color: "#f0c66a"
+                                    Label {
+                                        anchors.centerIn: parent
+                                        text: "들어오는 클립\n" + precisionEditor.rightClipId
+                                        horizontalAlignment: Text.AlignHCenter
+                                        color: "white"
+                                    }
+                                }
+                            }
+                            Label {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: "J / L: 한 원본 프레임씩 롤 · 드래그: 타임라인 컷 이동"
+                                color: "#aeb8c5"
+                            }
+                            Button {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: "through-edit 조인"
+                                onClicked: {
+                                    EditorController.joinThroughEdit(
+                                        precisionEditor.leftClipId, precisionEditor.rightClipId)
+                                    precisionEditor.close()
+                                }
+                            }
+                        }
+                    }
+
+                    Dialog {
+                        id: shortcutHelp
+                        title: "편집 도구와 단축키"
+                        modal: false
+                        anchors.centerIn: parent
+                        width: Math.min(560, timelineLayer.width - 40)
+                        contentItem: Label {
+                            padding: 14
+                            color: "#dce5ef"
+                            font.family: "Consolas"
+                            text: "A 선택    B 블레이드    T 트림    R 범위    N 스냅\n" +
+                                  "E 끝 추가  W/, 삽입     D/. 덮기   Shift+R 교체\n" +
+                                  "J K L 셔틀 · K+J/L 프레임 · Home/End · Shift+Z 맞춤\n" +
+                                  "I/O 타임라인·소스 범위 · Shift+M 마커 · M 오디오 음소거\n" +
+                                  "Ctrl+K 스키머/재생헤드 분할 · Alt+[ / Alt+] 헤드까지 트림\n" +
+                                  "컷 더블클릭 Precision Editor · J/L Dynamic Roll\n\n" +
+                                  "A/B/T/R은 누르는 동안 임시 도구이며 놓으면 이전 도구로 돌아갑니다.\n" +
+                                  "텍스트·SpinBox·ComboBox 포커스에서는 재생 키가 동작하지 않습니다."
+                            wrapMode: Text.WordWrap
+                        }
                     }
 
                     Item {
@@ -2791,6 +3664,41 @@ ApplicationWindow {
                                         font.bold: true
                                         font.pixelSize: 14
                                     }
+                                }
+                            }
+                        }
+                    }
+
+                    Repeater {
+                        model: EditorController.timelineMarkers
+                        delegate: Item {
+                            required property var modelData
+                            z: 5
+                            x: 12 + (timelineLayer.width - 24) *
+                               (modelData.timelineTimeNs - timeline.viewportStartNs) /
+                               Math.max(1, timeline.viewportDurationNs) - 5
+                            y: 26
+                            visible: modelData.timelineTimeNs >= timeline.viewportStartNs &&
+                                     modelData.timelineTimeNs <= timeline.viewportStartNs +
+                                                                         timeline.viewportDurationNs
+                            width: 11; height: timelineLayer.height - 30
+                            Rectangle {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: 1; height: parent.height
+                                color: "#ef6b5d"
+                            }
+                            Rectangle {
+                                width: 10; height: 10
+                                rotation: 45
+                                color: "#ef6b5d"
+                                ToolTip.visible: markerMouse.containsMouse
+                                ToolTip.text: modelData.name + " · Shift+M"
+                                MouseArea {
+                                    id: markerMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    acceptedButtons: Qt.RightButton
+                                    onClicked: EditorController.deleteTimelineMarker(modelData.id)
                                 }
                             }
                         }

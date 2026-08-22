@@ -321,6 +321,105 @@ void TimelineModel::trim_clip_to_frame_boundaries(
     trim_clip(clip_id, snappedIn, snappedOut - snappedIn);
 }
 
+void TimelineModel::roll_cut(
+    const std::string& left_clip_id,
+    const std::string& right_clip_id,
+    TimeNs timeline_delta) {
+    if (timeline_delta == 0) return;
+    const auto leftIndex = index_of(left_clip_id);
+    const auto rightIndex = index_of(right_clip_id);
+    if (rightIndex != leftIndex + 1) {
+        throw std::invalid_argument("roll edit requires adjacent clips");
+    }
+    if (clips_[rightIndex].transition_in > 0) {
+        throw std::invalid_argument("roll edit across a dissolve is not supported");
+    }
+
+    auto left = clips_[leftIndex];
+    auto right = clips_[rightIndex];
+    const auto leftSourceDelta = left.source_offset_for_timeline(timeline_delta);
+    const auto rightSourceDelta = right.source_offset_for_timeline(timeline_delta);
+    left.duration = checked_add(left.duration, leftSourceDelta);
+    right.source_in = checked_add(right.source_in, rightSourceDelta);
+    right.duration = checked_add(right.duration, -rightSourceDelta);
+    validate_clip(left, leftIndex);
+    validate_clip(right, rightIndex);
+    if (left.timeline_duration() + right.timeline_duration() !=
+        clips_[leftIndex].timeline_duration() + clips_[rightIndex].timeline_duration()) {
+        throw std::invalid_argument("roll edit cannot preserve duration at this playback rate");
+    }
+    record_edit();
+    clips_[leftIndex] = std::move(left);
+    clips_[rightIndex] = std::move(right);
+    normalize_transitions();
+}
+
+void TimelineModel::slip_clip(const std::string& clip_id, TimeNs timeline_delta) {
+    if (timeline_delta == 0) return;
+    const auto index = index_of(clip_id);
+    auto replacement = clips_[index];
+    replacement.source_in = checked_add(
+        replacement.source_in,
+        replacement.source_offset_for_timeline(timeline_delta));
+    validate_clip(replacement, index);
+    record_edit();
+    clips_[index] = std::move(replacement);
+    normalize_transitions();
+}
+
+void TimelineModel::slide_clip(const std::string& clip_id, TimeNs timeline_delta) {
+    if (timeline_delta == 0) return;
+    const auto index = index_of(clip_id);
+    if (index == 0 || index + 1 >= clips_.size()) {
+        throw std::invalid_argument("slide edit requires clips on both sides");
+    }
+    if (clips_[index].transition_in > 0 || clips_[index + 1].transition_in > 0) {
+        throw std::invalid_argument("slide edit across a dissolve is not supported");
+    }
+
+    auto previous = clips_[index - 1];
+    auto next = clips_[index + 1];
+    const auto previousSourceDelta = previous.source_offset_for_timeline(timeline_delta);
+    const auto nextSourceDelta = next.source_offset_for_timeline(timeline_delta);
+    previous.duration = checked_add(previous.duration, previousSourceDelta);
+    next.source_in = checked_add(next.source_in, nextSourceDelta);
+    next.duration = checked_add(next.duration, -nextSourceDelta);
+    validate_clip(previous, index - 1);
+    validate_clip(next, index + 1);
+    if (previous.timeline_duration() + next.timeline_duration() !=
+        clips_[index - 1].timeline_duration() + clips_[index + 1].timeline_duration()) {
+        throw std::invalid_argument("slide edit cannot preserve duration at this playback rate");
+    }
+    record_edit();
+    clips_[index - 1] = std::move(previous);
+    clips_[index + 1] = std::move(next);
+    normalize_transitions();
+}
+
+void TimelineModel::join_through_edit(
+    const std::string& left_clip_id, const std::string& right_clip_id) {
+    const auto leftIndex = index_of(left_clip_id);
+    const auto rightIndex = index_of(right_clip_id);
+    if (rightIndex != leftIndex + 1) {
+        throw std::invalid_argument("through edit requires adjacent clips");
+    }
+    const auto& left = clips_[leftIndex];
+    const auto& right = clips_[rightIndex];
+    if (left.asset_id != right.asset_id || left.source_out() != right.source_in ||
+        left.playback_rate != right.playback_rate || left.audio != right.audio ||
+        left.color != right.color || left.grade != right.grade ||
+        left.video_muted != right.video_muted || right.transition_in != 0) {
+        throw std::invalid_argument("cut is not a joinable through edit");
+    }
+    auto joined = left;
+    joined.duration = checked_add(left.duration, right.duration);
+    validate_clip(joined, leftIndex);
+    record_edit();
+    clips_[leftIndex] = std::move(joined);
+    clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(rightIndex));
+    normalize_transitions();
+}
+
 void TimelineModel::trim_all_clip_edges(
     std::size_t front_frames,
     std::size_t back_frames) {
@@ -737,6 +836,43 @@ void TimelineModel::split_at(
     normalize_transitions();
 }
 
+void TimelineModel::set_clips_video_muted(
+    const std::vector<std::string>& clip_ids, bool muted) {
+    if (clip_ids.empty()) return;
+    const std::unordered_set<std::string> uniqueIds(clip_ids.begin(), clip_ids.end());
+    if (uniqueIds.size() != clip_ids.size()) {
+        throw std::invalid_argument("clip video selection contains duplicate ids");
+    }
+    bool changed = false;
+    for (const auto& id : uniqueIds) changed = changed || clips_[index_of(id)].video_muted != muted;
+    if (!changed) return;
+    record_edit();
+    for (auto& clip : clips_) {
+        if (uniqueIds.contains(clip.id)) clip.video_muted = muted;
+    }
+}
+
+void TimelineModel::add_marker(TimelineMarker marker) {
+    if (marker.id.empty() || marker.timeline_time < 0 || marker.timeline_time > duration()) {
+        throw std::invalid_argument("timeline marker is invalid");
+    }
+    if (std::ranges::any_of(markers_, [&marker](const auto& value) {
+            return value.id == marker.id;
+        })) {
+        throw std::invalid_argument("duplicate timeline marker id");
+    }
+    record_edit();
+    markers_.push_back(std::move(marker));
+    std::ranges::sort(markers_, {}, &TimelineMarker::timeline_time);
+}
+
+void TimelineModel::erase_marker(const std::string& marker_id) {
+    const auto found = std::ranges::find(markers_, marker_id, &TimelineMarker::id);
+    if (found == markers_.end()) throw std::out_of_range("timeline marker was not found");
+    record_edit();
+    markers_.erase(found);
+}
+
 void TimelineModel::begin_coalesced_edit() {
     if (coalescing_) return;
     coalescing_ = true;
@@ -753,9 +889,11 @@ bool TimelineModel::undo() {
     if (undo_stack_.empty()) {
         return false;
     }
-    redo_stack_.push_back(EditState{std::move(clips_), std::move(captions_)});
+    redo_stack_.push_back(EditState{
+        std::move(clips_), std::move(captions_), std::move(markers_)});
     clips_ = std::move(undo_stack_.back().clips);
     captions_ = std::move(undo_stack_.back().captions);
+    markers_ = std::move(undo_stack_.back().markers);
     undo_stack_.pop_back();
     ++revision_;
     return true;
@@ -766,9 +904,11 @@ bool TimelineModel::redo() {
     if (redo_stack_.empty()) {
         return false;
     }
-    undo_stack_.push_back(EditState{std::move(clips_), std::move(captions_)});
+    undo_stack_.push_back(EditState{
+        std::move(clips_), std::move(captions_), std::move(markers_)});
     clips_ = std::move(redo_stack_.back().clips);
     captions_ = std::move(redo_stack_.back().captions);
+    markers_ = std::move(redo_stack_.back().markers);
     redo_stack_.pop_back();
     ++revision_;
     return true;
@@ -785,7 +925,7 @@ void TimelineModel::record_edit() {
         ++revision_;
         return;
     }
-    undo_stack_.push_back(EditState{clips_, captions_});
+    undo_stack_.push_back(EditState{clips_, captions_, markers_});
     redo_stack_.clear();
     ++revision_;
     if (coalescing_) coalesced_recorded_ = true;
@@ -1000,6 +1140,11 @@ void TimelineModel::ripple_captions_for_insert(
             caption.timeline_in = checked_add(caption.timeline_in, inserted_duration);
         }
     }
+    for (auto& marker : markers_) {
+        if (marker.timeline_time >= timeline_position) {
+            marker.timeline_time = checked_add(marker.timeline_time, inserted_duration);
+        }
+    }
 }
 
 void TimelineModel::ripple_captions_for_delete(TimeNs timeline_in, TimeNs timeline_out) {
@@ -1026,6 +1171,12 @@ void TimelineModel::ripple_captions_for_delete(TimeNs timeline_in, TimeNs timeli
         }
     }
     captions_ = std::move(transformed);
+    std::erase_if(markers_, [timeline_in, timeline_out](const auto& marker) {
+        return marker.timeline_time >= timeline_in && marker.timeline_time < timeline_out;
+    });
+    for (auto& marker : markers_) {
+        if (marker.timeline_time >= timeline_out) marker.timeline_time -= removed;
+    }
 }
 
 void TimelineModel::validate_clip(const Clip& clip, std::optional<std::size_t> replacing) const {

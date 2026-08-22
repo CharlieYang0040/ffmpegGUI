@@ -41,6 +41,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(QVariantList clips READ clips NOTIFY clipsChanged)
     Q_PROPERTY(QVariantList mediaAssets READ mediaAssets NOTIFY mediaAssetsChanged)
     Q_PROPERTY(QVariantList captions READ captions NOTIFY captionsChanged)
+    Q_PROPERTY(QVariantList timelineMarkers READ timelineMarkers NOTIFY timelineChanged)
     Q_PROPERTY(qint64 durationNs READ durationNs NOTIFY timelineChanged)
     Q_PROPERTY(qint64 playheadNs READ playheadNs NOTIFY playheadChanged)
     Q_PROPERTY(qint64 inPointNs READ inPointNs NOTIFY rangeChanged)
@@ -55,6 +56,8 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool sourcePlaying READ sourcePlaying NOTIFY sourceViewerChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
     Q_PROPERTY(qreal shuttleRate READ shuttleRate NOTIFY shuttleRateChanged)
+    Q_PROPERTY(int previewQuality READ previewQuality WRITE setPreviewQuality NOTIFY editUiChanged)
+    Q_PROPERTY(qreal programAudioPeak READ programAudioPeak NOTIFY playheadChanged)
     Q_PROPERTY(bool previewBusy READ previewBusy NOTIFY previewBusyChanged)
     Q_PROPERTY(bool previewFailed READ previewFailed NOTIFY previewFailedChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
@@ -69,6 +72,9 @@ class EditorController final : public QObject {
     Q_PROPERTY(int selectedClipContrast READ selectedClipContrast NOTIFY selectedClipChanged)
     Q_PROPERTY(int selectedClipSaturation READ selectedClipSaturation NOTIFY selectedClipChanged)
     Q_PROPERTY(int selectedClipDissolveMs READ selectedClipDissolveMs NOTIFY selectedClipChanged)
+    Q_PROPERTY(bool selectedClipVideoMuted READ selectedClipVideoMuted NOTIFY selectedClipChanged)
+    Q_PROPERTY(int timelineToolMode READ timelineToolMode WRITE setTimelineToolMode NOTIFY editUiChanged)
+    Q_PROPERTY(bool timelineSnapping READ timelineSnapping WRITE setTimelineSnapping NOTIFY editUiChanged)
     Q_PROPERTY(QString selectedCaptionId READ selectedCaptionId NOTIFY captionSelectionChanged)
     Q_PROPERTY(QString selectedCaptionText READ selectedCaptionText NOTIFY captionSelectionChanged)
     Q_PROPERTY(int selectedCaptionDurationMs READ selectedCaptionDurationMs NOTIFY captionSelectionChanged)
@@ -126,6 +132,8 @@ class EditorController final : public QObject {
     Q_PROPERTY(int scopeMode READ scopeMode WRITE setScopeMode NOTIFY scopeSettingsChanged)
     Q_PROPERTY(int scopeReferenceStage READ scopeReferenceStage WRITE setScopeReferenceStage NOTIFY scopeSettingsChanged)
     Q_PROPERTY(int reviewOverlayMode READ reviewOverlayMode WRITE setReviewOverlayMode NOTIFY scopeSettingsChanged)
+    Q_PROPERTY(int gradeMatteMode READ gradeMatteMode NOTIFY gradeUiChanged)
+    Q_PROPERTY(QString gradeMatteNodeId READ gradeMatteNodeId NOTIFY gradeUiChanged)
     Q_PROPERTY(QString pixelInspectorText READ pixelInspectorText NOTIFY scopeFrameChanged)
     Q_PROPERTY(QString scopeStageHint READ scopeStageHint NOTIFY scopeFrameChanged)
     Q_PROPERTY(qreal outOfGamutPercent READ outOfGamutPercent NOTIFY scopeFrameChanged)
@@ -156,6 +164,7 @@ public:
     [[nodiscard]] QVariantList clips() const;
     [[nodiscard]] QVariantList mediaAssets() const;
     [[nodiscard]] QVariantList captions() const;
+    [[nodiscard]] QVariantList timelineMarkers() const;
     [[nodiscard]] qint64 durationNs() const noexcept;
     [[nodiscard]] qint64 playheadNs() const noexcept { return playhead_ns_; }
     [[nodiscard]] qint64 inPointNs() const noexcept { return in_point_ns_; }
@@ -170,6 +179,8 @@ public:
     [[nodiscard]] bool sourcePlaying() const noexcept { return source_playing_; }
     [[nodiscard]] bool playing() const noexcept { return playing_; }
     [[nodiscard]] qreal shuttleRate() const noexcept { return shuttle_rate_; }
+    [[nodiscard]] int previewQuality() const noexcept { return preview_quality_; }
+    [[nodiscard]] qreal programAudioPeak() const noexcept;
     [[nodiscard]] bool previewBusy() const noexcept { return preview_busy_; }
     [[nodiscard]] bool previewFailed() const noexcept { return preview_failed_; }
     [[nodiscard]] QString status() const { return status_; }
@@ -184,6 +195,9 @@ public:
     [[nodiscard]] int selectedClipContrast() const noexcept;
     [[nodiscard]] int selectedClipSaturation() const noexcept;
     [[nodiscard]] int selectedClipDissolveMs() const noexcept;
+    [[nodiscard]] bool selectedClipVideoMuted() const noexcept;
+    [[nodiscard]] int timelineToolMode() const noexcept { return timeline_tool_mode_; }
+    [[nodiscard]] bool timelineSnapping() const noexcept { return timeline_snapping_; }
     [[nodiscard]] QString selectedCaptionId() const { return selected_caption_id_; }
     [[nodiscard]] QString selectedCaptionText() const;
     [[nodiscard]] int selectedCaptionDurationMs() const noexcept;
@@ -283,6 +297,8 @@ public:
     [[nodiscard]] std::uint64_t videoFramesDelivered() const noexcept {
         return video_frames_delivered_;
     }
+    [[nodiscard]] int gradeMatteMode() const noexcept { return grade_matte_mode_; }
+    [[nodiscard]] QString gradeMatteNodeId() const { return grade_matte_node_id_; }
     [[nodiscard]] std::uint64_t audioBuffersReceived() const noexcept;
     [[nodiscard]] std::uint64_t videoFramesReceived() const noexcept;
     [[nodiscard]] std::uint64_t previewRebuildCount() const noexcept {
@@ -332,6 +348,21 @@ public slots:
     void stop();
     void selectClip(const QString& clipId, int mode = 0);
     void trimClip(const QString& clipId, qint64 sourceIn, qint64 duration);
+    void rollCut(const QString& leftClipId, const QString& rightClipId, qint64 timelineDelta);
+    void slipClip(const QString& clipId, qint64 timelineDelta);
+    void slideClip(const QString& clipId, qint64 timelineDelta);
+    void bladeAt(qint64 timelinePosition);
+    void trimSelectedStartToPlayhead();
+    void trimSelectedEndToPlayhead();
+    void setTimelineRange(qint64 timelineIn, qint64 timelineOut);
+    void setTimelineToolMode(int mode);
+    void setTimelineSnapping(bool enabled);
+    void setPreviewQuality(int quality);
+    void beginDynamicRoll(const QString& leftClipId, const QString& rightClipId);
+    void endDynamicTrim();
+    void joinThroughEdit(const QString& leftClipId, const QString& rightClipId);
+    void addTimelineMarker();
+    void deleteTimelineMarker(const QString& markerId);
     void moveClip(const QString& clipId, int insertionIndex);
     void moveClips(const QStringList& clipIds, int insertionIndex);
     void insertAssetAtTime(const QString& assetId, qint64 timelinePosition);
@@ -364,6 +395,7 @@ public slots:
     void setSelectedClipContrast(int percent);
     void setSelectedClipSaturation(int percent);
     void setSelectedClipDissolveMs(int milliseconds);
+    void setSelectedClipVideoMuted(bool muted);
     void trimAllClipEdges(int frontFrames, int backFrames);
     void addCaptionAtPlayhead();
     void addTextOverlay(const QString& text, int durationMs);
@@ -426,6 +458,10 @@ public slots:
     void toggleGradeParameterKeyframe(const QString& nodeId, const QString& parameter);
     void setGradeCurveMidpoint(
         const QString& nodeId, const QString& curveName, int adjustmentPercent);
+    void setGradeCurvePoints(
+        const QString& nodeId, const QString& curveName, const QVariantList& points);
+    void setGradeMatteMode(const QString& nodeId, int mode);
+    void sampleQualifierAt(const QString& nodeId, qreal normalizedX, qreal normalizedY);
     void setScopesVisible(bool visible);
     void setScopeMode(int mode);
     void setScopeReferenceStage(int stage);
@@ -458,6 +494,7 @@ public slots:
     [[nodiscard]] qint64 frameNumberAt(qint64 timelinePosition) const;
     [[nodiscard]] qint64 frameCountBetween(qint64 first, qint64 second) const;
     [[nodiscard]] bool outputExists(const QUrl& url) const;
+    [[nodiscard]] bool editingShortcutAllowed() const { return !transportTextInputFocused(); }
     [[nodiscard]] QUrl uniqueOutputUrl(const QUrl& url) const;
     void attachVideoItem(QObject* item);
     void refreshVideoWindowHandle();
@@ -493,6 +530,7 @@ signals:
     void scopeFrameChanged();
     void gradeClipboardChanged();
     void gradeUiChanged();
+    void editUiChanged();
     void gifEstimateChanged();
     void exportFinished(bool success, QUrl outputUrl);
 
@@ -627,9 +665,17 @@ private:
     QString selected_clip_id_;
     QStringList selected_clip_ids_;
     QString selection_anchor_id_;
+    int timeline_tool_mode_{};
+    int persistent_timeline_tool_mode_{};
+    int temporary_tool_key_{};
+    bool timeline_snapping_{true};
+    int preview_quality_{1};
+    QString dynamic_roll_left_id_;
+    QString dynamic_roll_right_id_;
     std::uint64_t generated_clip_id_{};
     std::uint64_t generated_asset_id_{};
     std::uint64_t generated_caption_id_{};
+    std::uint64_t generated_marker_id_{};
     std::uint64_t generated_grade_node_id_{};
     std::optional<ffgui::GradeNode> grade_node_clipboard_;
     QString grade_clipboard_source_clip_id_;
@@ -656,6 +702,8 @@ private:
     int scope_mode_{};
     int scope_reference_stage_{2};
     ffgui::ReviewOverlayMode review_overlay_mode_{ffgui::ReviewOverlayMode::off};
+    int grade_matte_mode_{};
+    QString grade_matte_node_id_;
     bool preview_compare_enabled_{};
     int look_export_cube_size_{33};
     int look_export_encoding_{2};

@@ -930,6 +930,57 @@ void test_oiio_probe_reports_exr_layers_alpha_and_color_space() {
     std::filesystem::remove_all(root);
 }
 
+void test_oiio_roundtrips_png_webp_and_dpx_fixtures() {
+    const auto root = std::filesystem::temp_directory_path() / "ffgui-oiio-format-matrix";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+
+    const std::array<std::uint8_t, 16> rgba{
+        255, 0, 0, 64, 0, 255, 0, 128,
+        0, 0, 255, 192, 255, 255, 255, 255};
+    const auto writeRgba = [&](const std::filesystem::path& path) {
+        OIIO::ImageSpec spec(2, 2, 4, OIIO::TypeDesc::UINT8);
+        spec.channelnames = {"R", "G", "B", "A"};
+        spec.alpha_channel = 3;
+        auto output = OIIO::ImageOutput::create(path.string());
+        require(static_cast<bool>(output) && output->open(path.string(), spec) &&
+                    output->write_image(OIIO::TypeDesc::UINT8, rgba.data()) && output->close(),
+                "OpenImageIO RGBA fixture must be written");
+    };
+    for (const auto* extension : {"png", "webp"}) {
+        const auto path = root / (std::string("rgba.") + extension);
+        writeRgba(path);
+        const auto metadata = ffgui::probe_image_metadata(path);
+        require(metadata.parts.size() == 1 && metadata.parts[0].has_alpha,
+                "PNG and WebP probes must retain alpha metadata");
+        const auto frame = ffgui::read_float_image_frame(
+            {path, metadata.parts[0].name, {"R", "G", "B", "A"}});
+        require(frame.width == 2 && frame.height == 2 && frame.rgba.size() == 16 &&
+                    frame.rgba[3] > 0.20F && frame.rgba[3] < 0.30F &&
+                    frame.rgba[15] > 0.99F,
+                "PNG and WebP fixtures must decode dimensions and alpha values");
+    }
+
+    const auto dpxPath = root / "rgb.dpx";
+    const std::array<std::uint8_t, 12> rgb{
+        255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255};
+    OIIO::ImageSpec dpxSpec(2, 2, 3, OIIO::TypeDesc::UINT8);
+    dpxSpec.channelnames = {"R", "G", "B"};
+    auto dpxOutput = OIIO::ImageOutput::create(dpxPath.string());
+    require(static_cast<bool>(dpxOutput) && dpxOutput->open(dpxPath.string(), dpxSpec) &&
+                dpxOutput->write_image(OIIO::TypeDesc::UINT8, rgb.data()) && dpxOutput->close(),
+            "OpenImageIO DPX fixture must be written");
+    const auto dpxMetadata = ffgui::probe_image_metadata(dpxPath);
+    const auto dpxFrame = ffgui::read_float_image_frame(
+        {dpxPath, dpxMetadata.parts[0].name, {"R", "G", "B", "A"}});
+    require(dpxFrame.width == 2 && dpxFrame.height == 2 &&
+                dpxFrame.rgba[0] > 0.99F && dpxFrame.rgba[1] < 0.01F &&
+                dpxFrame.rgba[3] > 0.99F,
+            "DPX fixture must decode RGB and synthesize opaque alpha");
+
+    std::filesystem::remove_all(root);
+}
+
 void test_magnetic_trim_closes_space() {
     auto timeline = make_timeline();
     timeline.append_clip(Clip{"clip-a", "asset-a", seconds(1), seconds(6)});
@@ -1153,6 +1204,76 @@ void test_time_insert_splits_once_and_is_single_step_undoable() {
         "unused-left",
         "unused-right");
     require(timeline.clips().back().id == "tail", "inserting at the end must append");
+}
+
+void test_roll_slip_and_slide_are_atomic_duration_preserving_edits() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"left", "asset-a", seconds(1), seconds(3)});
+    timeline.append_clip(Clip{"middle", "asset-a", seconds(2), seconds(3)});
+    timeline.append_clip(Clip{"right", "asset-b", seconds(4), seconds(4)});
+    const auto original = timeline.clips();
+    const auto originalDuration = timeline.duration();
+
+    timeline.roll_cut("left", "middle", seconds(1));
+    require(timeline.duration() == originalDuration,
+            "roll must preserve the total timeline duration");
+    require(timeline.clips()[0].duration == seconds(4) &&
+                timeline.clips()[1].source_in == seconds(3) &&
+                timeline.clips()[1].duration == seconds(2),
+            "roll must extend outgoing and trim incoming at the same cut");
+    require(timeline.undo() && timeline.clips() == original,
+            "roll must be a single undoable edit");
+
+    timeline.slip_clip("middle", seconds(1));
+    require(timeline.duration() == originalDuration &&
+                timeline.clips()[1].source_in == seconds(3) &&
+                timeline.clips()[1].duration == seconds(3),
+            "slip must move only the source range");
+    require(timeline.undo() && timeline.clips() == original,
+            "slip must be a single undoable edit");
+
+    timeline.slide_clip("middle", seconds(1));
+    require(timeline.duration() == originalDuration && timeline.clips()[1] == original[1],
+            "slide must preserve the selected clip and total duration");
+    require(timeline.clips()[0].duration == seconds(4) &&
+                timeline.clips()[2].source_in == seconds(5) &&
+                timeline.clips()[2].duration == seconds(3),
+            "slide must redistribute duration between neighboring clips");
+    require(timeline.undo() && timeline.clips() == original,
+            "slide must be a single undoable edit");
+
+    const auto beforeRejected = timeline.clips();
+    require_throws<std::invalid_argument>(
+        [&] { timeline.slide_clip("left", seconds(1)); },
+        "slide must reject a clip without both neighbors");
+    require(timeline.clips() == beforeRejected,
+            "a rejected trim-mode edit must not mutate the timeline");
+}
+
+void test_markers_video_mute_and_through_edit_follow_model_history() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"original", "asset-a", seconds(1), seconds(6)});
+    timeline.add_marker(ffgui::TimelineMarker{"marker", seconds(3), "Beat"});
+    timeline.insert_clip(0, Clip{"head", "asset-b", 0, seconds(1)});
+    require(timeline.markers().front().timeline_time == seconds(4),
+            "markers must ripple with inserted media");
+    timeline.set_clips_video_muted({"original"}, true);
+    require(timeline.clips()[1].video_muted,
+            "video mute must be stored on the clip without changing duration");
+    require(timeline.undo() && !timeline.clips()[1].video_muted,
+            "video mute must be undoable");
+
+    timeline.split_at(seconds(3), "left", "right");
+    require(timeline.clips().size() == 3,
+            "split must create the through-edit pair after the head clip");
+    const auto splitDuration = timeline.duration();
+    timeline.join_through_edit("left", "right");
+    require(timeline.clips().size() == 2 && timeline.duration() == splitDuration &&
+                timeline.clips()[1].id == "left" &&
+                timeline.clips()[1].duration == seconds(6),
+            "joining a through edit must restore one continuous clip");
+    require(timeline.undo() && timeline.clips().size() == 3,
+            "through-edit join must be one undoable edit");
 }
 
 void test_overwrite_preserves_duration_remainders_grades_and_single_undo() {
@@ -1593,6 +1714,15 @@ void test_ffmpeg_export_plan_applies_clip_audio_controls() {
     for (const auto& argument : muted.arguments) mutedArguments += argument + '\n';
     require(mutedArguments.contains("volume=0.000000"),
             "muted clips must render silent audio");
+
+    request.clips[0].audio_muted = false;
+    request.clips[0].video_muted = true;
+    const auto videoMuted = ffgui::compile_ffmpeg_export(request);
+    std::string videoMutedArguments;
+    for (const auto& argument : videoMuted.arguments) videoMutedArguments += argument + '\n';
+    require(videoMuted.mode == ffgui::ExportMode::transcode &&
+                videoMutedArguments.contains("colorchannelmixer=rr=0:gg=0:bb=0"),
+            "video mute must disable stream copy and render black while preserving audio");
 }
 
 void test_ffmpeg_export_plan_burns_timeline_captions() {
@@ -2079,7 +2209,10 @@ int main() {
         {"coalesced_grade_parameter_edits_are_one_undo_step", test_coalesced_grade_parameter_edits_are_one_undo_step},
         {"scope_analyzer_builds_histogram_waveform_parade_and_vectorscope", test_scope_analyzer_builds_histogram_waveform_parade_and_vectorscope},
         {"oiio_probe_reports_exr_layers_alpha_and_color_space", test_oiio_probe_reports_exr_layers_alpha_and_color_space},
+        {"oiio_roundtrips_png_webp_and_dpx_fixtures", test_oiio_roundtrips_png_webp_and_dpx_fixtures},
         {"magnetic_trim_closes_space", test_magnetic_trim_closes_space},
+        {"roll_slip_and_slide_are_atomic_duration_preserving_edits", test_roll_slip_and_slide_are_atomic_duration_preserving_edits},
+        {"markers_video_mute_and_through_edit_follow_model_history", test_markers_video_mute_and_through_edit_follow_model_history},
         {"global_frame_trim_is_atomic_magnetic_and_undoable", test_global_frame_trim_is_atomic_magnetic_and_undoable},
         {"clip_color_is_atomic_and_validated", test_clip_color_is_atomic_and_validated},
         {"dissolve_overlaps_adjacent_clips_and_is_undoable", test_dissolve_overlaps_adjacent_clips_and_is_undoable},

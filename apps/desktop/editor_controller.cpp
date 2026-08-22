@@ -472,6 +472,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     player_ = std::make_unique<ffgui::GesSequencePlayer>(
         use_d3d_scene_graph_ ? "d3d11-appsink" : "cpu-appsink",
         "wasapi2sink");
+    player_->set_preview_resolution(1280, 720);
     player_->set_video_frame_callback([this](ffgui::PreviewVideoFrame frame) {
         if (frame.cpu_format == ffgui::PreviewCpuFormat::rgba16le) {
             QMetaObject::invokeMethod(this, [this, frame = std::move(frame)]() mutable {
@@ -938,7 +939,37 @@ bool EditorController::eventFilter(QObject* watched, QEvent* event) {
     if (pressed && transportTextInputFocused()) {
         return QObject::eventFilter(watched, event);
     }
+    const auto toolForKey = [](int candidate) {
+        switch (candidate) {
+        case Qt::Key_A: return 0;
+        case Qt::Key_B: return 1;
+        case Qt::Key_T: return 2;
+        case Qt::Key_R: return 3;
+        default: return -1;
+        }
+    };
+    const auto requestedTool = modifiers == Qt::NoModifier ? toolForKey(key) : -1;
+    if (requestedTool >= 0) {
+        if (pressed) {
+            temporary_tool_key_ = key;
+            timeline_tool_mode_ = requestedTool;
+            emit editUiChanged();
+        } else if (temporary_tool_key_ == key) {
+            temporary_tool_key_ = 0;
+            timeline_tool_mode_ = persistent_timeline_tool_mode_;
+            emit editUiChanged();
+        }
+        return true;
+    }
     if (pressed) {
+        if (modifiers == Qt::ShiftModifier && key == Qt::Key_M) {
+            addTimelineMarker();
+            return true;
+        }
+        if (modifiers == Qt::NoModifier && key == Qt::Key_N) {
+            setTimelineSnapping(!timeline_snapping_);
+            return true;
+        }
         if (source_viewer_open_ && modifiers == Qt::NoModifier && key == Qt::Key_Space) {
             toggleSourcePlayback();
             return true;
@@ -986,7 +1017,11 @@ bool EditorController::eventFilter(QObject* watched, QEvent* event) {
     if (key == Qt::Key_J) {
         j_key_down_ = pressed;
         if (pressed) {
-            if (k_key_down_) stepFrame(-1);
+            if (!dynamic_roll_left_id_.isEmpty()) {
+                const auto cut = playhead_ns_;
+                const auto previous = timeline_.previous_frame_time(cut).value_or(cut - 1);
+                rollCut(dynamic_roll_left_id_, dynamic_roll_right_id_, previous - cut);
+            } else if (k_key_down_) stepFrame(-1);
             else shuttleReverse();
         } else if (k_key_down_) {
             shuttleStop();
@@ -994,7 +1029,11 @@ bool EditorController::eventFilter(QObject* watched, QEvent* event) {
     } else if (key == Qt::Key_L) {
         l_key_down_ = pressed;
         if (pressed) {
-            if (k_key_down_) stepFrame(1);
+            if (!dynamic_roll_left_id_.isEmpty()) {
+                const auto cut = playhead_ns_;
+                const auto next = timeline_.next_frame_time(cut).value_or(cut + 1);
+                rollCut(dynamic_roll_left_id_, dynamic_roll_right_id_, next - cut);
+            } else if (k_key_down_) stepFrame(1);
             else shuttleForward();
         } else if (k_key_down_) {
             shuttleStop();
@@ -1107,6 +1146,16 @@ QVariantList EditorController::clips() const {
         value.insert("contrast", span.clip.color.contrast);
         value.insert("saturation", span.clip.color.saturation);
         value.insert("transitionInNs", static_cast<qint64>(span.clip.transition_in));
+        const bool throughEdit = index + 1 < spans.size() &&
+            span.clip.asset_id == spans[index + 1].clip.asset_id &&
+            span.clip.source_out() == spans[index + 1].clip.source_in &&
+            span.clip.playback_rate == spans[index + 1].clip.playback_rate &&
+            span.clip.audio == spans[index + 1].clip.audio &&
+            span.clip.color == spans[index + 1].clip.color &&
+            span.clip.grade == spans[index + 1].clip.grade &&
+            span.clip.video_muted == spans[index + 1].clip.video_muted &&
+            spans[index + 1].clip.transition_in == 0;
+        value.insert("throughEditToNext", throughEdit);
         const auto* asset = timeline_.asset(span.clip.asset_id);
         value.insert("assetDurationNs", static_cast<qint64>(asset ? asset->duration() : 0));
         value.insert("mediaKind", asset ? mediaKindName(asset->kind()) : QStringLiteral("video"));
@@ -1261,6 +1310,18 @@ QVariantList EditorController::captions() const {
 
 qint64 EditorController::durationNs() const noexcept {
     return static_cast<qint64>(timeline_.duration());
+}
+
+QVariantList EditorController::timelineMarkers() const {
+    QVariantList result;
+    result.reserve(static_cast<qsizetype>(timeline_.markers().size()));
+    for (const auto& marker : timeline_.markers()) {
+        result.push_back(QVariantMap{
+            {"id", QString::fromStdString(marker.id)},
+            {"timelineTimeNs", marker.timeline_time},
+            {"name", QString::fromUtf8(marker.name)}});
+    }
+    return result;
 }
 
 QString EditorController::sourceAssetName() const {
@@ -1421,6 +1482,7 @@ QVariantList EditorController::selectedGradeNodes() const {
             }
         }
         QVariantMap curveMidpoints;
+        QVariantMap curves;
         for (const auto& [name, points] : node.curves) {
             auto midpoint = 0.5;
             if (!points.empty()) {
@@ -1441,6 +1503,11 @@ QVariantList EditorController::selectedGradeNodes() const {
             curveMidpoints.insert(
                 QString::fromStdString(name),
                 static_cast<int>(std::lround((midpoint - 0.5) * 200.0)));
+            QVariantList serializedPoints;
+            for (const auto& point : points) {
+                serializedPoints.push_back(QVariantMap{{"x", point.x}, {"y", point.y}});
+            }
+            curves.insert(QString::fromStdString(name), serializedPoints);
         }
         result.push_back(QVariantMap{
             {"id", QString::fromStdString(node.id)},
@@ -1456,6 +1523,7 @@ QVariantList EditorController::selectedGradeNodes() const {
             {"shared", !node.shared_id.empty()},
             {"sharedId", QString::fromStdString(node.shared_id)},
             {"curveMidpoints", curveMidpoints},
+            {"curves", curves},
             {"externalPath", QString::fromUtf8(node.external_path)},
             {"externalFileName", node.external_path.empty()
                 ? QString{} : QFileInfo(QString::fromUtf8(node.external_path)).fileName()},
@@ -2447,6 +2515,103 @@ void EditorController::submitCachedScrubFrame(qint64 timelinePosition) {
 #endif
 }
 
+void EditorController::setGradeCurvePoints(
+    const QString& nodeId, const QString& curveName, const QVariantList& points) {
+    if (selected_clip_id_.isEmpty() || curveName.isEmpty() || points.size() < 2) return;
+    touchCoalescedGradeEdit();
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    auto graph = clip->grade;
+    auto* node = graph.node(nodeId.toStdString());
+    if (node == nullptr || !node->curves.contains(curveName.toStdString())) return;
+    std::vector<ffgui::CurvePoint> replacement;
+    replacement.reserve(static_cast<std::size_t>(points.size()));
+    for (const auto& value : points) {
+        const auto point = value.toMap();
+        replacement.push_back(ffgui::CurvePoint{
+            std::clamp(point.value("x").toDouble(), 0.0, 1.0),
+            std::clamp(point.value("y").toDouble(), 0.0, 1.0)});
+    }
+    std::ranges::sort(replacement, {}, &ffgui::CurvePoint::x);
+    replacement.front().x = 0.0;
+    replacement.back().x = 1.0;
+    auto& curve = node->curves[curveName.toStdString()];
+    if (curve == replacement) return;
+    curve = std::move(replacement);
+    node->validate();
+    commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString());
+}
+
+void EditorController::setGradeMatteMode(const QString& nodeId, int mode) {
+    mode = std::clamp(mode, 0, 2);
+    if (mode == 0) grade_matte_node_id_.clear();
+    else grade_matte_node_id_ = nodeId;
+    grade_matte_mode_ = mode;
+    emit gradeUiChanged();
+    if (!preview_snapshot_.empty()) queuePreviewOperation(true);
+}
+
+void EditorController::sampleQualifierAt(
+    const QString& nodeId, qreal normalizedX, qreal normalizedY) {
+    float red = 0.0F, green = 0.0F, blue = 0.0F;
+    {
+        std::scoped_lock lock(inspect_mutex_);
+        if (inspect_width_ == 0 || inspect_height_ == 0) return;
+        const auto x = std::min<std::size_t>(
+            inspect_width_ - 1, static_cast<std::size_t>(
+                std::clamp(normalizedX, 0.0, 1.0) * (inspect_width_ - 1)));
+        const auto y = std::min<std::size_t>(
+            inspect_height_ - 1, static_cast<std::size_t>(
+                std::clamp(normalizedY, 0.0, 1.0) * (inspect_height_ - 1)));
+        if (!inspect_rgba_.empty()) {
+            const auto offset = (y * inspect_width_ + x) * 4;
+            red = inspect_rgba_[offset]; green = inspect_rgba_[offset + 1];
+            blue = inspect_rgba_[offset + 2];
+        } else if (inspect_bgra_ != nullptr) {
+            const auto* pixel = inspect_bgra_->data() + y * inspect_stride_ + x * 4;
+            red = pixel[2] / 255.0F; green = pixel[1] / 255.0F; blue = pixel[0] / 255.0F;
+        } else return;
+    }
+    const auto maximum = std::max({red, green, blue});
+    const auto minimum = std::min({red, green, blue});
+    const auto delta = maximum - minimum;
+    float hue = 0.0F;
+    if (delta > 1.0e-6F) {
+        if (maximum == red) hue = 60.0F * std::fmod((green - blue) / delta, 6.0F);
+        else if (maximum == green) hue = 60.0F * ((blue - red) / delta + 2.0F);
+        else hue = 60.0F * ((red - green) / delta + 4.0F);
+        if (hue < 0.0F) hue += 360.0F;
+    }
+    const auto saturation = maximum <= 0.0F ? 0.0F : delta / maximum;
+    const auto luma = 0.2126F * red + 0.7152F * green + 0.0722F * blue;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return;
+    try {
+        endCoalescedGradeEdit();
+        auto graph = clip->grade;
+        auto* node = graph.node(nodeId.toStdString());
+        if (node == nullptr || node->type != ffgui::GradeNodeType::qualifier) return;
+        node->parameters["hueCenter"] = hue;
+        node->parameters["satLow"] = std::clamp<double>(saturation - 0.15, 0.0, 1.0);
+        node->parameters["satHigh"] = std::clamp<double>(saturation + 0.15, 0.0, 1.0);
+        node->parameters["lumaLow"] = std::clamp<double>(luma - 0.15, 0.0, 1.0);
+        node->parameters["lumaHigh"] = std::clamp<double>(luma + 0.15, 0.0, 1.0);
+        node->validate();
+        commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString());
+        setStatus(QStringLiteral("Qualifier 스포이드 샘플 · H %1°").arg(hue, 0, 'f', 1));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+bool EditorController::selectedClipVideoMuted() const noexcept {
+    const auto selected = selected_clip_id_.toStdString();
+    const auto found = std::ranges::find(timeline_.clips(), selected, &ffgui::Clip::id);
+    return found != timeline_.clips().end() && found->video_muted;
+}
+
 std::uint64_t EditorController::audioBuffersReceived() const noexcept {
 #ifdef FFGUI_HAS_GES
     return player_ ? player_->audio_continuity_metrics().buffer_count : 0;
@@ -2843,6 +3008,55 @@ void EditorController::presentPreviewFrame(ffgui::PreviewVideoFrame frame) {
     storeInspectableFrame(frame);
     auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
     if (item == nullptr) return;
+    if (grade_matte_mode_ > 0 && !grade_matte_node_id_.isEmpty() &&
+        frame.cpu_pixels != nullptr && frame.cpu_format == ffgui::PreviewCpuFormat::bgra8) {
+        const auto selected = selected_clip_id_.toStdString();
+        const auto clip = std::ranges::find(timeline_.clips(), selected, &ffgui::Clip::id);
+        const auto* node = clip == timeline_.clips().end()
+            ? nullptr : clip->grade.node(grade_matte_node_id_.toStdString());
+        if (node != nullptr) {
+            auto overlay = frame;
+            overlay.cpu_pixels = std::make_shared<std::vector<std::uint8_t>>(*frame.cpu_pixels);
+            ffgui::apply_grade_node_matte_bgra8(
+                overlay.cpu_pixels->data(), overlay.width, overlay.height, overlay.cpu_stride,
+                *node, grade_matte_mode_ == 2,
+                selectedClipSourceTime().value_or(0));
+            item->submitFrame(std::move(overlay));
+            return;
+        }
+    }
+    if (shot_compare_mode_ > 0 && shot_still_frame_.has_value() &&
+        frame.cpu_pixels != nullptr && frame.cpu_format == ffgui::PreviewCpuFormat::bgra8 &&
+        shot_still_frame_->width > 0 && shot_still_frame_->height > 0) {
+        auto comparison = frame;
+        comparison.cpu_pixels = std::make_shared<std::vector<std::uint8_t>>(*frame.cpu_pixels);
+        const auto& still = *shot_still_frame_;
+        for (std::uint32_t y = 0; y < frame.height; ++y) {
+            for (std::uint32_t x = 0; x < frame.width; ++x) {
+                const bool useStill = shot_compare_mode_ == 1
+                    ? x < frame.width / 2 : y < frame.height / 2;
+                if (!useStill) continue;
+                const auto sourceX = std::min<int>(
+                    still.width - 1, static_cast<int>(x) * still.width /
+                        std::max<std::uint32_t>(1, frame.width));
+                const auto sourceY = std::min<int>(
+                    still.height - 1, static_cast<int>(y) * still.height /
+                        std::max<std::uint32_t>(1, frame.height));
+                const auto source = (static_cast<std::size_t>(sourceY) * still.width + sourceX) * 4;
+                auto* target = comparison.cpu_pixels->data() +
+                    static_cast<std::size_t>(y) * frame.cpu_stride +
+                    static_cast<std::size_t>(x) * 4;
+                target[0] = static_cast<std::uint8_t>(std::lround(
+                    std::clamp(still.rgba[source + 2], 0.0F, 1.0F) * 255.0F));
+                target[1] = static_cast<std::uint8_t>(std::lround(
+                    std::clamp(still.rgba[source + 1], 0.0F, 1.0F) * 255.0F));
+                target[2] = static_cast<std::uint8_t>(std::lround(
+                    std::clamp(still.rgba[source], 0.0F, 1.0F) * 255.0F));
+            }
+        }
+        item->submitFrame(std::move(comparison));
+        return;
+    }
     if (review_overlay_mode_ != ffgui::ReviewOverlayMode::off &&
         frame.cpu_pixels != nullptr && frame.cpu_format == ffgui::PreviewCpuFormat::bgra8) {
         auto overlay = frame;
@@ -3588,6 +3802,172 @@ void EditorController::insertAssetAtTime(const QString& assetId, qint64 timeline
     }
 }
 
+void EditorController::rollCut(
+    const QString& leftClipId, const QString& rightClipId, qint64 timelineDelta) {
+    try {
+        const auto spans = timeline_.snapshot();
+        const auto left = std::ranges::find_if(spans, [&leftClipId](const auto& span) {
+            return span.clip.id == leftClipId.toStdString();
+        });
+        const auto cut = left == spans.end() ? playhead_ns_ : left->timeline_out;
+        timeline_.roll_cut(
+            leftClipId.toStdString(), rightClipId.toStdString(), timelineDelta);
+        playhead_ns_ = std::clamp<qint64>(cut + timelineDelta, 0, timeline_.duration());
+        setSingleSelection(rightClipId);
+        publishTimeline();
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::slipClip(const QString& clipId, qint64 timelineDelta) {
+    try {
+        timeline_.slip_clip(clipId.toStdString(), timelineDelta);
+        setSingleSelection(clipId);
+        publishTimeline();
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::slideClip(const QString& clipId, qint64 timelineDelta) {
+    try {
+        timeline_.slide_clip(clipId.toStdString(), timelineDelta);
+        setSingleSelection(clipId);
+        publishTimeline();
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::bladeAt(qint64 timelinePosition) {
+    const auto mapped = timeline_.locate(timelinePosition);
+    if (!mapped.has_value()) return;
+    try {
+        const auto splitPosition = timeline_.nearest_frame_time(timelinePosition)
+            .value_or(timelinePosition);
+        const auto left = makeUniqueClipId(mapped->clip_id + "-left");
+        const auto right = makeUniqueClipId(mapped->clip_id + "-right");
+        timeline_.split_at(splitPosition, left, right);
+        playhead_ns_ = splitPosition;
+        setSingleSelection(QString::fromStdString(right));
+        publishTimeline();
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::trimSelectedStartToPlayhead() {
+    const auto selected = selected_clip_id_.toStdString();
+    const auto found = std::ranges::find(timeline_.clips(), selected, &ffgui::Clip::id);
+    const auto mapped = timeline_.locate(playhead_ns_);
+    if (found == timeline_.clips().end() || !mapped.has_value() || mapped->clip_id != selected) return;
+    trimClip(selected_clip_id_, mapped->source_time, found->source_out() - mapped->source_time);
+}
+
+void EditorController::trimSelectedEndToPlayhead() {
+    const auto selected = selected_clip_id_.toStdString();
+    const auto found = std::ranges::find(timeline_.clips(), selected, &ffgui::Clip::id);
+    const auto mapped = timeline_.locate(playhead_ns_);
+    if (found == timeline_.clips().end() || !mapped.has_value() || mapped->clip_id != selected) return;
+    trimClip(selected_clip_id_, found->source_in, mapped->source_time - found->source_in);
+}
+
+void EditorController::setTimelineRange(qint64 timelineIn, qint64 timelineOut) {
+    if (timelineIn < 0 || timelineOut <= timelineIn || timelineOut > timeline_.duration()) return;
+    in_point_ns_ = timelineIn;
+    out_point_ns_ = timelineOut;
+    emit rangeChanged();
+}
+
+void EditorController::setTimelineToolMode(int mode) {
+    mode = std::clamp(mode, 0, 3);
+    persistent_timeline_tool_mode_ = mode;
+    timeline_tool_mode_ = mode;
+    temporary_tool_key_ = 0;
+    emit editUiChanged();
+}
+
+void EditorController::setTimelineSnapping(bool enabled) {
+    if (timeline_snapping_ == enabled) return;
+    timeline_snapping_ = enabled;
+    emit editUiChanged();
+}
+
+void EditorController::setPreviewQuality(int quality) {
+    quality = std::clamp(quality, 0, 2);
+    if (preview_quality_ == quality) return;
+    preview_quality_ = quality;
+#ifdef FFGUI_HAS_GES
+    static constexpr std::array<std::pair<int, int>, 3> resolutions{{
+        {640, 360}, {1280, 720}, {1920, 1080}}};
+    player_->set_preview_resolution(
+        resolutions[quality].first, resolutions[quality].second);
+    if (!timeline_.clips().empty()) queuePreviewOperation(true);
+#endif
+    emit editUiChanged();
+    setStatus(quality == 0 ? QStringLiteral("미리보기 · 성능 1/2")
+        : quality == 1 ? QStringLiteral("미리보기 · 프록시 720p")
+                       : QStringLiteral("미리보기 · 품질 1:1"));
+}
+
+void EditorController::beginDynamicRoll(
+    const QString& leftClipId, const QString& rightClipId) {
+    dynamic_roll_left_id_ = leftClipId;
+    dynamic_roll_right_id_ = rightClipId;
+    const auto spans = timeline_.snapshot();
+    const auto left = std::ranges::find_if(spans, [&leftClipId](const auto& span) {
+        return span.clip.id == leftClipId.toStdString();
+    });
+    if (left != spans.end()) seek(left->timeline_out);
+}
+
+void EditorController::endDynamicTrim() {
+    dynamic_roll_left_id_.clear();
+    dynamic_roll_right_id_.clear();
+}
+
+void EditorController::joinThroughEdit(
+    const QString& leftClipId, const QString& rightClipId) {
+    try {
+        timeline_.join_through_edit(leftClipId.toStdString(), rightClipId.toStdString());
+        setSingleSelection(leftClipId);
+        publishTimeline();
+        setStatus(QStringLiteral("through-edit 컷을 조인했습니다"));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::addTimelineMarker() {
+    try {
+        const auto position = timeline_.nearest_frame_time(playhead_ns_).value_or(playhead_ns_);
+        std::string markerId;
+        do {
+            markerId = "marker-" + std::to_string(++generated_marker_id_);
+        } while (std::ranges::any_of(timeline_.markers(), [&markerId](const auto& marker) {
+            return marker.id == markerId;
+        }));
+        timeline_.add_marker(ffgui::TimelineMarker{
+            markerId,
+            position,
+            "Marker " + std::to_string(generated_marker_id_)});
+        publishTimeline();
+        setStatus(QStringLiteral("타임라인 마커를 추가했습니다"));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorController::deleteTimelineMarker(const QString& markerId) {
+    try {
+        timeline_.erase_marker(markerId.toStdString());
+        publishTimeline();
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
 std::optional<std::pair<qint64, qint64>> EditorController::selectedSourceRange() const {
     if (selected_source_asset_id_.isEmpty()) return std::nullopt;
     const auto* asset = timeline_.asset(selected_source_asset_id_.toStdString());
@@ -4306,6 +4686,21 @@ void EditorController::undo() {
     }
 }
 
+void EditorController::setSelectedClipVideoMuted(bool muted) {
+    if (selected_clip_ids_.isEmpty()) return;
+    try {
+        std::vector<std::string> ids;
+        ids.reserve(static_cast<std::size_t>(selected_clip_ids_.size()));
+        for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
+        timeline_.set_clips_video_muted(ids, muted);
+        publishTimeline();
+        setStatus(muted ? QStringLiteral("선택 클립 비디오 음소거")
+                        : QStringLiteral("선택 클립 비디오 복원"));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
+}
+
 void EditorController::redo() {
     if (timeline_.redo()) {
         setSingleSelection(timeline_.clips().empty()
@@ -4427,6 +4822,7 @@ void EditorController::saveProject(const QString& path) {
                 {"contrast", clip.color.contrast},
                 {"saturation", clip.color.saturation},
                 {"transitionInNs", timeString(clip.transition_in)},
+                {"videoMuted", clip.video_muted},
                 {"gradeGraph", serializeGradeGraph(clip.grade)}});
         }
         QJsonArray captions;
@@ -4440,6 +4836,13 @@ void EditorController::saveProject(const QString& path) {
                 {"positionY", caption.position_y},
                 {"fontSize", caption.font_size},
                 {"backgroundOpacity", caption.background_opacity}});
+        }
+        QJsonArray markers;
+        for (const auto& marker : timeline_.markers()) {
+            markers.push_back(QJsonObject{
+                {"id", QString::fromStdString(marker.id)},
+                {"timelineTimeNs", timeString(marker.timeline_time)},
+                {"name", QString::fromUtf8(marker.name)}});
         }
         const QJsonObject stamp{
             {"enabled", stamp_enabled_},
@@ -4486,10 +4889,11 @@ void EditorController::saveProject(const QString& path) {
             {"compareMode", shot_compare_mode_}};
         const QJsonDocument document(QJsonObject{
             {"format", "ffmpegGUI-next"},
-            {"version", 4},
+            {"version", 5},
             {"assets", assets},
             {"clips", clips},
             {"captions", captions},
+            {"markers", markers},
             {"stamp", stamp},
             {"colorPipeline", colorPipeline},
             {"shotLibrary", shotLibrary},
@@ -4523,7 +4927,7 @@ void EditorController::loadProject(const QString& path) {
         const auto version = root.value("version").toInt();
         if (parseError.error != QJsonParseError::NoError ||
             root.value("format").toString() != "ffmpegGUI-next" ||
-            (version < 1 || version > 4)) {
+            (version < 1 || version > 5)) {
             throw std::runtime_error("unsupported or damaged project file");
         }
 
@@ -4654,6 +5058,7 @@ void EditorController::loadProject(const QString& path) {
                 object.contains("transitionInNs")
                     ? parseTime(object.value("transitionInNs"), "transitionInNs") : 0};
             clip.grade = parseGradeGraph(object.value("gradeGraph").toObject());
+            clip.video_muted = object.value("videoMuted").toBool(false);
             loaded.append_clip(std::move(clip));
         }
         for (const auto value : root.value("captions").toArray()) {
@@ -4668,6 +5073,13 @@ void EditorController::loadProject(const QString& path) {
                 object.contains("fontSize") ? object.value("fontSize").toInt() : 44,
                 object.contains("backgroundOpacity")
                     ? object.value("backgroundOpacity").toInt() : 0});
+        }
+        for (const auto value : root.value("markers").toArray()) {
+            const auto object = value.toObject();
+            loaded.add_marker(ffgui::TimelineMarker{
+                object.value("id").toString().toStdString(),
+                parseTime(object.value("timelineTimeNs"), "markerTimelineTimeNs"),
+                object.value("name").toString().toUtf8().toStdString()});
         }
         const auto stamp = root.value("stamp").toObject();
         const auto outputSettings = root.value("outputSettings").toObject();
@@ -5423,6 +5835,19 @@ QString EditorController::timeText(qint64 timelinePosition) const {
         .arg(millis, 3, 10, QLatin1Char('0'));
 }
 
+qreal EditorController::programAudioPeak() const noexcept {
+    const auto mapped = timeline_.locate(playhead_ns_);
+    if (!mapped.has_value()) return 0.0;
+    const auto* asset = timeline_.asset(mapped->asset_id);
+    if (asset == nullptr || asset->audio_peaks().empty() || asset->duration() <= 0) return 0.0;
+    const auto ratio = std::clamp<long double>(
+        static_cast<long double>(mapped->source_time) / asset->duration(), 0.0L, 1.0L);
+    const auto index = std::min<std::size_t>(
+        asset->audio_peaks().size() - 1,
+        static_cast<std::size_t>(ratio * (asset->audio_peaks().size() - 1)));
+    return std::clamp<qreal>(std::abs(asset->audio_peaks()[index]), 0.0, 1.0);
+}
+
 qint64 EditorController::frameNumberAt(qint64 timelinePosition) const {
     const auto clamped = std::clamp<qint64>(timelinePosition, 0, durationNs());
     qint64 frameBase = 0;
@@ -5592,6 +6017,7 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             span.clip.color.contrast,
             span.clip.color.saturation,
             span.clip.transition_in});
+        request.clips.back().video_muted = span.clip.video_muted;
     }
     for (const auto& caption : timeline_.captions()) {
         request.captions.push_back(ffgui::ExportCaptionInput{
@@ -5968,9 +6394,9 @@ void EditorController::startPreviewOperation() {
     const bool colorOnly = !rebuild && preview_color_only_pending_;
     preview_color_only_pending_ = false;
     auto spans = (rebuild || colorOnly) ? preview_snapshot_ : std::vector<ffgui::TimelineSpan>{};
-    // Caption overlay operations can invalidate the NLE composition during an accurate seek.
-    // Keep the core editing preview video/audio-only until the overlay path has its own
-    // gap-safe composition and regression suite.
+    // GES 1.28 text-overlay layers can invalidate the native composition while an accurate
+    // seek races a rebuild. Captions are composed by the Qt scene-graph overlay against the
+    // same nanosecond playhead, which stays gap-safe without introducing a second video track.
     auto captions = std::vector<ffgui::CaptionCue>{};
     const auto seekTarget = pending_preview_seek_;
     const auto fallbackSeek = playhead_ns_;

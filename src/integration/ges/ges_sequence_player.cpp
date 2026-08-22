@@ -587,6 +587,7 @@ GESTimeline* create_preview_timeline(bool direct_d3d_compositor) {
         left.clip.duration == right.clip.duration &&
         left.clip.playback_rate == right.clip.playback_rate &&
         left.clip.audio == right.clip.audio &&
+        left.clip.video_muted == right.clip.video_muted &&
         left.clip.transition_in == right.clip.transition_in &&
         left.source_path == right.source_path &&
         left.timeline_in == right.timeline_in &&
@@ -1128,6 +1129,12 @@ void GesSequencePlayer::audio_handoff(GstElement*, GstBuffer* buffer, GstPad*, v
     }
 }
 
+void GesSequencePlayer::set_preview_resolution(int width, int height) {
+    preview_width_.store(std::clamp(width, 320, 3840), std::memory_order_release);
+    preview_height_.store(std::clamp(height, 180, 2160), std::memory_order_release);
+    preview_resolution_overridden_.store(true, std::memory_order_release);
+}
+
 void GesSequencePlayer::audio_identity_handoff(
     GstElement*, GstBuffer* buffer, void* user_data) {
     audio_handoff(nullptr, buffer, nullptr, user_data);
@@ -1366,6 +1373,9 @@ void GesSequencePlayer::rebuild_pipeline_locked(
             if (legacySourceColor && !direct_d3d_compositor_enabled_) {
                 add_legacy_color_effect(uri_clip, span.clip.color);
             }
+            if (span.clip.video_muted) {
+                add_legacy_color_effect(uri_clip, ClipColor{-1.0, 0.0, 0.0});
+            }
             const auto preparedIndex = uriClips.size() - 1;
             const auto prepared = pending_source_colors != nullptr &&
                     preparedIndex < pending_source_colors->size()
@@ -1430,9 +1440,12 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 throw std::runtime_error("failed to create GES caption overlay");
             }
             ges_text_overlay_clip_set_text(overlay, caption.text.c_str());
-            ges_text_overlay_clip_set_font_desc(overlay, "Malgun Gothic Bold 30");
-            ges_text_overlay_clip_set_halign(overlay, GES_TEXT_HALIGN_CENTER);
-            ges_text_overlay_clip_set_valign(overlay, GES_TEXT_VALIGN_BOTTOM);
+            const auto font = "Malgun Gothic Bold " + std::to_string(caption.font_size);
+            ges_text_overlay_clip_set_font_desc(overlay, font.c_str());
+            ges_text_overlay_clip_set_halign(overlay, GES_TEXT_HALIGN_POSITION);
+            ges_text_overlay_clip_set_valign(overlay, GES_TEXT_VALIGN_POSITION);
+            ges_text_overlay_clip_set_xpos(overlay, caption.position_x);
+            ges_text_overlay_clip_set_ypos(overlay, caption.position_y);
             ges_text_overlay_clip_set_color(overlay, 0xffffffffU);
             auto* element = GES_TIMELINE_ELEMENT(overlay);
             const bool configured =
@@ -1477,11 +1490,18 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 video_sink_factory_ == "appsink";
             if (floatAppSink) {
                 GError* parseError = nullptr;
+                const auto overridden = preview_resolution_overridden_.load(std::memory_order_acquire);
+                const auto floatWidth = overridden
+                    ? preview_width_.load(std::memory_order_acquire) : 640;
+                const auto floatHeight = overridden
+                    ? preview_height_.load(std::memory_order_acquire) : 360;
+                const auto description =
+                    "videoconvert ! videoscale ! video/x-raw,format=RGBA64_LE,width=" +
+                    std::to_string(floatWidth) + ",height=" + std::to_string(floatHeight) +
+                    ",pixel-aspect-ratio=1/1 ! appsink name=qtappsink max-buffers=2 "
+                    "drop=true sync=true enable-last-sample=false";
                 sink = gst_parse_bin_from_description(
-                    "videoconvert ! videoscale ! "
-                    "video/x-raw,format=RGBA64_LE,width=640,height=360,pixel-aspect-ratio=1/1 ! "
-                    "appsink name=qtappsink max-buffers=2 drop=true sync=true "
-                    "enable-last-sample=false",
+                    description.c_str(),
                     TRUE, &parseError);
                 if (sink == nullptr) {
                     throw glib_error("failed to create float CPU appsink bin", parseError);
@@ -1489,11 +1509,16 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                 appSink = gst_bin_get_by_name(GST_BIN(sink), "qtappsink");
             } else if (cpuAppSink) {
                 GError* parseError = nullptr;
-                sink = gst_parse_bin_from_description(
+                const auto description =
                     "videoconvert ! videoscale add-borders=true ! "
-                    "video/x-raw,format=BGRA,width=1280,height=720,pixel-aspect-ratio=1/1 ! "
-                    "appsink name=qtappsink max-buffers=2 drop=true sync=true "
-                    "enable-last-sample=false",
+                    "video/x-raw,format=BGRA,width=" +
+                    std::to_string(preview_width_.load(std::memory_order_acquire)) +
+                    ",height=" +
+                    std::to_string(preview_height_.load(std::memory_order_acquire)) +
+                    ",pixel-aspect-ratio=1/1 ! appsink name=qtappsink max-buffers=2 "
+                    "drop=true sync=true enable-last-sample=false";
+                sink = gst_parse_bin_from_description(
+                    description.c_str(),
                     TRUE,
                     &parseError);
                 if (sink == nullptr) {

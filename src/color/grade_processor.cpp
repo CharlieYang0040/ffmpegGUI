@@ -470,6 +470,41 @@ void apply_color_warper(float* rgb, const GradeNode& node) {
 
 }  // namespace
 
+void apply_grade_node_matte_bgra8(
+    std::uint8_t* pixels,
+    std::size_t width,
+    std::size_t height,
+    std::size_t stride,
+    const GradeNode& sourceNode,
+    bool monochrome,
+    std::int64_t source_time) {
+    if (pixels == nullptr || width == 0 || height == 0 ||
+        (sourceNode.type != GradeNodeType::qualifier &&
+         sourceNode.type != GradeNodeType::power_window)) return;
+    auto node = sourceNode;
+    for (auto& [name, value] : node.parameters) {
+        value = evaluate_grade_parameter(sourceNode, name, value, source_time);
+    }
+    for (std::size_t y = 0; y < height; ++y) {
+        auto* row = pixels + y * stride;
+        for (std::size_t x = 0; x < width; ++x) {
+            auto* bgra = row + x * 4;
+            const float rgb[3]{bgra[2] / 255.0F, bgra[1] / 255.0F, bgra[0] / 255.0F};
+            const auto key = node.type == GradeNodeType::qualifier
+                ? qualifier_key(rgb, node)
+                : power_window_key(x, y, width, height, node);
+            if (monochrome) {
+                const auto value = static_cast<std::uint8_t>(std::lround(key * 255.0F));
+                bgra[0] = value; bgra[1] = value; bgra[2] = value;
+            } else if (key < 0.5F) {
+                bgra[0] = static_cast<std::uint8_t>(bgra[0] * 0.18F);
+                bgra[1] = static_cast<std::uint8_t>(bgra[1] * 0.18F);
+                bgra[2] = static_cast<std::uint8_t>(bgra[2] * 0.18F);
+            }
+        }
+    }
+}
+
 void apply_grade_graph_rgba32f(
     float* pixels, std::size_t pixel_count, const GradeGraph& graph,
     std::int64_t source_time, std::size_t width, std::size_t height,

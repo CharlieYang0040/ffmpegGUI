@@ -62,6 +62,55 @@ void TimelineView::fitToTimeline() {
     update();
 }
 
+void TimelineView::setToolMode(int mode) {
+    mode = std::clamp(mode, 0, 3);
+    if (tool_mode_ == mode) return;
+    tool_mode_ = mode;
+    emit toolModeChanged();
+}
+
+void TimelineView::setSnapping(bool enabled) {
+    if (snapping_ == enabled) return;
+    snapping_ = enabled;
+    emit snappingChanged();
+}
+
+void TimelineView::setMarkers(QVariantList markers) {
+    markers_ = std::move(markers);
+    emit markersChanged();
+}
+
+qint64 TimelineView::snapDelta(qint64 proposedDelta, qint64 anchorTime) const {
+    if (!snapping_ || duration_ns_ <= 0) return proposedDelta;
+    const auto threshold = std::max<qint64>(1, visibleDurationNs() / 120);
+    const auto proposed = anchorTime + proposedDelta;
+    qint64 best = proposedDelta;
+    qint64 bestDistance = threshold + 1;
+    const auto consider = [&](qint64 target) {
+        if (target < 0) return;
+        const auto distance = std::abs(target - proposed);
+        if (distance <= threshold && distance < bestDistance) {
+            bestDistance = distance;
+            best = target - anchorTime;
+        }
+    };
+    consider(playhead_ns_);
+    consider(in_point_ns_);
+    consider(out_point_ns_);
+    consider(0);
+    consider(duration_ns_);
+    for (const auto& value : clips_) {
+        const auto clip = value.toMap();
+        const auto start = clip.value("timelineInNs").toLongLong();
+        consider(start);
+        consider(start + clip.value("durationNs").toLongLong());
+    }
+    for (const auto& value : markers_) {
+        consider(value.toMap().value("timelineTimeNs").toLongLong());
+    }
+    return best;
+}
+
 void TimelineView::setClips(QVariantList clips) {
     // QML only publishes this property when the timeline revision changes. A deep QVariant
     // comparison walks every clip and every waveform sample and can freeze the UI on large edits.
@@ -457,6 +506,18 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
         event->accept();
         return;
     }
+    if (event->button() == Qt::LeftButton && tool_mode_ == 3) {
+        drag_mode_ = DragMode::range;
+        range_origin_ns_ = timeAt(event->position().x());
+        drag_origin_x_ = event->position().x();
+        interaction_active_ = true;
+        interaction_kind_ = QStringLiteral("범위 선택");
+        interaction_time_ns_ = range_origin_ns_;
+        interaction_x_ = event->position().x();
+        emit interactionFeedbackChanged();
+        event->accept();
+        return;
+    }
     drag_clip_index_ = clipIndexAt(event->position().x());
     if (drag_clip_index_ < 0) {
         event->accept();
@@ -489,7 +550,28 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
     const auto right = kHorizontalPadding +
         contentWidth * static_cast<qreal>(start + duration - viewport_start_ns_) /
             static_cast<qreal>(visibleDurationNs());
-    if (std::abs(event->position().x() - left) <= kHandleHitWidth) {
+    if (tool_mode_ == 1) {
+        emit bladeCommitted(timeAt(event->position().x()));
+        drag_mode_ = DragMode::none;
+        interaction_active_ = false;
+    } else if (tool_mode_ == 2 &&
+               std::abs(event->position().x() - right) <= kHandleHitWidth &&
+               drag_clip_index_ + 1 < clips_.size()) {
+        drag_mode_ = DragMode::roll;
+        interaction_kind_ = QStringLiteral("롤 트림");
+        interaction_time_ns_ = start + duration;
+        setCursor(QCursor(Qt::SplitHCursor));
+    } else if (tool_mode_ == 2 &&
+               std::abs(event->position().x() - left) > kHandleHitWidth &&
+               std::abs(event->position().x() - right) > kHandleHitWidth) {
+        const auto trackHeight = std::max<qreal>(1.0, height() - kTrackTop - kTrackBottomPadding);
+        const auto localY = event->position().y() - kTrackTop;
+        drag_mode_ = localY < trackHeight / 2.0 ? DragMode::slip : DragMode::slide;
+        interaction_kind_ = drag_mode_ == DragMode::slip
+            ? QStringLiteral("슬립") : QStringLiteral("슬라이드");
+        interaction_time_ns_ = start;
+        setCursor(QCursor(Qt::SizeHorCursor));
+    } else if (std::abs(event->position().x() - left) <= kHandleHitWidth) {
         drag_mode_ = DragMode::trim_left;
         interaction_kind_ = QStringLiteral("시작 트림");
         interaction_time_ns_ = start;
@@ -599,6 +681,14 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
     if (event->buttons().testFlag(Qt::LeftButton)) {
+        if (drag_mode_ == DragMode::range) {
+            drag_delta_ns_ = timeAt(event->position().x()) - range_origin_ns_;
+            interaction_x_ = event->position().x();
+            interaction_time_ns_ = range_origin_ns_ + drag_delta_ns_;
+            emit interactionFeedbackChanged();
+            event->accept();
+            return;
+        }
         if (drag_mode_ == DragMode::scrub) {
             interaction_x_ = event->position().x();
             interaction_time_ns_ = timeAt(interaction_x_);
@@ -622,6 +712,11 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
                 "sourceDurationNs", clip.value("durationNs")).toLongLong();
             const auto assetDuration = clip.value("assetDurationNs").toLongLong();
             const auto playbackRate = clip.value("playbackRate", 1.0).toDouble();
+            const auto start = clip.value("timelineInNs").toLongLong();
+            const auto anchor = (drag_mode_ == DragMode::trim_right ||
+                                 drag_mode_ == DragMode::roll)
+                ? start + duration : start;
+            drag_delta_ns_ = snapDelta(drag_delta_ns_, anchor);
             if (drag_mode_ == DragMode::trim_left) {
                 drag_delta_ns_ = std::clamp<qint64>(
                     drag_delta_ns_,
@@ -632,13 +727,50 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
                     drag_delta_ns_, -(duration - kMinimumClipDuration),
                     static_cast<qint64>(std::llround(
                         (assetDuration - sourceIn - sourceDuration) / playbackRate)));
+            } else if (drag_mode_ == DragMode::roll) {
+                const auto next = clips_[drag_clip_index_ + 1].toMap();
+                const auto nextDuration = next.value("durationNs").toLongLong();
+                const auto nextSourceIn = next.value("sourceInNs").toLongLong();
+                const auto leftHandle = static_cast<qint64>(std::llround(
+                    (assetDuration - sourceIn - sourceDuration) / playbackRate));
+                const auto nextRate = next.value("playbackRate", 1.0).toDouble();
+                const auto rightHandle = static_cast<qint64>(std::llround(nextSourceIn / nextRate));
+                drag_delta_ns_ = std::clamp<qint64>(
+                    drag_delta_ns_,
+                    -std::min(duration - kMinimumClipDuration, rightHandle),
+                    std::min(nextDuration - kMinimumClipDuration, leftHandle));
+            } else if (drag_mode_ == DragMode::slip) {
+                const auto before = static_cast<qint64>(std::llround(sourceIn / playbackRate));
+                const auto after = static_cast<qint64>(std::llround(
+                    (assetDuration - sourceIn - sourceDuration) / playbackRate));
+                drag_delta_ns_ = std::clamp<qint64>(drag_delta_ns_, -before, after);
+            } else if (drag_mode_ == DragMode::slide &&
+                       drag_clip_index_ > 0 && drag_clip_index_ + 1 < clips_.size()) {
+                const auto previous = clips_[drag_clip_index_ - 1].toMap();
+                const auto next = clips_[drag_clip_index_ + 1].toMap();
+                const auto previousRate = previous.value("playbackRate", 1.0).toDouble();
+                const auto nextRate = next.value("playbackRate", 1.0).toDouble();
+                const auto previousAfter = static_cast<qint64>(std::llround(
+                    (previous.value("assetDurationNs").toLongLong() -
+                     previous.value("sourceInNs").toLongLong() -
+                     previous.value("sourceDurationNs").toLongLong()) / previousRate));
+                const auto nextBefore = static_cast<qint64>(std::llround(
+                    next.value("sourceInNs").toLongLong() / nextRate));
+                drag_delta_ns_ = std::clamp<qint64>(
+                    drag_delta_ns_,
+                    -std::min(previous.value("durationNs").toLongLong() - kMinimumClipDuration,
+                              nextBefore),
+                    std::min(next.value("durationNs").toLongLong() - kMinimumClipDuration,
+                             previousAfter));
             } else {
                 move_target_index_ = insertionIndexAt(event->position().x());
             }
             interaction_x_ = event->position().x();
-            if (drag_mode_ == DragMode::trim_left || drag_mode_ == DragMode::trim_right) {
+            if (drag_mode_ == DragMode::trim_left || drag_mode_ == DragMode::trim_right ||
+                drag_mode_ == DragMode::roll) {
                 interaction_time_ns_ = clip.value("timelineInNs").toLongLong() +
-                    (drag_mode_ == DragMode::trim_right ? duration : 0) + drag_delta_ns_;
+                    (drag_mode_ == DragMode::trim_right || drag_mode_ == DragMode::roll
+                        ? duration : 0) + drag_delta_ns_;
             } else {
                 interaction_time_ns_ = timeAt(interaction_x_);
             }
@@ -657,6 +789,15 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
         drag_mode_ = DragMode::none;
         interaction_active_ = false;
         setCursor(QCursor(Qt::ArrowCursor));
+        emit interactionFeedbackChanged();
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && drag_mode_ == DragMode::range) {
+        const auto other = range_origin_ns_ + drag_delta_ns_;
+        emit rangeCommitted(std::min(range_origin_ns_, other), std::max(range_origin_ns_, other));
+        drag_mode_ = DragMode::none;
+        interaction_active_ = false;
         emit interactionFeedbackChanged();
         event->accept();
         return;
@@ -689,6 +830,14 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
                 ? selected_clip_ids_
                 : QStringList{clipId};
             emit moveCommitted(movingIds, move_target_index_);
+        } else if (drag_mode_ == DragMode::roll && drag_delta_ns_ != 0) {
+            emit rollCommitted(
+                clipId, clips_[drag_clip_index_ + 1].toMap().value("id").toString(),
+                drag_delta_ns_);
+        } else if (drag_mode_ == DragMode::slip && drag_delta_ns_ != 0) {
+            emit slipCommitted(clipId, drag_delta_ns_);
+        } else if (drag_mode_ == DragMode::slide && drag_delta_ns_ != 0) {
+            emit slideCommitted(clipId, drag_delta_ns_);
         }
         if (drag_delta_ns_ == 0 && skimmer_active_) emit skimCommitted(skimmer_ns_);
     }
@@ -701,6 +850,27 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
     timeline_geometry_dirty_ = true;
     update();
     event->accept();
+}
+
+void TimelineView::mouseDoubleClickEvent(QMouseEvent* event) {
+    const auto index = clipIndexAt(event->position().x());
+    if (index >= 0 && index + 1 < clips_.size()) {
+        const auto clip = clips_[index].toMap();
+        const auto contentWidth = std::max<qreal>(1.0, width() - kHorizontalPadding * 2.0);
+        const auto cut = clip.value("timelineInNs").toLongLong() +
+            clip.value("durationNs").toLongLong();
+        const auto cutX = kHorizontalPadding + contentWidth *
+            static_cast<qreal>(cut - viewport_start_ns_) /
+            static_cast<qreal>(visibleDurationNs());
+        if (std::abs(event->position().x() - cutX) <= kHandleHitWidth * 2.0) {
+            emit precisionEditRequested(
+                clip.value("id").toString(),
+                clips_[index + 1].toMap().value("id").toString());
+            event->accept();
+            return;
+        }
+    }
+    QQuickItem::mouseDoubleClickEvent(event);
 }
 
 void TimelineView::seekAt(qreal x, bool finalPosition) {

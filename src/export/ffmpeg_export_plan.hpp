@@ -44,6 +44,7 @@ struct ExportClipInput final {
     std::filesystem::path color_lut_path;
     std::filesystem::path color_clut_pattern;
     int color_clut_fps{};
+    bool video_muted{};
 
     [[nodiscard]] TimeNs timeline_duration() const {
         return static_cast<TimeNs>(std::llround(

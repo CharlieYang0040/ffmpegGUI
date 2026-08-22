@@ -1,6 +1,6 @@
 # 개발 계획
 
-최종 갱신: 2026-08-21
+최종 갱신: 2026-08-22
 
 ## 0. 시작 기준선
 
@@ -58,7 +58,7 @@
 - [x] GStreamer 재생 시계를 단일 타임라인 재생 헤드에 연결
 - [x] 클립 경계 오디오 버퍼 PTS 연속성 정밀 측정
 - [x] GES 클립 gain·음소거·페이드 제어 곡선 미리보기
-- [ ] GES 자막 오버레이의 gap-safe 합성과 정확 seek 회귀(기존 구현은 기본 모드에서 비활성)
+- [x] GES 영상/오디오 위 Qt Scene Graph 자막의 gap-safe 합성과 나노초 playhead 정확 seek 회귀
 - [x] GES 클립별 영상·오디오 재생 속도 미리보기
 
 ## 4. 출력
@@ -76,7 +76,7 @@
 
 - [x] Qt/GStreamer 런타임을 포함한 독립 Windows x64 ZIP 패키징
 - [ ] 별도 Windows 11 x64 클린 PC 설치/실행
-- CFR, VFR, MKV, 이미지 시퀀스 실제 미디어 회귀
+- [x] CFR, VFR, MKV, 이미지 시퀀스 실제 미디어 회귀
 - [x] 4K H.264/HEVC 타임라인 탐색 성능 측정
 - [x] 1000클립 타임라인 UI 프레임 시간 측정
 - [x] 4K 혼합 코덱 반복 seek·상태 전환·파이프라인 재구축 120초 soak
@@ -425,7 +425,7 @@
 #### R7. 완료 감사와 배포
 
 - [x] 원 계획의 기능·컬러 정확도·HDR·성능·안정성 항목을 요구사항별 증거표로 다시 감사한다.
-- [ ] CFR/VFR/GIF/PNG/WebP/DPX/EXR과 alpha/multipart/multiview/AOV 실제 미디어를 자동 회귀한다.
+- [x] CFR/VFR/GIF/PNG/WebP/DPX/EXR과 alpha/multipart/multiview/AOV 실제 미디어를 자동 회귀한다.
 - [ ] OCIO/OIIO/OpenEXR DLL, ACES config와 GPU/CPU fallback을 깨끗한 Windows PC에서 확인한다.
 - 이 단계의 실기 게이트 전에는 전체 계획을 완료로 표시하거나 정식 릴리스를 만들지 않는다.
   증거표는 `docs/completion_audit.md`에 있다.
@@ -780,3 +780,32 @@ E단계는 그 게이트를 대체하지 않는다.
 - [x] 덮어쓰기 잔여 조각의 효과 보존과 각 편집의 단일 Undo 코어 테스트
 - [x] 디졸브 겹침 구간 덮어쓰기는 E5 전환 편집 계약 전까지 안전하게 거절
 - [x] source-edit smoke에서 네 편집·Undo·독립 재생·실제 오디오 버퍼 검증
+
+## 2026-08-22 E5·E7–E9 / U2–U5 완료
+
+- [x] 롤·슬립·슬라이드의 전체 길이 불변, 핸들 검증, 원자적 undo 코어 계약
+- [x] T 도구의 컷/클립 위치별 롤·슬립·슬라이드, 리플 에지 트림, Precision Editor
+- [x] B 클릭 블레이드, Ctrl+K 스키머/재생 헤드 분할, Alt+[ / Alt+] 헤드까지 트림
+- [x] Precision Editor J/L 단일 원본 프레임 Dynamic Roll
+- [x] A/B/T/R 누름 임시 도구와 복귀, 범위 드래그, N 스냅, 포커스 안전 단축키 도움말
+- [x] 필름스트립·파형·둘 다·이름만 외형, 높이 3단, through-edit 표시·조인
+- [x] Shift+M 타임라인 마커의 저장·ripple·undo와 플레이헤드/컷/I/O/마커 스냅
+- [x] 비디오 음소거의 검은 프레임 미리보기·GES·출력·저장·undo
+- [x] 소스/프로그램 좁은 탭과 넓은 듀얼 뷰, 맞춤/100/200%, 프로그램 전체 화면, Safe Area
+- [x] 성능 1/2·프록시 720p·품질 1:1 미리보기 해상도와 출력 설정 분리, 프로그램 피크 미터
+- [x] 뷰어 위 E/W/D 드롭 오버레이
+- [x] Primary Lift/Gamma/Gain/Offset 및 Log Shadow/Midtone/Highlight/Master 트랙볼
+- [x] 휠·정밀 입력·키프레임 다이아몬드가 같은 그레이드 파라미터/undo 경로 사용
+- [x] RGB/Hue 다점 곡선 캔버스의 점 추가·이동·우클릭 삭제와 `curves` 프로젝트 왕복
+- [x] HDR 존 노출 막대·폭, hue-sat 워퍼 링·luma 막대 직접 조작
+- [x] Qualifier 뷰어 스포이드와 강조/흑백 키 매트, Power Window 뷰어 핸들·키프레임
+- [x] GES 일반 영상의 공간 노드 포함 그레이드 순서 보존 CPU 합성
+- [x] GES CPU 프레임의 샷 스틸 wipe/split 비교
+- [x] Debug core 64개 + TimelineView 테스트, 전체 Desktop smoke, GES smoke, 10분 editing soak
+- 10분 soak 측정: 2,387 operations / 178 structure operations, 최대 전체 269ms,
+  최대 구조 편집 21ms, UI watchdog 최대 300ms, 실제 프레임 5,076, preview 오류 0.
+
+> GStreamer 1.28의 네이티브 `GESTextOverlayClip`은 정확 seek와 동시 rebuild에서 조합을
+> 무효화할 수 있어 기본 미리보기에는 사용하지 않는다. GES가 영상·오디오 타임라인을 내고,
+> Qt Scene Graph가 같은 나노초 playhead로 자막을 합성하는 구조를 완료 계약으로 고정했다.
+> 별도 Windows 11 클린 PC 실행은 외부 장비가 필요한 유일한 미완료 배포 게이트다.

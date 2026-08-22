@@ -1,6 +1,7 @@
 #include "integration/ges/gst_color_lut_filter.hpp"
 
 #include "color/grade_processor.hpp"
+#include "color/color_frame_processor.hpp"
 
 #include <gst/base/gstbasetransform.h>
 #include <gst/video/video.h>
@@ -143,6 +144,47 @@ GstFlowReturn gst_ffgui_lut3d_transform_ip(GstBaseTransform* transform, GstBuffe
     auto recipe = self->recipe != nullptr ? *self->recipe : std::shared_ptr<const ffgui::ColorLutRecipe>{};
     if (recipe == nullptr) recipe = find_recipe(self->lut_id);
     const auto spatial = recipe != nullptr && recipe->grade.has_spatial_nodes();
+    if (spatial) {
+        ffgui::FloatImageFrame source;
+        source.width = width;
+        source.height = height;
+        source.color_space = recipe->source_color.input_color_space;
+        source.rgba.resize(static_cast<std::size_t>(width) * height * 4);
+        for (gint row = 0; row < height; ++row) {
+            const auto* pixels = reinterpret_cast<const std::uint16_t*>(
+                base + static_cast<gssize>(row) * stride);
+            for (gint column = 0; column < width; ++column) {
+                const auto* rgba = pixels + static_cast<std::size_t>(column) * 4;
+                const auto index = (static_cast<std::size_t>(row) * width + column) * 4;
+                for (int channel = 0; channel < 4; ++channel) {
+                    source.rgba[index + static_cast<std::size_t>(channel)] =
+                        static_cast<float>(rgba[channel]) / 65535.0F;
+                }
+            }
+        }
+        const auto pts = GST_BUFFER_PTS_IS_VALID(buffer)
+            ? static_cast<ffgui::TimeNs>(GST_BUFFER_PTS(buffer)) : ffgui::TimeNs{0};
+        const auto sourceTime = ffgui::source_time_for_recipe(*recipe, pts);
+        const auto processed = ffgui::process_color_frame(
+            source, recipe->source_color, recipe->settings, recipe->grade,
+            recipe->output_space, sourceTime);
+        for (gint row = 0; row < height; ++row) {
+            auto* pixels = reinterpret_cast<std::uint16_t*>(
+                base + static_cast<gssize>(row) * stride);
+            for (gint column = 0; column < width; ++column) {
+                auto* rgba = pixels + static_cast<std::size_t>(column) * 4;
+                const auto index = (static_cast<std::size_t>(row) * width + column) * 4;
+                for (int channel = 0; channel < 4; ++channel) {
+                    const auto value = processed.rgba[index + static_cast<std::size_t>(channel)];
+                    rgba[channel] = static_cast<std::uint16_t>(std::lround(
+                        std::clamp(std::isfinite(value) ? value : 0.0F, 0.0F, 1.0F) *
+                        65535.0F));
+                }
+            }
+        }
+        gst_video_frame_unmap(&frame);
+        return GST_FLOW_OK;
+    }
     std::vector<float> spatialPixels;
     if (spatial) {
         spatialPixels.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);

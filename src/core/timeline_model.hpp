@@ -39,6 +39,7 @@ struct Clip final {
     ClipColor color{};
     TimeNs transition_in{};
     GradeGraph grade{};
+    bool video_muted{};
 
     bool operator==(const Clip&) const = default;
 
@@ -93,6 +94,13 @@ struct CaptionCue final {
     [[nodiscard]] TimeNs timeline_out() const { return checked_add(timeline_in, duration); }
 };
 
+struct TimelineMarker final {
+    std::string id;
+    TimeNs timeline_time{};
+    std::string name;
+    bool operator==(const TimelineMarker&) const = default;
+};
+
 class TimelineModel final {
 public:
     void add_asset(MediaAsset asset);
@@ -122,6 +130,14 @@ public:
     void trim_clip(const std::string& clip_id, TimeNs source_in, TimeNs duration);
     void trim_clip_to_frame_boundaries(
         const std::string& clip_id, TimeNs source_in, TimeNs duration);
+    void roll_cut(
+        const std::string& left_clip_id,
+        const std::string& right_clip_id,
+        TimeNs timeline_delta);
+    void slip_clip(const std::string& clip_id, TimeNs timeline_delta);
+    void slide_clip(const std::string& clip_id, TimeNs timeline_delta);
+    void join_through_edit(
+        const std::string& left_clip_id, const std::string& right_clip_id);
     void trim_all_clip_edges(std::size_t front_frames, std::size_t back_frames);
     void move_clip(const std::string& clip_id, std::size_t insertion_index);
     void move_clips(const std::vector<std::string>& clip_ids, std::size_t insertion_index);
@@ -136,6 +152,7 @@ public:
         const std::vector<std::string>& clip_ids,
         double playback_rate);
     void set_clips_color(const std::vector<std::string>& clip_ids, ClipColor color);
+    void set_clips_video_muted(const std::vector<std::string>& clip_ids, bool muted);
     void set_clip_grade_graph(const std::string& clip_id, GradeGraph graph);
     void set_shared_grade_node(const std::string& shared_id, const GradeNode& replacement);
     void set_clip_dissolve(const std::string& clip_id, TimeNs duration);
@@ -143,6 +160,8 @@ public:
     void add_captions(std::vector<CaptionCue> captions);
     void update_caption(CaptionCue caption);
     void erase_caption(const std::string& caption_id);
+    void add_marker(TimelineMarker marker);
+    void erase_marker(const std::string& marker_id);
     void split_at(
         TimeNs timeline_position,
         std::string left_clip_id,
@@ -158,6 +177,7 @@ public:
 
     [[nodiscard]] const std::vector<Clip>& clips() const noexcept { return clips_; }
     [[nodiscard]] const std::vector<CaptionCue>& captions() const noexcept { return captions_; }
+    [[nodiscard]] const std::vector<TimelineMarker>& markers() const noexcept { return markers_; }
     [[nodiscard]] std::vector<TimelineSpan> snapshot() const;
     [[nodiscard]] TimeNs duration() const;
     [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
@@ -173,6 +193,7 @@ private:
     struct EditState final {
         std::vector<Clip> clips;
         std::vector<CaptionCue> captions;
+        std::vector<TimelineMarker> markers;
     };
 
     [[nodiscard]] std::size_t index_of(const std::string& clip_id) const;
@@ -189,6 +210,7 @@ private:
     std::unordered_map<std::string, MediaAsset> assets_;
     std::vector<Clip> clips_;
     std::vector<CaptionCue> captions_;
+    std::vector<TimelineMarker> markers_;
     std::vector<EditState> undo_stack_;
     std::vector<EditState> redo_stack_;
     std::uint64_t revision_{};

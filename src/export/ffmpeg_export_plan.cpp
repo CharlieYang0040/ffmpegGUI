@@ -63,6 +63,7 @@ bool can_stream_copy(const ExportRequest& request) {
                clip.audio_fade_in == 0 && clip.audio_fade_out == 0 &&
                clip.playback_rate == 1.0 && clip.brightness == 0.0 &&
                clip.contrast == 1.0 && clip.saturation == 1.0 &&
+               !clip.video_muted &&
                clip.transition_in == 0 && clip.color_lut_path.empty() &&
                clip.color_clut_pattern.empty() &&
                is_boundary(clip, clip.source_in) &&
@@ -316,7 +317,9 @@ FfmpegExportPlan compile_ffmpeg_export(const ExportRequest& request) {
         const auto& clip = request.clips[index];
         const auto suffix = std::to_string(index);
         filter += "[" + suffix + ":v:0]";
-        if (clutInputs[index] >= 0) {
+        if (clip.video_muted) {
+            filter += "colorchannelmixer=rr=0:gg=0:bb=0,";
+        } else if (clutInputs[index] >= 0) {
             filter += "[" + std::to_string(clutInputs[index]) +
                 ":v:0]haldclut=interp=trilinear,";
         } else if (!clip.color_lut_path.empty()) {

@@ -28,6 +28,9 @@ class TimelineView : public QQuickItem {
     Q_PROPERTY(qint64 interactionTimeNs READ interactionTimeNs NOTIFY interactionFeedbackChanged)
     Q_PROPERTY(qint64 interactionDeltaNs READ interactionDeltaNs NOTIFY interactionFeedbackChanged)
     Q_PROPERTY(qreal interactionX READ interactionX NOTIFY interactionFeedbackChanged)
+    Q_PROPERTY(int toolMode READ toolMode WRITE setToolMode NOTIFY toolModeChanged)
+    Q_PROPERTY(bool snapping READ snapping WRITE setSnapping NOTIFY snappingChanged)
+    Q_PROPERTY(QVariantList markers READ markers WRITE setMarkers NOTIFY markersChanged)
 
 public:
     explicit TimelineView(QQuickItem* parent = nullptr);
@@ -65,6 +68,12 @@ public:
     [[nodiscard]] qreal interactionX() const noexcept { return interaction_x_; }
     Q_INVOKABLE qint64 timelineTimeAt(qreal x) const;
     Q_INVOKABLE void fitToTimeline();
+    [[nodiscard]] int toolMode() const noexcept { return tool_mode_; }
+    void setToolMode(int mode);
+    [[nodiscard]] bool snapping() const noexcept { return snapping_; }
+    void setSnapping(bool enabled);
+    [[nodiscard]] QVariantList markers() const { return markers_; }
+    void setMarkers(QVariantList markers);
 
 signals:
     void clipsChanged();
@@ -83,6 +92,15 @@ signals:
     void clipSelected(QString clipId, int selectionMode);
     void trimCommitted(QString clipId, qint64 sourceIn, qint64 duration);
     void moveCommitted(QStringList clipIds, int insertionIndex);
+    void rollCommitted(QString leftClipId, QString rightClipId, qint64 timelineDelta);
+    void slipCommitted(QString clipId, qint64 timelineDelta);
+    void slideCommitted(QString clipId, qint64 timelineDelta);
+    void bladeCommitted(qint64 timelineTime);
+    void rangeCommitted(qint64 timelineIn, qint64 timelineOut);
+    void precisionEditRequested(QString leftClipId, QString rightClipId);
+    void toolModeChanged();
+    void snappingChanged();
+    void markersChanged();
     void interactionFeedbackChanged();
 
 protected:
@@ -91,6 +109,7 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
     void hoverMoveEvent(QHoverEvent* event) override;
     void hoverLeaveEvent(QHoverEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
@@ -103,7 +122,10 @@ private:
     [[nodiscard]] qint64 timeAt(qreal x) const;
     void clampViewport();
 
-    enum class DragMode { none, trim_left, trim_right, move, pan, scrub };
+    enum class DragMode {
+        none, trim_left, trim_right, roll, slip, slide, range, move, pan, scrub
+    };
+    [[nodiscard]] qint64 snapDelta(qint64 proposedDelta, qint64 anchorTime) const;
 
     QVariantList clips_;
     qint64 duration_ns_{};
@@ -131,4 +153,8 @@ private:
     QString interaction_kind_;
     qint64 interaction_time_ns_{};
     qreal interaction_x_{};
+    int tool_mode_{};
+    bool snapping_{true};
+    QVariantList markers_;
+    qint64 range_origin_ns_{};
 };

@@ -17,6 +17,15 @@ void apply_grade_graph_rgba32f(
     std::size_t height = 0,
     GradeSpatialMode spatial_mode = GradeSpatialMode::include);
 
+void apply_grade_node_matte_bgra8(
+    std::uint8_t* pixels,
+    std::size_t width,
+    std::size_t height,
+    std::size_t stride,
+    const GradeNode& node,
+    bool monochrome,
+    std::int64_t source_time = 0);
+
 [[nodiscard]] double evaluate_grade_parameter(
     const GradeNode& node, const std::string& name, double fallback,
     std::int64_t source_time);

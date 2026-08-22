@@ -70,6 +70,7 @@ public:
     void set_video_window_handle(std::uintptr_t window_handle);
     void set_d3d11_device(void* device);
     void set_video_sink_factory(std::string factory);
+    void set_preview_resolution(int width, int height);
     void set_video_frame_callback(std::function<void(PreviewVideoFrame)> callback);
     void set_scope_frame_callback(std::function<void(PreviewVideoFrame)> callback);
     void set_scope_capture_enabled(bool enabled) noexcept {
@@ -132,6 +133,9 @@ private:
 
     std::string video_sink_factory_;
     std::string audio_sink_factory_;
+    std::atomic<int> preview_width_{1280};
+    std::atomic<int> preview_height_{720};
+    std::atomic<bool> preview_resolution_overridden_{false};
     mutable std::mutex mutex_;
     mutable std::mutex callback_mutex_;
     GESPipeline* pipeline_{};

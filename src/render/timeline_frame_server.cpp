@@ -71,6 +71,13 @@ RenderedTimelineFrame TimelineFrameServer::render(
         auto processed = process_color_frame(
             *source, asset->source_color(), color_pipeline, combinedGrade, output_space,
             sourceTime, stage);
+        if (span.clip.video_muted) {
+            for (std::size_t index = 0; index + 3 < processed.rgba.size(); index += 4) {
+                processed.rgba[index] = 0.0F;
+                processed.rgba[index + 1] = 0.0F;
+                processed.rgba[index + 2] = 0.0F;
+            }
+        }
         return RenderedTimelineFrame{
             std::move(source), std::move(processed), span.clip.id, asset->id(), requested,
             resolved, requested != resolved};
