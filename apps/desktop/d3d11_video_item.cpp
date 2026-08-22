@@ -210,18 +210,20 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
             }
         }
         if (texture != nullptr || reusedBridgeTexture) {
-            if (node != nullptr) {
-                if (texture != nullptr) {
-                    root->removeChildNode(node);
-                    delete node;
-                    node = nullptr;
-                }
-            }
             if (node == nullptr) {
                 node = new QSGSimpleTextureNode();
                 node->setTexture(texture);
                 node->setOwnsTexture(true);
                 root->appendChildNode(node);
+            } else if (texture != nullptr) {
+                // Keep the scene-graph node alive while CPU/cached skim frames change.
+                // Removing and recreating the node for every thumbnail exposed the
+                // clear color between frames and made the whole viewer flash.
+                auto* previousTexture = node->texture();
+                node->setOwnsTexture(false);
+                node->setTexture(texture);
+                node->setOwnsTexture(true);
+                delete previousTexture;
             }
             render_frame_ = std::move(next);
             rendered_serial_ = render_frame_.serial;
