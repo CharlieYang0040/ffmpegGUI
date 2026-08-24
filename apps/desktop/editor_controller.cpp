@@ -630,7 +630,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     connect(&audio_skim_stop_timer_, &QTimer::timeout, this, [this] {
 #ifdef FFGUI_HAS_GES
         if (!audio_skimming_) return;
-        preview_should_play_ = false;
+        audio_skimming_ = false;
         pending_preview_seek_ = playhead_ns_;
         queuePreviewOperation(false);
 #endif
@@ -1554,7 +1554,10 @@ void EditorController::addGradeNode(int type) {
 }
 
 void EditorController::commitGradeNodeEdit(
-    const std::string& clip_id, ffgui::GradeGraph graph, const std::string& node_id) {
+    const std::string& clip_id,
+    ffgui::GradeGraph graph,
+    const std::string& node_id,
+    bool refreshGradeUi) {
     const auto* node = graph.node(node_id);
     if (node == nullptr) throw std::out_of_range("grade node was not found");
     if (node->shared_id.empty()) {
@@ -1562,7 +1565,7 @@ void EditorController::commitGradeNodeEdit(
     } else {
         timeline_.set_shared_grade_node(node->shared_id, *node);
     }
-    publishColorPreview();
+    publishColorPreview(refreshGradeUi);
 }
 
 void EditorController::addGradeLutUrl(const QUrl& url) {
@@ -1935,7 +1938,7 @@ void EditorController::setGradeNodeEnabled(const QString& nodeId, bool enabled) 
     auto* node = graph.node(nodeId.toStdString());
     if (node == nullptr || node->enabled == enabled) return;
     node->enabled = enabled;
-    commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString());
+    commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString(), false);
 }
 
 void EditorController::setGradeNodeName(const QString& nodeId, const QString& name) {
@@ -1966,7 +1969,7 @@ void EditorController::setGradeNodeMix(const QString& nodeId, int percent) {
     const auto mix = std::clamp(percent, 0, 100) / 100.0;
     if (node == nullptr || node->mix == mix) return;
     node->mix = mix;
-    commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString());
+    commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString(), false);
 }
 
 void EditorController::setGradeParameter(
@@ -2001,9 +2004,9 @@ void EditorController::setGradeParameter(
     node->validate();
     if (editsAnimation) {
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
-        publishColorPreview();
+        publishColorPreview(false);
     } else {
-        commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString());
+        commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString(), false);
     }
 }
 
@@ -2053,7 +2056,7 @@ void EditorController::setGradeCurveMidpoint(
     if (node->curves[key] == replacement) return;
     node->curves[key] = replacement;
     node->validate();
-    commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString());
+    commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString(), false);
 }
 
 QString EditorController::selectedCaptionText() const {
@@ -2540,7 +2543,7 @@ void EditorController::setGradeCurvePoints(
     if (curve == replacement) return;
     curve = std::move(replacement);
     node->validate();
-    commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString());
+    commitGradeNodeEdit(selectedId, std::move(graph), nodeId.toStdString(), false);
 }
 
 void EditorController::setGradeMatteMode(const QString& nodeId, int mode) {
@@ -3610,11 +3613,18 @@ void EditorController::skim(qint64 timelinePosition, bool active) {
     const auto target = active
         ? std::clamp<qint64>(timelinePosition, 0, durationNs())
         : playhead_ns_;
-    if (active) skim_target_ns_ = target;
-    else skim_target_ns_.reset();
-    if (!submitFloatScrubFrame(target)) submitCachedScrubFrame(target);
-    if (active) requestAudioSkim(target);
-    else stopAudioSkim(true);
+    if (active) {
+        skim_target_ns_ = target;
+        if (!submitFloatScrubFrame(target)) submitCachedScrubFrame(target);
+        requestAudioSkim(target);
+        return;
+    }
+    skim_target_ns_.reset();
+    stopAudioSkim(true);
+    // Do not flash an ungraded cache thumbnail over the program monitor. Image
+    // sequences keep the last graded float frame; ordinary video is restored by
+    // the audio-skim stop seek.
+    submitFloatScrubFrame(playhead_ns_);
 }
 
 void EditorController::skimAsset(const QString& assetId, qint64 sourceTime, bool active) {
@@ -3677,7 +3687,6 @@ void EditorController::startAudioSkim() {
     const auto target = *pending_audio_skim_ns_;
     pending_audio_skim_ns_.reset();
     audio_skimming_ = true;
-    preview_should_play_ = true;
     pending_preview_seek_ = target;
     queuePreviewOperation(false);
     audio_skim_stop_timer_.start();
@@ -3691,7 +3700,7 @@ void EditorController::stopAudioSkim(bool restorePosition) {
     audio_skim_stop_timer_.stop();
 #ifdef FFGUI_HAS_GES
     if (!audio_skimming_) return;
-    preview_should_play_ = false;
+    audio_skimming_ = false;
     if (restorePosition) pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
 #else
@@ -3707,7 +3716,10 @@ void EditorController::cancelAudioSkim() {
     audio_skim_stop_timer_.stop();
     audio_skimming_ = false;
 #ifdef FFGUI_HAS_GES
-    if (wasAudioSkimming) preview_should_play_ = false;
+    if (wasAudioSkimming && !preview_should_play_) {
+        pending_preview_seek_ = playhead_ns_;
+        queuePreviewOperation(false);
+    }
 #else
     static_cast<void>(wasAudioSkimming);
 #endif
@@ -6400,7 +6412,7 @@ void EditorController::startPreviewOperation() {
     auto captions = std::vector<ffgui::CaptionCue>{};
     const auto seekTarget = pending_preview_seek_;
     const auto fallbackSeek = playhead_ns_;
-    const bool shouldPlay = preview_should_play_;
+    const bool shouldPlay = preview_should_play_ || audio_skimming_;
     const auto playbackRate = shuttle_rate_ == 0.0 ? 1.0 : shuttle_rate_;
     const bool shouldStop = preview_stop_requested_;
     const auto colorSettings = color_pipeline_;
@@ -6451,6 +6463,29 @@ void EditorController::startPreviewOperation() {
                     player->set_color_pipeline(colorSettings, outputSpace);
                     if (player->update_source_color(spans)) {
                         result.success = true;
+                        if (shouldStop) {
+                            player->stop();
+                        } else if (shouldPlay) {
+                            if (seekTarget.has_value() && player->duration() > 0) {
+                                const auto target = std::clamp<qint64>(
+                                    *seekTarget, 0, static_cast<qint64>(player->duration()));
+                                player->seek(target);
+                            }
+                            if (player->state() != ffgui::PlaybackState::playing) {
+                                player->play(playbackRate);
+                            }
+                        } else {
+                            const auto seek = seekTarget.value_or(fallbackSeek);
+                            if (player->duration() > 0) {
+                                const auto target = std::clamp<qint64>(
+                                    seek, 0, static_cast<qint64>(player->duration()));
+                                player->seek(
+                                    target, ffgui::GesSequencePlayer::PreviewSeekMode::accurate);
+                            }
+                            if (player->state() == ffgui::PlaybackState::playing) {
+                                player->pause();
+                            }
+                        }
                         qInfo().noquote() << "preview color updated in place"
                                           << "generation=" << generation
                                           << "elapsed_ms=" << elapsed.elapsed();
@@ -6562,24 +6597,23 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     }
 }
 
-void EditorController::publishColorPreview() {
+void EditorController::publishColorPreview(bool refreshGradeUi) {
     QElapsedTimer publishElapsed;
     publishElapsed.start();
     preview_snapshot_ = timeline_.snapshot();
     preview_revision_ = timeline_.revision();
-    clips_cache_.reset();
-    emit selectedClipChanged();
-    emit historyChanged();
-    emit gradeUiChanged();
-#ifdef FFGUI_HAS_GES
-    if (requiresFloatVideoPreview()) {
-        if (!float_playback_running_) startFloatScrubFrame(playhead_ns_);
+    if (refreshGradeUi) {
+        clips_cache_.reset();
+        emit selectedClipChanged();
+        emit gradeUiChanged();
     }
+    emit historyChanged();
+#ifdef FFGUI_HAS_GES
+    submitFloatScrubFrame(playhead_ns_);
     preview_color_only_pending_ = true;
     preview_update_timer_.start();
-    if (!preview_busy_) setStatus(QStringLiteral("컬러 미리보기 갱신 중"));
 #else
-    setStatus(QStringLiteral("컬러 변경 적용"));
+    if (refreshGradeUi) setStatus(QStringLiteral("컬러 변경 적용"));
 #endif
     if (publishElapsed.elapsed() >= 50) {
         qWarning().noquote() << "color preview publish blocked the UI"

@@ -5,6 +5,7 @@
 #include <QDebug>
 #include <QQuickWindow>
 #include <QSGSimpleTextureNode>
+#include <QSGTexture>
 #include <QSGRendererInterface>
 #include <QtQuick/qsgtexture_platform.h>
 
@@ -53,11 +54,9 @@ void VideoPreviewItem::submitFrame(ffgui::PreviewVideoFrame frame) {
         std::scoped_lock lock(frame_mutex_);
         pending_frame_ = std::move(frame);
     }
+    // Only dirty this item. window()->update() forces a full scene-graph sync and
+    // makes the whole shell flash while the timeline or bin is being skimmed.
     update();
-    if (window() != nullptr) {
-        window()->update();
-        window()->requestUpdate();
-    }
 }
 
 QPointF VideoPreviewItem::videoUvFromItem(qreal x, qreal y) const {
@@ -65,8 +64,10 @@ QPointF VideoPreviewItem::videoUvFromItem(qreal x, qreal y) const {
     std::uint32_t height = 0;
     {
         std::scoped_lock lock(frame_mutex_);
-        width = render_frame_.width != 0 ? render_frame_.width : pending_frame_.width;
-        height = render_frame_.height != 0 ? render_frame_.height : pending_frame_.height;
+        width = layout_width_ != 0 ? layout_width_
+            : (render_frame_.width != 0 ? render_frame_.width : pending_frame_.width);
+        height = layout_height_ != 0 ? layout_height_
+            : (render_frame_.height != 0 ? render_frame_.height : pending_frame_.height);
     }
     const auto bounds = boundingRect();
     if (width == 0 || height == 0 || bounds.width() <= 0 || bounds.height() <= 0) {
@@ -214,6 +215,7 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
                 node = new QSGSimpleTextureNode();
                 node->setTexture(texture);
                 node->setOwnsTexture(true);
+                node->setFiltering(QSGTexture::Linear);
                 root->appendChildNode(node);
             } else if (texture != nullptr) {
                 // Keep the scene-graph node alive while CPU/cached skim frames change.
@@ -223,12 +225,22 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
                 node->setOwnsTexture(false);
                 node->setTexture(texture);
                 node->setOwnsTexture(true);
+                node->setFiltering(QSGTexture::Linear);
                 delete previousTexture;
             }
-            render_frame_ = std::move(next);
-            rendered_serial_ = render_frame_.serial;
+            constexpr std::uint64_t kCachedSkimSerial = 1ULL << 63;
+            const bool cachedSkim = next.serial >= kCachedSkimSerial;
+            {
+                std::scoped_lock lock(frame_mutex_);
+                if (!cachedSkim || layout_width_ == 0 || layout_height_ == 0) {
+                    layout_width_ = next.width;
+                    layout_height_ = next.height;
+                }
+                render_frame_ = std::move(next);
+                rendered_serial_ = render_frame_.serial;
+            }
             emit framePresented(rendered_serial_);
-            if (rendered_serial_ == next.serial && next.serial <= 2) {
+            if (rendered_serial_ <= 2) {
                 qInfo().noquote() << "in-process preview frame presented"
                                   << "serial=" << rendered_serial_;
             }
@@ -239,9 +251,16 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
     }
 
     QRectF target = boundingRect();
-    if (render_frame_.width > 0 && render_frame_.height > 0 && target.height() > 0) {
-        const auto sourceAspect = static_cast<qreal>(render_frame_.width) /
-            static_cast<qreal>(render_frame_.height);
+    std::uint32_t layoutWidth = 0;
+    std::uint32_t layoutHeight = 0;
+    {
+        std::scoped_lock lock(frame_mutex_);
+        layoutWidth = layout_width_ != 0 ? layout_width_ : render_frame_.width;
+        layoutHeight = layout_height_ != 0 ? layout_height_ : render_frame_.height;
+    }
+    if (layoutWidth > 0 && layoutHeight > 0 && target.height() > 0) {
+        const auto sourceAspect = static_cast<qreal>(layoutWidth) /
+            static_cast<qreal>(layoutHeight);
         const auto targetAspect = target.width() / target.height();
         if (sourceAspect > targetAspect) {
             const auto fittedHeight = target.width() / sourceAspect;
@@ -262,6 +281,8 @@ void VideoPreviewItem::releaseResources() {
     pending_frame_ = {};
     render_frame_ = {};
     rendered_serial_ = 0;
+    layout_width_ = 0;
+    layout_height_ = 0;
 }
 
 void VideoPreviewItem::initializeGraphics() {

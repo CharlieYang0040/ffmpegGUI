@@ -543,11 +543,14 @@ private:
     };
 
     void publishTimeline(bool resetPlayhead = false);
-    void publishColorPreview();
+    void publishColorPreview(bool refreshGradeUi = true);
     void touchCoalescedGradeEdit();
     void endCoalescedGradeEdit();
     void commitGradeNodeEdit(
-        const std::string& clip_id, ffgui::GradeGraph graph, const std::string& node_id);
+        const std::string& clip_id,
+        ffgui::GradeGraph graph,
+        const std::string& node_id,
+        bool refreshGradeUi = true);
     [[nodiscard]] std::optional<ffgui::TimeNs> selectedClipSourceTime() const;
     void setStatus(QString status);
     void queuePreviewOperation(bool restorePosition);

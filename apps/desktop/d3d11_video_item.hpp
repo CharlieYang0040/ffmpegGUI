@@ -47,6 +47,8 @@ private:
     ffgui::PreviewVideoFrame pending_frame_;
     ffgui::PreviewVideoFrame render_frame_;
     std::uint64_t rendered_serial_{};
+    std::uint32_t layout_width_{};
+    std::uint32_t layout_height_{};
     mutable std::mutex device_mutex_;
     ID3D11Device* device_{};
     ID3D11Texture2D* display_texture_{};
