@@ -32,6 +32,18 @@ public:
         const std::string& output_space,
         ColorProcessStage stage = ColorProcessStage::post_display);
 
+    [[nodiscard]] RenderedTimelineFrame render(
+        const Clip& clip,
+        TimeNs timeline_in,
+        const MediaAsset& asset,
+        TimeNs timeline_time,
+        const ColorPipelineSettings& color_pipeline,
+        const std::string& output_space,
+        ColorProcessStage stage = ColorProcessStage::post_display,
+        const Clip* previous_clip = nullptr,
+        TimeNs previous_timeline_in = 0,
+        const MediaAsset* previous_asset = nullptr);
+
     void invalidate(const std::filesystem::path& path) { cache_.invalidate(path); }
     void clear() { cache_.clear(); }
     [[nodiscard]] std::size_t cache_bytes() const noexcept { return cache_.byte_size(); }

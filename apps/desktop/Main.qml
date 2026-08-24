@@ -42,27 +42,20 @@ ApplicationWindow {
             EditorController.selectedClipBrightness !== 0 ||
             EditorController.selectedClipContrast !== 100 ||
             EditorController.selectedClipSaturation !== 100)
+    readonly property var gradeNodes: EditorController.selectedGradeNodes
     readonly property var activeWindowNode: {
-        for (let i = 0; i < EditorController.selectedGradeNodes.length; ++i)
-            if (EditorController.selectedGradeNodes[i].type === 9)
-                return EditorController.selectedGradeNodes[i]
+        for (let i = 0; i < gradeNodes.length; ++i)
+            if (gradeNodes[i].type === 9)
+                return gradeNodes[i]
         return null
     }
     readonly property var activeQualifierNode: {
-        for (let i = 0; i < EditorController.selectedGradeNodes.length; ++i)
-            if (EditorController.selectedGradeNodes[i].type === 8)
-                return EditorController.selectedGradeNodes[i]
+        for (let i = 0; i < gradeNodes.length; ++i)
+            if (gradeNodes[i].type === 8)
+                return gradeNodes[i]
         return null
     }
-    readonly property var programClipAtPlayhead: {
-        for (let i = EditorController.clips.length - 1; i >= 0; --i) {
-            const clip = EditorController.clips[i]
-            if (EditorController.playheadNs >= clip.timelineInNs &&
-                EditorController.playheadNs < clip.timelineInNs + clip.durationNs)
-                return clip
-        }
-        return null
-    }
+    readonly property var programClipAtPlayhead: EditorController.clipAtPlayhead
 
     onColorWorkspaceChanged: {
         if (colorWorkspace)
@@ -152,9 +145,11 @@ ApplicationWindow {
                 parent.paintGreen = parent.neutralValue - dy * parent.range
                 parent.paintBlue = parent.neutralValue - dx * parent.range
                 wheelCanvas.requestPaint()
-                EditorController.setGradeParameter(parent.nodeId, parent.redKey, parent.paintRed)
-                EditorController.setGradeParameter(parent.nodeId, parent.greenKey, parent.paintGreen)
-                EditorController.setGradeParameter(parent.nodeId, parent.blueKey, parent.paintBlue)
+                const parameters = {}
+                parameters[parent.redKey] = parent.paintRed
+                parameters[parent.greenKey] = parent.paintGreen
+                parameters[parent.blueKey] = parent.paintBlue
+                EditorController.setGradeParameters(parent.nodeId, parameters)
             }
         }
         Row {
@@ -2346,7 +2341,7 @@ ApplicationWindow {
                             font.pixelSize: 10
                         }
                         Repeater {
-                            model: EditorController.selectedGradeNodes
+                            model: root.gradeNodes
                             delegate: Rectangle {
                                 id: gradeNode
                                 required property var modelData
@@ -3428,9 +3423,11 @@ ApplicationWindow {
                                         ctx.beginPath()
                                         const peaks = modelData.waveform
                                         const center = height / 2
-                                        for (let x = 0; x < width; ++x) {
+                                        const samples = Math.max(2, Math.min(width, 256))
+                                        for (let sample = 0; sample < samples; ++sample) {
+                                            const x = sample * width / samples
                                             const index = Math.min(peaks.length - 1,
-                                                Math.floor(x * peaks.length / Math.max(1, width)))
+                                                Math.floor(sample * peaks.length / samples))
                                             const amplitude = Math.min(1, Math.abs(peaks[index])) * center
                                             ctx.moveTo(x, center - amplitude)
                                             ctx.lineTo(x, center + amplitude)

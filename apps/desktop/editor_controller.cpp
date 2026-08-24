@@ -250,15 +250,31 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         application->installEventFilter(this);
     }
     connect(this, &EditorController::playheadChanged, this, [this] {
-        if (!playing_ && !scrubbing_) emit gradeUiChanged();
+        emit clipAtPlayheadChanged();
+        if (playing_ || scrubbing_) return;
+        if (!selectedGradeHasKeyframes()) return;
+        grade_ui_playhead_timer_.start();
     });
     connect(this, &EditorController::playingChanged, this, [this] {
-        if (!playing_ && !scrubbing_) emit gradeUiChanged();
+        if (!playing_ && !scrubbing_) emitGradeUiChanged();
     });
-    connect(this, &EditorController::selectedClipChanged,
-            this, &EditorController::gradeUiChanged);
+    connect(this, &EditorController::selectedClipChanged, this, [this] {
+        emitGradeUiChanged();
+    });
+    connect(this, &EditorController::clipsChanged, this, [this] {
+        emit clipAtPlayheadChanged();
+    });
     model_update_timer_.setSingleShot(true);
     model_update_timer_.setInterval(0);
+    color_preview_coalesce_timer_.setSingleShot(true);
+    color_preview_coalesce_timer_.setInterval(0);
+    connect(&color_preview_coalesce_timer_, &QTimer::timeout,
+            this, &EditorController::flushColorPreview);
+    grade_ui_playhead_timer_.setSingleShot(true);
+    grade_ui_playhead_timer_.setInterval(50);
+    connect(&grade_ui_playhead_timer_, &QTimer::timeout, this, [this] {
+        emitGradeUiChanged();
+    });
     connect(&model_update_timer_, &QTimer::timeout, this, [this] {
         emit clipsChanged();
         emit mediaAssetsChanged();
@@ -1121,42 +1137,48 @@ bool EditorController::videoSurfaceExposed() const noexcept {
     return item != nullptr && item->window() != nullptr && item->window()->isExposed();
 }
 
-QVariantList EditorController::clips() const {
-    if (clips_cache_.has_value()) return clips_cache_.value();
+const QVariantList& EditorController::clips() const {
+    if (clips_cache_.has_value()) return *clips_cache_;
     QElapsedTimer elapsed;
     elapsed.start();
     QVariantList result;
-    const auto spans = timeline_.snapshot();
-    for (std::size_t index = 0; index < spans.size(); ++index) {
-        const auto& span = spans[index];
+    clip_index_by_id_.clear();
+    const auto& clips = timeline_.clips();
+    result.reserve(static_cast<qsizetype>(clips.size()));
+    ffgui::TimeNs cursor = 0;
+    for (std::size_t index = 0; index < clips.size(); ++index) {
+        const auto& clip = clips[index];
+        if (index > 0) cursor -= clip.transition_in;
+        const auto end = ffgui::checked_add(cursor, clip.timeline_duration());
+        const auto* asset = timeline_.asset(clip.asset_id);
         QVariantMap value;
-        value.insert("id", QString::fromStdString(span.clip.id));
-        value.insert("assetId", QString::fromStdString(span.clip.asset_id));
-        value.insert("name", QString::fromStdWString(span.source_path.filename().wstring()));
-        value.insert("timelineInNs", static_cast<qint64>(span.timeline_in));
-        value.insert("sourceInNs", static_cast<qint64>(span.clip.source_in));
-        value.insert("durationNs", static_cast<qint64>(span.timeline_out - span.timeline_in));
-        value.insert("sourceDurationNs", static_cast<qint64>(span.clip.duration));
-        value.insert("playbackRate", span.clip.playback_rate);
-        value.insert("audioGain", span.clip.audio.gain);
-        value.insert("audioMuted", span.clip.audio.muted);
-        value.insert("audioFadeInNs", static_cast<qint64>(span.clip.audio.fade_in));
-        value.insert("audioFadeOutNs", static_cast<qint64>(span.clip.audio.fade_out));
-        value.insert("brightness", span.clip.color.brightness);
-        value.insert("contrast", span.clip.color.contrast);
-        value.insert("saturation", span.clip.color.saturation);
-        value.insert("transitionInNs", static_cast<qint64>(span.clip.transition_in));
-        const bool throughEdit = index + 1 < spans.size() &&
-            span.clip.asset_id == spans[index + 1].clip.asset_id &&
-            span.clip.source_out() == spans[index + 1].clip.source_in &&
-            span.clip.playback_rate == spans[index + 1].clip.playback_rate &&
-            span.clip.audio == spans[index + 1].clip.audio &&
-            span.clip.color == spans[index + 1].clip.color &&
-            span.clip.grade == spans[index + 1].clip.grade &&
-            span.clip.video_muted == spans[index + 1].clip.video_muted &&
-            spans[index + 1].clip.transition_in == 0;
+        value.insert("id", QString::fromStdString(clip.id));
+        value.insert("assetId", QString::fromStdString(clip.asset_id));
+        value.insert("name", QString::fromStdWString(
+            asset != nullptr ? asset->playback_path().filename().wstring() : std::wstring{}));
+        value.insert("timelineInNs", static_cast<qint64>(cursor));
+        value.insert("sourceInNs", static_cast<qint64>(clip.source_in));
+        value.insert("durationNs", static_cast<qint64>(end - cursor));
+        value.insert("sourceDurationNs", static_cast<qint64>(clip.duration));
+        value.insert("playbackRate", clip.playback_rate);
+        value.insert("audioGain", clip.audio.gain);
+        value.insert("audioMuted", clip.audio.muted);
+        value.insert("audioFadeInNs", static_cast<qint64>(clip.audio.fade_in));
+        value.insert("audioFadeOutNs", static_cast<qint64>(clip.audio.fade_out));
+        value.insert("brightness", clip.color.brightness);
+        value.insert("contrast", clip.color.contrast);
+        value.insert("saturation", clip.color.saturation);
+        value.insert("transitionInNs", static_cast<qint64>(clip.transition_in));
+        const bool throughEdit = index + 1 < clips.size() &&
+            clip.asset_id == clips[index + 1].asset_id &&
+            clip.source_out() == clips[index + 1].source_in &&
+            clip.playback_rate == clips[index + 1].playback_rate &&
+            clip.audio == clips[index + 1].audio &&
+            clip.color == clips[index + 1].color &&
+            clip.grade == clips[index + 1].grade &&
+            clip.video_muted == clips[index + 1].video_muted &&
+            clips[index + 1].transition_in == 0;
         value.insert("throughEditToNext", throughEdit);
-        const auto* asset = timeline_.asset(span.clip.asset_id);
         value.insert("assetDurationNs", static_cast<qint64>(asset ? asset->duration() : 0));
         value.insert("mediaKind", asset ? mediaKindName(asset->kind()) : QStringLiteral("video"));
         QVariantList missingFrameTimes;
@@ -1171,7 +1193,7 @@ QVariantList EditorController::clips() const {
         value.insert("missingFrameTimesNs", missingFrameTimes);
         value.insert(
             "thumbnailAtlas",
-            thumbnail_atlases_.value(QString::fromStdString(span.clip.asset_id)));
+            thumbnail_atlases_.value(QString::fromStdString(clip.asset_id)));
         QVariantList waveform;
         if (asset != nullptr) {
             const auto assetKey = QString::fromStdString(asset->id());
@@ -1185,7 +1207,9 @@ QVariantList EditorController::clips() const {
             }
         }
         value.insert("waveform", waveform);
+        clip_index_by_id_.insert(value.value("id").toString(), static_cast<int>(index));
         result.push_back(value);
+        cursor = end;
     }
     clips_cache_ = std::move(result);
     if (elapsed.elapsed() >= 50) {
@@ -1193,7 +1217,18 @@ QVariantList EditorController::clips() const {
                              << "elapsed_ms=" << elapsed.elapsed()
                              << "clips=" << clips_cache_->size();
     }
-    return clips_cache_.value();
+    return *clips_cache_;
+}
+
+QVariant EditorController::clipAtPlayhead() const {
+    const auto mapped = timeline_.locate(playhead_ns_);
+    if (!mapped.has_value()) return {};
+    const auto& list = clips();
+    const auto found = clip_index_by_id_.constFind(QString::fromStdString(mapped->clip_id));
+    if (found == clip_index_by_id_.cend()) return {};
+    const auto index = found.value();
+    if (index < 0 || index >= list.size()) return {};
+    return list.at(index);
 }
 
 QVariantList EditorController::mediaAssets() const {
@@ -1443,23 +1478,51 @@ int EditorController::missingFrameCount() const {
 std::optional<ffgui::TimeNs> EditorController::selectedClipSourceTime() const {
     if (selected_clip_id_.isEmpty()) return std::nullopt;
     const auto selectedId = selected_clip_id_.toStdString();
-    const auto spans = timeline_.snapshot();
-    const auto span = std::ranges::find_if(spans, [&selectedId](const auto& value) {
-        return value.clip.id == selectedId;
-    });
-    if (span == spans.end()) return std::nullopt;
-    const auto local = std::clamp<ffgui::TimeNs>(
-        playhead_ns_ - span->timeline_in, 0,
-        std::max<ffgui::TimeNs>(0, span->clip.timeline_duration() - 1));
-    return ffgui::checked_add(
-        span->clip.source_in, span->clip.source_offset_for_timeline(local));
+    ffgui::TimeNs cursor = 0;
+    const auto& clips = timeline_.clips();
+    for (std::size_t index = 0; index < clips.size(); ++index) {
+        const auto& clip = clips[index];
+        if (index > 0) cursor -= clip.transition_in;
+        const auto end = ffgui::checked_add(cursor, clip.timeline_duration());
+        if (clip.id == selectedId) {
+            const auto local = std::clamp<ffgui::TimeNs>(
+                playhead_ns_ - cursor, 0,
+                std::max<ffgui::TimeNs>(0, clip.timeline_duration() - 1));
+            return ffgui::checked_add(clip.source_in, clip.source_offset_for_timeline(local));
+        }
+        cursor = end;
+    }
+    return std::nullopt;
 }
 
-QVariantList EditorController::selectedGradeNodes() const {
+bool EditorController::selectedGradeHasKeyframes() const {
+    if (selected_clip_id_.isEmpty()) return false;
+    const auto selectedId = selected_clip_id_.toStdString();
+    const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
+    if (clip == timeline_.clips().end()) return false;
+    for (const auto& node : clip->grade.nodes()) {
+        for (const auto& [name, keyframes] : node.parameter_keyframes) {
+            static_cast<void>(name);
+            if (!keyframes.empty()) return true;
+        }
+    }
+    return false;
+}
+
+void EditorController::emitGradeUiChanged() {
+    grade_nodes_cache_.reset();
+    emit gradeUiChanged();
+}
+
+const QVariantList& EditorController::selectedGradeNodes() const {
+    if (grade_nodes_cache_.has_value()) return *grade_nodes_cache_;
     QVariantList result;
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
-    if (clip == timeline_.clips().end()) return result;
+    if (clip == timeline_.clips().end()) {
+        grade_nodes_cache_ = QVariantList{};
+        return *grade_nodes_cache_;
+    }
     const auto* asset = timeline_.asset(clip->asset_id);
     const auto keyframeSupported = asset != nullptr;
     const auto sourceTime = selectedClipSourceTime().value_or(clip->source_in);
@@ -1529,7 +1592,8 @@ QVariantList EditorController::selectedGradeNodes() const {
                 ? QString{} : QFileInfo(QString::fromUtf8(node.external_path)).fileName()},
             {"lutRepresentable", node.lut_representable()}});
     }
-    return result;
+    grade_nodes_cache_ = std::move(result);
+    return *grade_nodes_cache_;
 }
 
 void EditorController::addGradeNode(int type) {
@@ -1974,7 +2038,13 @@ void EditorController::setGradeNodeMix(const QString& nodeId, int percent) {
 
 void EditorController::setGradeParameter(
     const QString& nodeId, const QString& parameter, double value) {
-    if (selected_clip_id_.isEmpty() || parameter.isEmpty() || !std::isfinite(value)) return;
+    if (parameter.isEmpty() || !std::isfinite(value)) return;
+    setGradeParameters(nodeId, QVariantMap{{parameter, value}});
+}
+
+void EditorController::setGradeParameters(
+    const QString& nodeId, const QVariantMap& parameters) {
+    if (selected_clip_id_.isEmpty() || nodeId.isEmpty() || parameters.isEmpty()) return;
     touchCoalescedGradeEdit();
     const auto selectedId = selected_clip_id_.toStdString();
     const auto clip = std::ranges::find(timeline_.clips(), selectedId, &ffgui::Clip::id);
@@ -1982,25 +2052,35 @@ void EditorController::setGradeParameter(
     auto graph = clip->grade;
     auto* node = graph.node(nodeId.toStdString());
     if (node == nullptr) return;
-    const auto key = parameter.toStdString();
-    if (!node->parameters.contains(key)) return;
     const auto sourceTime = selectedClipSourceTime();
-    auto& keyframes = node->parameter_keyframes[key];
-    const bool editsAnimation = !keyframes.empty() && sourceTime.has_value();
-    if (editsAnimation) {
-        const auto found = std::ranges::lower_bound(
-            keyframes, *sourceTime, {}, &ffgui::GradeParameterKeyframe::source_time);
-        if (found != keyframes.end() && found->source_time == *sourceTime) {
-            if (found->value == value) return;
-            found->value = value;
+    bool changed = false;
+    bool editsAnimation = false;
+    for (auto iterator = parameters.cbegin(); iterator != parameters.cend(); ++iterator) {
+        const auto key = iterator.key().toStdString();
+        if (key.empty() || !node->parameters.contains(key)) continue;
+        const auto value = iterator.value().toDouble();
+        if (!std::isfinite(value)) continue;
+        auto& keyframes = node->parameter_keyframes[key];
+        const bool animates = !keyframes.empty() && sourceTime.has_value();
+        if (animates) {
+            const auto found = std::ranges::lower_bound(
+                keyframes, *sourceTime, {}, &ffgui::GradeParameterKeyframe::source_time);
+            if (found != keyframes.end() && found->source_time == *sourceTime) {
+                if (found->value == value) continue;
+                found->value = value;
+            } else {
+                keyframes.insert(found, {*sourceTime, value});
+            }
+            editsAnimation = true;
+            changed = true;
         } else {
-            keyframes.insert(found, {*sourceTime, value});
+            node->parameter_keyframes.erase(key);
+            if (node->parameters[key] == value) continue;
+            node->parameters[key] = value;
+            changed = true;
         }
-    } else {
-        node->parameter_keyframes.erase(key);
-        if (node->parameters[key] == value) return;
-        node->parameters[key] = value;
     }
+    if (!changed) return;
     node->validate();
     if (editsAnimation) {
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
@@ -2431,7 +2511,25 @@ void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
     if (!mapped.has_value()) return;
     const auto* asset = timeline_.asset(mapped->asset_id);
     if (asset == nullptr || !asset->image_sequence().has_value()) return;
-    const auto timeline = timeline_;
+    const auto clipIt = std::ranges::find(timeline_.clips(), mapped->clip_id, &ffgui::Clip::id);
+    if (clipIt == timeline_.clips().end()) return;
+    const auto clip = *clipIt;
+    const auto assetCopy = *asset;
+    const auto timelineIn = mapped->timeline_time - mapped->clip_time;
+    const auto clipIndex = static_cast<std::size_t>(
+        std::distance(timeline_.clips().begin(), clipIt));
+    std::optional<ffgui::Clip> previousClip;
+    std::optional<ffgui::MediaAsset> previousAsset;
+    ffgui::TimeNs previousIn = 0;
+    if (clip.transition_in > 0 && clipIndex > 0 && mapped->clip_time < clip.transition_in) {
+        previousClip = timeline_.clips()[clipIndex - 1];
+        if (const auto* previous = timeline_.asset(previousClip->asset_id)) {
+            previousAsset = *previous;
+            previousIn = timelineIn + clip.transition_in - previousClip->timeline_duration();
+        } else {
+            previousClip.reset();
+        }
+    }
     const auto settings = color_pipeline_;
     const auto outputSpace = ffgui::resolved_color_output_space(settings);
     const auto compare = preview_compare_enabled_ &&
@@ -2442,19 +2540,24 @@ void EditorController::startFloatScrubFrame(qint64 timelinePosition) {
     const auto generation = ++float_scrub_generation_;
     float_scrub_active_ = true;
     float_scrub_watcher_.setFuture(QtConcurrent::run(
-        [this, timeline, settings, outputSpace, timelinePosition, generation, compare,
-         shotCompare, shotStill] {
+        [this, clip, assetCopy, timelineIn, previousClip, previousAsset, previousIn,
+         settings, outputSpace, timelinePosition, generation, compare, shotCompare, shotStill] {
             FloatScrubResult result;
             result.generation = generation;
             QElapsedTimer elapsed;
             elapsed.start();
             try {
+                const auto* previous = previousClip && previousAsset
+                    ? &*previousClip : nullptr;
+                const auto* previousMedia = previousClip && previousAsset
+                    ? &*previousAsset : nullptr;
                 auto rendered = timeline_frame_server_.render(
-                    timeline, timelinePosition, settings, outputSpace);
+                    clip, timelineIn, assetCopy, timelinePosition, settings, outputSpace,
+                    ffgui::ColorProcessStage::post_display, previous, previousIn, previousMedia);
                 if (compare) {
                     auto graded = timeline_frame_server_.render(
-                        timeline, timelinePosition, settings, outputSpace,
-                        ffgui::ColorProcessStage::post_grade);
+                        clip, timelineIn, assetCopy, timelinePosition, settings, outputSpace,
+                        ffgui::ColorProcessStage::post_grade, previous, previousIn, previousMedia);
                     ffgui::wipe_rgba32f(
                         rendered.processed.rgba.data(), graded.processed.rgba.data(),
                         static_cast<std::size_t>(rendered.processed.width),
@@ -3011,7 +3114,8 @@ void EditorController::presentPreviewFrame(ffgui::PreviewVideoFrame frame) {
     storeInspectableFrame(frame);
     auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
     if (item == nullptr) return;
-    if (grade_matte_mode_ > 0 && !grade_matte_node_id_.isEmpty() &&
+    const bool liveSkim = playing_ || skim_target_ns_.has_value() || audio_skimming_ || scrubbing_;
+    if (!liveSkim && grade_matte_mode_ > 0 && !grade_matte_node_id_.isEmpty() &&
         frame.cpu_pixels != nullptr && frame.cpu_format == ffgui::PreviewCpuFormat::bgra8) {
         const auto selected = selected_clip_id_.toStdString();
         const auto clip = std::ranges::find(timeline_.clips(), selected, &ffgui::Clip::id);
@@ -3028,7 +3132,7 @@ void EditorController::presentPreviewFrame(ffgui::PreviewVideoFrame frame) {
             return;
         }
     }
-    if (shot_compare_mode_ > 0 && shot_still_frame_.has_value() &&
+    if (!liveSkim && shot_compare_mode_ > 0 && shot_still_frame_.has_value() &&
         frame.cpu_pixels != nullptr && frame.cpu_format == ffgui::PreviewCpuFormat::bgra8 &&
         shot_still_frame_->width > 0 && shot_still_frame_->height > 0) {
         auto comparison = frame;
@@ -3060,7 +3164,7 @@ void EditorController::presentPreviewFrame(ffgui::PreviewVideoFrame frame) {
         item->submitFrame(std::move(comparison));
         return;
     }
-    if (review_overlay_mode_ != ffgui::ReviewOverlayMode::off &&
+    if (!liveSkim && review_overlay_mode_ != ffgui::ReviewOverlayMode::off &&
         frame.cpu_pixels != nullptr && frame.cpu_format == ffgui::PreviewCpuFormat::bgra8) {
         auto overlay = frame;
         overlay.cpu_pixels = std::make_shared<std::vector<std::uint8_t>>(*frame.cpu_pixels);
@@ -3151,19 +3255,31 @@ void EditorController::startScopeFrame(ffgui::PreviewVideoFrame frame) {
     const auto processStage = static_cast<ffgui::ColorProcessStage>(scope_reference_stage_);
     const auto settings = color_pipeline_;
     const auto outputSpace = ffgui::resolved_color_output_space(settings);
-    const auto timeline = timeline_;
+    std::optional<ffgui::Clip> scopeClip;
+    std::optional<ffgui::MediaAsset> scopeAsset;
+    ffgui::TimeNs scopeIn = 0;
     const auto playhead = playhead_ns_;
+    if (const auto mapped = timeline_.locate(playhead); mapped.has_value()) {
+        const auto* asset = timeline_.asset(mapped->asset_id);
+        const auto clipIt = std::ranges::find(
+            timeline_.clips(), mapped->clip_id, &ffgui::Clip::id);
+        if (asset != nullptr && asset->image_sequence().has_value() &&
+            clipIt != timeline_.clips().end()) {
+            scopeClip = *clipIt;
+            scopeAsset = *asset;
+            scopeIn = mapped->timeline_time - mapped->clip_time;
+        }
+    }
     auto* server = &timeline_frame_server_;
     scope_watcher_.setFuture(QtConcurrent::run(
-        [frame = std::move(frame), stage, processStage, settings, outputSpace, timeline, playhead,
-         server]() mutable {
+        [frame = std::move(frame), stage, processStage, settings, outputSpace, playhead,
+         scopeClip, scopeAsset, scopeIn, server]() mutable {
         ScopeResult result;
         try {
-            const auto mapped = timeline.locate(playhead);
-            const auto* asset = mapped.has_value() ? timeline.asset(mapped->asset_id) : nullptr;
-            if (asset != nullptr && asset->image_sequence().has_value()) {
+            if (scopeClip.has_value() && scopeAsset.has_value()) {
                 auto rendered = server->render(
-                    timeline, playhead, settings, outputSpace, processStage);
+                    *scopeClip, scopeIn, *scopeAsset, playhead, settings, outputSpace,
+                    processStage);
                 result.analysis = std::make_shared<ffgui::ScopeAnalysis>(
                     ffgui::analyze_scope_float(rendered.processed, frame.serial, stage));
                 return result;
@@ -5967,7 +6083,6 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     pending_preview_seek_.reset();
     pending_live_seek_.reset();
     preview_should_play_ = false;
-    if (live_seek_watcher_.isRunning()) live_seek_watcher_.waitForFinished();
     if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
     player_->stop();
 #endif
@@ -6562,6 +6677,8 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     preview_revision_ = timeline_.revision();
     ++preview_generation_;
     clips_cache_.reset();
+    clip_index_by_id_.clear();
+    grade_nodes_cache_.reset();
     media_assets_cache_.reset();
     captions_cache_.reset();
     const auto previousIn = in_point_ns_;
@@ -6598,14 +6715,25 @@ void EditorController::publishTimeline(bool resetPlayhead) {
 }
 
 void EditorController::publishColorPreview(bool refreshGradeUi) {
+    pending_color_preview_refresh_ui_ = pending_color_preview_refresh_ui_ || refreshGradeUi;
+    color_preview_dirty_ = true;
+    color_preview_coalesce_timer_.start();
+}
+
+void EditorController::flushColorPreview() {
+    if (!color_preview_dirty_) return;
+    color_preview_dirty_ = false;
+    const bool refreshGradeUi = pending_color_preview_refresh_ui_;
+    pending_color_preview_refresh_ui_ = false;
     QElapsedTimer publishElapsed;
     publishElapsed.start();
     preview_snapshot_ = timeline_.snapshot();
     preview_revision_ = timeline_.revision();
     if (refreshGradeUi) {
         clips_cache_.reset();
+    clip_index_by_id_.clear();
         emit selectedClipChanged();
-        emit gradeUiChanged();
+        emitGradeUiChanged();
     }
     emit historyChanged();
 #ifdef FFGUI_HAS_GES
@@ -6630,6 +6758,10 @@ void EditorController::touchCoalescedGradeEdit() {
 void EditorController::endCoalescedGradeEdit() {
     grade_coalesce_timer_.stop();
     timeline_.end_coalesced_edit();
+    if (color_preview_dirty_) {
+        color_preview_coalesce_timer_.stop();
+        flushColorPreview();
+    }
 }
 
 void EditorController::setStatus(QString status) {

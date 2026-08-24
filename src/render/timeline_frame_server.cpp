@@ -29,33 +29,28 @@ GradeGraph compose_clip_grade(const Clip& clip) {
 TimelineFrameServer::TimelineFrameServer(std::size_t cache_bytes) : cache_(cache_bytes) {}
 
 RenderedTimelineFrame TimelineFrameServer::render(
-    const TimelineModel& timeline,
+    const Clip& clip,
+    TimeNs timeline_in,
+    const MediaAsset& asset,
     TimeNs timeline_time,
     const ColorPipelineSettings& color_pipeline,
     const std::string& output_space,
-    ColorProcessStage stage) {
-    const auto spans = timeline.snapshot();
-    const auto active = std::ranges::find_if(
-        spans | std::views::reverse, [timeline_time](const auto& span) {
-            return timeline_time >= span.timeline_in && timeline_time < span.timeline_out;
-        });
-    if (active == spans.rend()) {
-        throw std::out_of_range("timeline frame position is outside media");
-    }
-
-    const auto renderSpan = [this, &timeline, &color_pipeline, &output_space, timeline_time, stage]
-        (const TimelineSpan& span) {
-        const auto* asset = timeline.asset(span.clip.asset_id);
-        if (asset == nullptr || !asset->image_sequence().has_value()) {
+    ColorProcessStage stage,
+    const Clip* previous_clip,
+    TimeNs previous_timeline_in,
+    const MediaAsset* previous_asset) {
+    const auto renderClip = [this, &color_pipeline, &output_space, timeline_time, stage](
+        const Clip& sourceClip, TimeNs clipIn, const MediaAsset& sourceAsset) {
+        if (!sourceAsset.image_sequence().has_value()) {
             throw std::invalid_argument(
                 "float timeline frame server currently requires an image sequence");
         }
-        const auto& sequence = *asset->image_sequence();
+        const auto& sequence = *sourceAsset.image_sequence();
         const auto local = std::clamp<TimeNs>(
-            timeline_time - span.timeline_in, 0, span.clip.timeline_duration());
+            timeline_time - clipIn, 0, sourceClip.timeline_duration());
         const auto sourceTime = checked_add(
-            span.clip.source_in, span.clip.source_offset_for_timeline(local));
-        const auto sourceFrame = asset->frame_at_or_before(sourceTime);
+            sourceClip.source_in, sourceClip.source_offset_for_timeline(local));
+        const auto sourceFrame = sourceAsset.frame_at_or_before(sourceTime);
         const auto offset = sourceFrame.has_value()
             ? static_cast<int>(*sourceFrame)
             : static_cast<int>(std::max<TimeNs>(0, sourceTime) /
@@ -67,11 +62,11 @@ RenderedTimelineFrame TimelineFrameServer::render(
         auto source = cache_.get(ImageFrameRequest{
             sequence.frame_path(resolved), sequence.exr_part,
             sequence.channel_mapping, sequence.exr_view});
-        auto combinedGrade = compose_clip_grade(span.clip);
+        auto combinedGrade = compose_clip_grade(sourceClip);
         auto processed = process_color_frame(
-            *source, asset->source_color(), color_pipeline, combinedGrade, output_space,
+            *source, sourceAsset.source_color(), color_pipeline, combinedGrade, output_space,
             sourceTime, stage);
-        if (span.clip.video_muted) {
+        if (sourceClip.video_muted) {
             for (std::size_t index = 0; index + 3 < processed.rgba.size(); index += 4) {
                 processed.rgba[index] = 0.0F;
                 processed.rgba[index + 1] = 0.0F;
@@ -79,31 +74,72 @@ RenderedTimelineFrame TimelineFrameServer::render(
             }
         }
         return RenderedTimelineFrame{
-            std::move(source), std::move(processed), span.clip.id, asset->id(), requested,
+            std::move(source), std::move(processed), sourceClip.id, sourceAsset.id(), requested,
             resolved, requested != resolved};
     };
 
-    auto result = renderSpan(*active);
-    if (active->clip.transition_in <= 0 || timeline_time >=
-        checked_add(active->timeline_in, active->clip.transition_in)) {
+    auto result = renderClip(clip, timeline_in, asset);
+    if (previous_clip == nullptr || previous_asset == nullptr || clip.transition_in <= 0 ||
+        timeline_time >= checked_add(timeline_in, clip.transition_in)) {
         return result;
     }
-    const auto currentIndex = static_cast<std::size_t>(
-        std::distance(active, spans.rend()) - 1);
-    if (currentIndex == 0) return result;
-    auto previous = renderSpan(spans[currentIndex - 1]);
+    auto previous = renderClip(*previous_clip, previous_timeline_in, *previous_asset);
     if (previous.processed.width != result.processed.width ||
         previous.processed.height != result.processed.height) {
         throw std::invalid_argument("dissolve inputs must have matching dimensions");
     }
     const auto mix = std::clamp(
-        static_cast<float>(timeline_time - active->timeline_in) /
-            static_cast<float>(active->clip.transition_in), 0.0F, 1.0F);
+        static_cast<float>(timeline_time - timeline_in) /
+            static_cast<float>(clip.transition_in), 0.0F, 1.0F);
     for (std::size_t index = 0; index < result.processed.rgba.size(); ++index) {
         result.processed.rgba[index] = std::lerp(
             previous.processed.rgba[index], result.processed.rgba[index], mix);
     }
     return result;
+}
+
+RenderedTimelineFrame TimelineFrameServer::render(
+    const TimelineModel& timeline,
+    TimeNs timeline_time,
+    const ColorPipelineSettings& color_pipeline,
+    const std::string& output_space,
+    ColorProcessStage stage) {
+    TimeNs cursor = 0;
+    const Clip* matched = nullptr;
+    TimeNs matchedIn = 0;
+    std::size_t matchedIndex = 0;
+    const auto& clips = timeline.clips();
+    for (std::size_t index = 0; index < clips.size(); ++index) {
+        const auto& clip = clips[index];
+        if (index > 0) cursor -= clip.transition_in;
+        const auto end = checked_add(cursor, clip.timeline_duration());
+        if (timeline_time >= cursor && timeline_time < end) {
+            matched = &clip;
+            matchedIn = cursor;
+            matchedIndex = index;
+        }
+        cursor = end;
+    }
+    if (matched == nullptr) {
+        throw std::out_of_range("timeline frame position is outside media");
+    }
+    const auto* asset = timeline.asset(matched->asset_id);
+    if (asset == nullptr) {
+        throw std::invalid_argument(
+            "float timeline frame server currently requires an image sequence");
+    }
+    const Clip* previousClip = nullptr;
+    const MediaAsset* previousAsset = nullptr;
+    TimeNs previousIn = 0;
+    if (matched->transition_in > 0 && matchedIndex > 0 &&
+        timeline_time < checked_add(matchedIn, matched->transition_in)) {
+        previousClip = &clips[matchedIndex - 1];
+        previousAsset = timeline.asset(previousClip->asset_id);
+        previousIn = matchedIn + matched->transition_in - previousClip->timeline_duration();
+    }
+    return render(
+        *matched, matchedIn, *asset, timeline_time, color_pipeline, output_space, stage,
+        previousClip, previousIn, previousAsset);
 }
 
 }  // namespace ffgui
