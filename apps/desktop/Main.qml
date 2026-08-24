@@ -42,27 +42,20 @@ ApplicationWindow {
             EditorController.selectedClipBrightness !== 0 ||
             EditorController.selectedClipContrast !== 100 ||
             EditorController.selectedClipSaturation !== 100)
+    readonly property var gradeNodes: EditorController.selectedGradeNodes
     readonly property var activeWindowNode: {
-        for (let i = 0; i < EditorController.selectedGradeNodes.length; ++i)
-            if (EditorController.selectedGradeNodes[i].type === 9)
-                return EditorController.selectedGradeNodes[i]
+        for (let i = 0; i < gradeNodes.length; ++i)
+            if (gradeNodes[i].type === 9)
+                return gradeNodes[i]
         return null
     }
     readonly property var activeQualifierNode: {
-        for (let i = 0; i < EditorController.selectedGradeNodes.length; ++i)
-            if (EditorController.selectedGradeNodes[i].type === 8)
-                return EditorController.selectedGradeNodes[i]
+        for (let i = 0; i < gradeNodes.length; ++i)
+            if (gradeNodes[i].type === 8)
+                return gradeNodes[i]
         return null
     }
-    readonly property var programClipAtPlayhead: {
-        for (let i = EditorController.clips.length - 1; i >= 0; --i) {
-            const clip = EditorController.clips[i]
-            if (EditorController.playheadNs >= clip.timelineInNs &&
-                EditorController.playheadNs < clip.timelineInNs + clip.durationNs)
-                return clip
-        }
-        return null
-    }
+    readonly property var programClipAtPlayhead: EditorController.clipAtPlayhead
 
     onColorWorkspaceChanged: {
         if (colorWorkspace)
@@ -102,12 +95,20 @@ ApplicationWindow {
         property real redValue: 0
         property real greenValue: 0
         property real blueValue: 0
+        property real paintRed: redValue
+        property real paintGreen: greenValue
+        property real paintBlue: blueValue
         property real neutralValue: 0
         property real range: 0.5
         property var keyframedParameters: []
         property var keyframesAtPlayhead: []
         implicitWidth: 92
         implicitHeight: 116
+        onRedValueChanged: { paintRed = redValue; wheelCanvas.requestPaint() }
+        onGreenValueChanged: { paintGreen = greenValue; wheelCanvas.requestPaint() }
+        onBlueValueChanged: { paintBlue = blueValue; wheelCanvas.requestPaint() }
+        onNeutralValueChanged: wheelCanvas.requestPaint()
+        onRangeChanged: wheelCanvas.requestPaint()
         Canvas {
             id: wheelCanvas
             anchors.top: parent.top
@@ -126,8 +127,8 @@ ApplicationWindow {
                         ctx.stroke()
                     }
                 }
-                const dx = Math.max(-1, Math.min(1, (redValue - blueValue) / (2 * range)))
-                const dy = Math.max(-1, Math.min(1, (neutralValue - greenValue) / range))
+                const dx = Math.max(-1, Math.min(1, (parent.paintRed - parent.paintBlue) / (2 * parent.range)))
+                const dy = Math.max(-1, Math.min(1, (parent.neutralValue - parent.paintGreen) / parent.range))
                 ctx.beginPath(); ctx.fillStyle = "white"
                 ctx.arc(42 + dx * 34, 42 + dy * 34, 4, 0, Math.PI * 2); ctx.fill()
                 ctx.strokeStyle = "#111"; ctx.stroke()
@@ -140,9 +141,15 @@ ApplicationWindow {
             function updateValues(mouse) {
                 const dx = Math.max(-1, Math.min(1, (mouse.x - width / 2) / (width * 0.42)))
                 const dy = Math.max(-1, Math.min(1, (mouse.y - height / 2) / (height * 0.42)))
-                EditorController.setGradeParameter(nodeId, redKey, neutralValue + dx * range)
-                EditorController.setGradeParameter(nodeId, greenKey, neutralValue - dy * range)
-                EditorController.setGradeParameter(nodeId, blueKey, neutralValue - dx * range)
+                parent.paintRed = parent.neutralValue + dx * parent.range
+                parent.paintGreen = parent.neutralValue - dy * parent.range
+                parent.paintBlue = parent.neutralValue - dx * parent.range
+                wheelCanvas.requestPaint()
+                const parameters = {}
+                parameters[parent.redKey] = parent.paintRed
+                parameters[parent.greenKey] = parent.paintGreen
+                parameters[parent.blueKey] = parent.paintBlue
+                EditorController.setGradeParameters(parent.nodeId, parameters)
             }
         }
         Row {
@@ -175,6 +182,8 @@ ApplicationWindow {
         property var points: []
         property int activePoint: -1
         implicitHeight: 170
+        onPointsChanged: curveCanvas.requestPaint()
+        onActivePointChanged: curveCanvas.requestPaint()
         function commit() {
             EditorController.setGradeCurvePoints(nodeId, curveName, points)
             curveCanvas.requestPaint()
@@ -261,6 +270,9 @@ ApplicationWindow {
         property bool compact: false
         hoverEnabled: true
         implicitHeight: compact ? 30 : 34
+        implicitWidth: Math.max(compact ? 34 : 88, contentItem.implicitWidth + leftPadding + rightPadding)
+        Layout.minimumHeight: implicitHeight
+        Layout.maximumHeight: implicitHeight
         leftPadding: compact ? 10 : 14
         rightPadding: compact ? 10 : 14
         contentItem: Label {
@@ -270,6 +282,8 @@ ApplicationWindow {
                   : "#e8edf2"
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideNone
+            wrapMode: Text.NoWrap
             font.pixelSize: 13
             font.bold: control.down || control.highlighted
         }
@@ -556,6 +570,9 @@ ApplicationWindow {
                     ToolTip.text: "컬러 작업 공간  Ctrl+2"
                 }
                 AppButton {
+                    implicitWidth: 100
+                    Layout.preferredWidth: 100
+                    Layout.minimumWidth: 100
                     text: EditorController.importing ? "분석 중…" : "영상 추가"
                     enabled: !EditorController.importing
                     onClicked: mediaDialog.open()
@@ -575,6 +592,9 @@ ApplicationWindow {
                 }
                 Item { Layout.fillWidth: true }
                 AppButton {
+                    implicitWidth: 120
+                    Layout.preferredWidth: 120
+                    Layout.minimumWidth: 120
                     text: EditorController.exporting ? "내보내는 중…" : "내보내기"
                     enabled: EditorController.durationNs > 0 && !EditorController.exporting
                     onClicked: root.requestExport()
@@ -659,6 +679,9 @@ ApplicationWindow {
                         }
                         Item { Layout.fillWidth: true }
                         AppButton {
+                            implicitWidth: 52
+                            Layout.preferredWidth: 52
+                            Layout.minimumWidth: 52
                             text: mediaBin.filmstripMode ? "필름" : "목록"
                             compact: true
                             onClicked: mediaBin.filmstripMode = !mediaBin.filmstripMode
@@ -951,6 +974,9 @@ ApplicationWindow {
                                 onActivated: EditorController.reviewOverlayMode = currentIndex
                             }
                             AppButton {
+                                implicitWidth: 88
+                                Layout.preferredWidth: 88
+                                Layout.minimumWidth: 88
                                 text: EditorController.scopesVisible ? "스코프 닫기" : "스코프"
                                 compact: true
                                 onClicked: EditorController.scopesVisible =
@@ -975,6 +1001,9 @@ ApplicationWindow {
                                 onClicked: root.viewerSafeArea = !root.viewerSafeArea
                             }
                             AppButton {
+                                implicitWidth: 52
+                                Layout.preferredWidth: 52
+                                Layout.minimumWidth: 52
                                 text: root.programFullscreen ? "창" : "전체"
                                 compact: true
                                 enabled: !EditorController.sourceViewerOpen
@@ -2312,7 +2341,7 @@ ApplicationWindow {
                             font.pixelSize: 10
                         }
                         Repeater {
-                            model: EditorController.selectedGradeNodes
+                            model: root.gradeNodes
                             delegate: Rectangle {
                                 id: gradeNode
                                 required property var modelData
@@ -2655,8 +2684,19 @@ ApplicationWindow {
                                             Layout.preferredHeight: 210
                                             visible: gradeNode.modelData.type === 6
                                             Canvas {
+                                                id: warperCanvas
                                                 anchors.centerIn: parent
                                                 width: 190; height: 190
+                                                property var satScales: [1,1,1,1,1,1,1,1,1,1,1,1]
+                                                property var hueShifts: [0,0,0,0,0,0,0,0,0,0,0,0]
+                                                Component.onCompleted: {
+                                                    for (let i = 0; i < 12; ++i) {
+                                                        satScales[i] = gradeNode.modelData.parameters["satScale" + i] || 1
+                                                        hueShifts[i] = gradeNode.modelData.parameters["hueShift" + i] || 0
+                                                    }
+                                                    satScales = satScales; hueShifts = hueShifts
+                                                    requestPaint()
+                                                }
                                                 onPaint: {
                                                     const ctx = getContext("2d")
                                                     ctx.clearRect(0, 0, width, height)
@@ -2665,8 +2705,8 @@ ApplicationWindow {
                                                         ctx.fillStyle = Qt.hsla(i / 12, 0.8, 0.5, 0.85)
                                                         ctx.arc(95, 95, 82, (i - 0.5) * Math.PI / 6,
                                                                 (i + 0.5) * Math.PI / 6); ctx.closePath(); ctx.fill()
-                                                        const sat = gradeNode.modelData.parameters["satScale" + i] || 1
-                                                        const shift = gradeNode.modelData.parameters["hueShift" + i] || 0
+                                                        const sat = satScales[i] || 1
+                                                        const shift = hueShifts[i] || 0
                                                         const angle = (i * 30 + shift) * Math.PI / 180
                                                         ctx.beginPath(); ctx.fillStyle = "white"
                                                         ctx.arc(95 + Math.cos(angle) * Math.min(76, 46 * sat),
@@ -2686,10 +2726,17 @@ ApplicationWindow {
                                                         if (angle < 0) angle += 360
                                                         const cell = Math.round(angle / 30) % 12
                                                         const radius = Math.sqrt(dx * dx + dy * dy)
+                                                        const nextSat = warperCanvas.satScales.slice()
+                                                        const nextShift = warperCanvas.hueShifts.slice()
+                                                        nextShift[cell] = angle - cell * 30
+                                                        nextSat[cell] = Math.max(0, Math.min(3, radius / 46))
+                                                        warperCanvas.satScales = nextSat
+                                                        warperCanvas.hueShifts = nextShift
+                                                        warperCanvas.requestPaint()
                                                         EditorController.setGradeParameter(gradeNode.modelData.id,
-                                                            "hueShift" + cell, angle - cell * 30)
+                                                            "hueShift" + cell, nextShift[cell])
                                                         EditorController.setGradeParameter(gradeNode.modelData.id,
-                                                            "satScale" + cell, Math.max(0, Math.min(3, radius / 46)))
+                                                            "satScale" + cell, nextSat[cell])
                                                     }
                                                 }
                                             }
@@ -3013,13 +3060,25 @@ ApplicationWindow {
                 anchors.fill: parent
                 spacing: 2
 
-                RowLayout {
+                Flickable {
+                    id: transportFlick
                     Layout.fillWidth: true
                     Layout.preferredHeight: 40
                     Layout.leftMargin: 6
                     Layout.rightMargin: 8
+                    clip: true
+                    flickableDirection: Flickable.HorizontalFlick
+                    boundsBehavior: Flickable.StopAtBounds
+                    contentWidth: Math.max(width, transportRow.implicitWidth)
+                    contentHeight: height
+                    RowLayout {
+                    id: transportRow
+                    height: transportFlick.height
                     spacing: 5
                     AppButton {
+                        implicitWidth: 108
+                        Layout.preferredWidth: 108
+                        Layout.minimumWidth: 108
                         text: EditorController.playing ? "Ⅱ  일시정지" : "▶  재생"
                         enabled: EditorController.durationNs > 0
                         highlighted: EditorController.playing
@@ -3126,6 +3185,9 @@ ApplicationWindow {
                         ToolTip.text: "타임라인 클립 외형"
                     }
                     AppButton {
+                        implicitWidth: 52
+                        Layout.preferredWidth: 52
+                        Layout.minimumWidth: 52
                         text: root.timelineClipHeight === 0 ? "낮게" :
                               root.timelineClipHeight === 1 ? "보통" : "높게"
                         compact: true
@@ -3228,6 +3290,9 @@ ApplicationWindow {
                         ToolTip.text: "재생 헤드 타임코드 입력"
                     }
                     AppButton {
+                        implicitWidth: 72
+                        Layout.preferredWidth: 72
+                        Layout.minimumWidth: 72
                         text: EditorController.selectedClipVideoMuted ? "V 복원" : "V 검게"
                         compact: true
                         highlighted: EditorController.selectedClipVideoMuted
@@ -3261,6 +3326,7 @@ ApplicationWindow {
                     Label {
                         text: Math.round(timeline.zoomLevel * 100) + "%"
                         color: "#8994a3"
+                    }
                     }
                 }
 
@@ -3357,9 +3423,11 @@ ApplicationWindow {
                                         ctx.beginPath()
                                         const peaks = modelData.waveform
                                         const center = height / 2
-                                        for (let x = 0; x < width; ++x) {
+                                        const samples = Math.max(2, Math.min(width, 256))
+                                        for (let sample = 0; sample < samples; ++sample) {
+                                            const x = sample * width / samples
                                             const index = Math.min(peaks.length - 1,
-                                                Math.floor(x * peaks.length / Math.max(1, width)))
+                                                Math.floor(sample * peaks.length / samples))
                                             const amplitude = Math.min(1, Math.abs(peaks[index])) * center
                                             ctx.moveTo(x, center - amplitude)
                                             ctx.lineTo(x, center + amplitude)

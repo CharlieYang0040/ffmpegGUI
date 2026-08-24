@@ -20,6 +20,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QVariantList>
+#include <QVariantMap>
 #include <QUrl>
 #include <QWindow>
 #include <QtQml/qqmlregistration.h>
@@ -44,6 +45,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(QVariantList timelineMarkers READ timelineMarkers NOTIFY timelineChanged)
     Q_PROPERTY(qint64 durationNs READ durationNs NOTIFY timelineChanged)
     Q_PROPERTY(qint64 playheadNs READ playheadNs NOTIFY playheadChanged)
+    Q_PROPERTY(QVariant clipAtPlayhead READ clipAtPlayhead NOTIFY clipAtPlayheadChanged)
     Q_PROPERTY(qint64 inPointNs READ inPointNs NOTIFY rangeChanged)
     Q_PROPERTY(qint64 outPointNs READ outPointNs NOTIFY rangeChanged)
     Q_PROPERTY(QString selectedSourceAssetId READ selectedSourceAssetId NOTIFY sourceViewerChanged)
@@ -161,7 +163,8 @@ protected:
 
 public:
 
-    [[nodiscard]] QVariantList clips() const;
+    [[nodiscard]] const QVariantList& clips() const;
+    [[nodiscard]] QVariant clipAtPlayhead() const;
     [[nodiscard]] QVariantList mediaAssets() const;
     [[nodiscard]] QVariantList captions() const;
     [[nodiscard]] QVariantList timelineMarkers() const;
@@ -258,7 +261,7 @@ public:
     [[nodiscard]] bool lookExportUnrealBundle() const noexcept { return look_export_unreal_bundle_; }
     [[nodiscard]] QString shotStillPath() const { return shot_still_path_; }
     [[nodiscard]] int shotCompareMode() const noexcept { return shot_compare_mode_; }
-    [[nodiscard]] QVariantList selectedGradeNodes() const;
+    [[nodiscard]] const QVariantList& selectedGradeNodes() const;
     [[nodiscard]] bool gradeClipboardAvailable() const noexcept {
         return grade_node_clipboard_.has_value();
     }
@@ -455,6 +458,7 @@ public slots:
     void setGradeNodeName(const QString& nodeId, const QString& name);
     void setGradeNodeMix(const QString& nodeId, int percent);
     void setGradeParameter(const QString& nodeId, const QString& parameter, double value);
+    void setGradeParameters(const QString& nodeId, const QVariantMap& parameters);
     void toggleGradeParameterKeyframe(const QString& nodeId, const QString& parameter);
     void setGradeCurveMidpoint(
         const QString& nodeId, const QString& curveName, int adjustmentPercent);
@@ -530,6 +534,7 @@ signals:
     void scopeFrameChanged();
     void gradeClipboardChanged();
     void gradeUiChanged();
+    void clipAtPlayheadChanged();
     void editUiChanged();
     void gifEstimateChanged();
     void exportFinished(bool success, QUrl outputUrl);
@@ -543,11 +548,17 @@ private:
     };
 
     void publishTimeline(bool resetPlayhead = false);
-    void publishColorPreview();
+    void publishColorPreview(bool refreshGradeUi = true);
+    void flushColorPreview();
+    [[nodiscard]] bool selectedGradeHasKeyframes() const;
+    void emitGradeUiChanged();
     void touchCoalescedGradeEdit();
     void endCoalescedGradeEdit();
     void commitGradeNodeEdit(
-        const std::string& clip_id, ffgui::GradeGraph graph, const std::string& node_id);
+        const std::string& clip_id,
+        ffgui::GradeGraph graph,
+        const std::string& node_id,
+        bool refreshGradeUi = true);
     [[nodiscard]] std::optional<ffgui::TimeNs> selectedClipSourceTime() const;
     void setStatus(QString status);
     void queuePreviewOperation(bool restorePosition);
@@ -728,6 +739,10 @@ private:
     QTimer preview_update_timer_;
     QTimer grade_coalesce_timer_;
     QTimer model_update_timer_;
+    QTimer color_preview_coalesce_timer_;
+    QTimer grade_ui_playhead_timer_;
+    bool color_preview_dirty_{};
+    bool pending_color_preview_refresh_ui_{};
     QTimer selection_update_timer_;
     QTimer float_playback_timer_;
     QTimer audio_skim_debounce_timer_;
@@ -784,6 +799,8 @@ private:
     std::uint64_t scrub_frame_serial_{1ULL << 63};
     std::uint64_t scrub_frames_submitted_{};
     mutable std::optional<QVariantList> clips_cache_;
+    mutable QHash<QString, int> clip_index_by_id_;
+    mutable std::optional<QVariantList> grade_nodes_cache_;
     mutable std::optional<QVariantList> media_assets_cache_;
     mutable std::optional<QVariantList> captions_cache_;
     mutable QHash<QString, QVariantList> waveform_cache_;

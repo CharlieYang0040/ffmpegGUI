@@ -224,6 +224,15 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
         skimmerNode = new QSGSimpleRectNode(QRectF{}, QColor("#f0c66a"));
         root->appendChildNode(skimmerNode);
     }
+    auto* hoverRoot = skimmerNode->nextSibling();
+    if (hoverRoot == nullptr) {
+        hoverRoot = new QSGNode();
+        root->appendChildNode(hoverRoot);
+        const QColor hoverEdge("#ffffff");
+        for (int edge = 0; edge < 4; ++edge) {
+            hoverRoot->appendChildNode(new QSGSimpleRectNode(QRectF{}, hoverEdge));
+        }
+    }
 
     const qreal contentWidth = std::max<qreal>(1.0, width() - kHorizontalPadding * 2.0);
     if (timeline_geometry_dirty_) {
@@ -279,8 +288,8 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
         auto* vertices = geometry->vertexDataAsColoredPoint2D();
 
         int vertexIndex = 0;
-        for (int index = 0; index < visibleClips.size(); ++index) {
-            const auto clip = visibleClips[index].toMap();
+        for (const auto& value : visibleClips) {
+            const auto clip = value.toMap();
             const auto start = clip.value("timelineInNs").toLongLong();
             const auto duration = clip.value("durationNs").toLongLong();
             if (start + duration <= viewStart || start >= viewEnd) {
@@ -293,9 +302,8 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                 contentWidth * static_cast<qreal>(std::min(start + duration, viewEnd) - viewStart) /
                     static_cast<qreal>(viewDuration);
             const bool selected = selected_clip_ids_.contains(clip.value("id").toString());
-            QColor color = selected ? QColor("#f0c66a")
-                : (index == hover_clip_index_ ? QColor("#ffffff") : QColor("#d9dee5"));
-            color.setAlpha(selected ? 255 : (index == hover_clip_index_ ? 245 : 205));
+            QColor color = selected ? QColor("#f0c66a") : QColor("#d9dee5");
+            color.setAlpha(selected ? 255 : 205);
             const auto x1 = left + 1.0;
             const auto x2 = std::max(x1 + 1.0, right - 1.0);
             const auto y1 = kTrackTop;
@@ -471,6 +479,44 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     } else {
         skimmerNode->setRect(QRectF{});
     }
+
+    QRectF hoverRect;
+    if (hover_clip_index_ >= 0 && hover_clip_index_ < clips_.size() &&
+        painted_view_duration_ns_ > 0) {
+        const auto clip = clips_[hover_clip_index_].toMap();
+        const auto start = clip.value("timelineInNs").toLongLong();
+        const auto duration = clip.value("durationNs").toLongLong();
+        const auto viewEnd = painted_view_start_ns_ + painted_view_duration_ns_;
+        if (start + duration > painted_view_start_ns_ && start < viewEnd) {
+            const auto left = kHorizontalPadding + contentWidth *
+                static_cast<qreal>(std::max(start, painted_view_start_ns_) - painted_view_start_ns_) /
+                static_cast<qreal>(painted_view_duration_ns_);
+            const auto right = kHorizontalPadding + contentWidth *
+                static_cast<qreal>(std::min(start + duration, viewEnd) - painted_view_start_ns_) /
+                static_cast<qreal>(painted_view_duration_ns_);
+            const qreal trackHeight = std::max<qreal>(1.0, height() - kTrackTop - kTrackBottomPadding);
+            hoverRect = QRectF(left, kTrackTop, std::max<qreal>(1.0, right - left), trackHeight);
+        }
+    }
+    auto* hoverEdge = hoverRoot->firstChild();
+    const qreal edge = 2.0;
+    if (auto* top = static_cast<QSGSimpleRectNode*>(hoverEdge); top != nullptr) {
+        top->setRect(hoverRect.isNull() ? QRectF{} : QRectF(hoverRect.x(), hoverRect.y(), hoverRect.width(), edge));
+        hoverEdge = hoverEdge->nextSibling();
+    }
+    if (auto* bottom = static_cast<QSGSimpleRectNode*>(hoverEdge); bottom != nullptr) {
+        bottom->setRect(hoverRect.isNull() ? QRectF{} : QRectF(
+            hoverRect.x(), hoverRect.y() + hoverRect.height() - edge, hoverRect.width(), edge));
+        hoverEdge = hoverEdge->nextSibling();
+    }
+    if (auto* left = static_cast<QSGSimpleRectNode*>(hoverEdge); left != nullptr) {
+        left->setRect(hoverRect.isNull() ? QRectF{} : QRectF(hoverRect.x(), hoverRect.y(), edge, hoverRect.height()));
+        hoverEdge = hoverEdge->nextSibling();
+    }
+    if (auto* right = static_cast<QSGSimpleRectNode*>(hoverEdge); right != nullptr) {
+        right->setRect(hoverRect.isNull() ? QRectF{} : QRectF(
+            hoverRect.x() + hoverRect.width() - edge, hoverRect.y(), edge, hoverRect.height()));
+    }
     return root;
 }
 
@@ -611,7 +657,6 @@ void TimelineView::hoverMoveEvent(QHoverEvent* event) {
     if (event->position().y() < kTrackTop) {
         if (hover_clip_index_ >= 0) {
             hover_clip_index_ = -1;
-            timeline_geometry_dirty_ = true;
             update();
         }
         setCursor(QCursor(Qt::PointingHandCursor));
@@ -621,7 +666,6 @@ void TimelineView::hoverMoveEvent(QHoverEvent* event) {
     const auto index = clipIndexAt(event->position().x());
     if (hover_clip_index_ != index) {
         hover_clip_index_ = index;
-        timeline_geometry_dirty_ = true;
         update();
     }
     if (index < 0) {
@@ -657,7 +701,6 @@ void TimelineView::hoverLeaveEvent(QHoverEvent* event) {
     }
     if (hover_clip_index_ >= 0) {
         hover_clip_index_ = -1;
-        timeline_geometry_dirty_ = true;
         update();
     }
     setCursor(QCursor(Qt::ArrowCursor));

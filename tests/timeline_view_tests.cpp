@@ -4,6 +4,7 @@
 #include <QHoverEvent>
 #include <QMouseEvent>
 #include <QSGNode>
+#include <QSGSimpleRectNode>
 #include <QVariantMap>
 
 #include <chrono>
@@ -153,6 +154,28 @@ int main(int argc, char* argv[]) {
     const auto average = elapsed / frameCount;
     std::cout << "1000-clip playhead update average: " << average << " ms\n";
     require(average < 16.67, "playhead updates must stay within a 60 FPS frame budget");
+
+    const auto* const geometryBeforeHover = root->firstChild()->firstChild();
+    require(geometryBeforeHover == staticGeometry,
+            "playhead updates must keep the original clip geometry node");
+    timeline.hover(QPointF{500, 80});
+    root = timeline.render(root);
+    require(root->firstChild()->firstChild() == geometryBeforeHover,
+            "hover must not rebuild clip geometry");
+    auto* hoverRoot = root->firstChild()->nextSibling()->nextSibling()->nextSibling();
+    require(hoverRoot != nullptr && hoverRoot->childCount() == 4,
+            "hover overlay must keep four edge nodes");
+    auto* topEdge = static_cast<QSGSimpleRectNode*>(hoverRoot->firstChild());
+    require(topEdge != nullptr && topEdge->rect().width() > 0,
+            "hovered clip must show an outline without rebuilding clips");
+    timeline.leave(QPointF{500, 80});
+    root = timeline.render(root);
+    require(root->firstChild()->firstChild() == geometryBeforeHover,
+            "hover leave must keep clip geometry");
+    topEdge = static_cast<QSGSimpleRectNode*>(hoverRoot->firstChild());
+    require(topEdge != nullptr && topEdge->rect().width() <= 0,
+            "leaving must hide the hover outline");
+    std::cout << "PASS: hover overlay reuses the static timeline geometry\n";
 
     timeline.setInPointNs(2 * clipDuration);
     timeline.setOutPointNs(5 * clipDuration);

@@ -967,47 +967,56 @@ TimeNs TimelineModel::duration() const {
 }
 
 std::optional<MappedPosition> TimelineModel::locate(TimeNs timeline_position) const {
-    if (timeline_position < 0) {
+    if (timeline_position < 0 || clips_.empty()) {
         return std::nullopt;
     }
-    const auto spans = snapshot();
-    for (auto iterator = spans.rbegin(); iterator != spans.rend(); ++iterator) {
-        const auto& clip = iterator->clip;
-        const auto cursor = iterator->timeline_in;
-        const auto end = iterator->timeline_out;
-        if (timeline_position < end) {
-            if (timeline_position < cursor) continue;
-            const auto local = timeline_position - cursor;
-            const auto sourceOffset = std::clamp<TimeNs>(
-                clip.source_offset_for_timeline(local), 0, clip.duration);
-            const auto source = checked_add(clip.source_in, sourceOffset);
-            const auto* source_asset = asset(clip.asset_id);
-            return MappedPosition{
-                clip.id,
-                clip.asset_id,
-                timeline_position,
-                local,
-                sourceOffset,
-                source,
-                source_asset ? source_asset->frame_at_or_before(source) : std::nullopt};
+    // Walk clips in place. snapshot() copies every grade graph and is far too
+    // expensive for hover-skim / playhead queries on the UI thread.
+    TimeNs cursor = 0;
+    const Clip* matched = nullptr;
+    TimeNs matchedIn = 0;
+    for (std::size_t index = 0; index < clips_.size(); ++index) {
+        const auto& clip = clips_[index];
+        if (index > 0) cursor -= clip.transition_in;
+        const auto end = checked_add(cursor, clip.timeline_duration());
+        if (timeline_position >= cursor && timeline_position < end) {
+            matched = &clip;
+            matchedIn = cursor;
         }
+        cursor = end;
     }
-    return std::nullopt;
+    if (matched == nullptr) return std::nullopt;
+    const auto local = timeline_position - matchedIn;
+    const auto sourceOffset = std::clamp<TimeNs>(
+        matched->source_offset_for_timeline(local), 0, matched->duration);
+    const auto source = checked_add(matched->source_in, sourceOffset);
+    const auto* source_asset = asset(matched->asset_id);
+    return MappedPosition{
+        matched->id,
+        matched->asset_id,
+        timeline_position,
+        local,
+        sourceOffset,
+        source,
+        source_asset ? source_asset->frame_at_or_before(source) : std::nullopt};
 }
 
 std::optional<TimeNs> TimelineModel::timeline_time_for_source(
     const std::string& clip_id,
     TimeNs source_time) const {
-    const auto spans = snapshot();
-    for (const auto& span : spans) {
-        const auto& clip = span.clip;
+    TimeNs cursor = 0;
+    for (std::size_t index = 0; index < clips_.size(); ++index) {
+        const auto& clip = clips_[index];
+        if (index > 0) cursor -= clip.transition_in;
+        const auto end = checked_add(cursor, clip.timeline_duration());
         if (clip.id == clip_id) {
             if (source_time < clip.source_in || source_time >= clip.source_out()) {
                 return std::nullopt;
             }
             return checked_add(
-                span.timeline_in, clip.timeline_offset_for_source(source_time - clip.source_in));
+                cursor, clip.timeline_offset_for_source(source_time - clip.source_in));
         }
+        cursor = end;
     }
     return std::nullopt;
 }
@@ -1017,30 +1026,37 @@ std::optional<TimeNs> TimelineModel::next_frame_time(TimeNs timeline_position) c
     if (clips_.empty() || timeline_position < 0 || timeline_position >= total) {
         return std::nullopt;
     }
-    const auto spans = snapshot();
-    for (auto iterator = spans.rbegin(); iterator != spans.rend(); ++iterator) {
-        const auto& clip = iterator->clip;
-        const auto clipStart = iterator->timeline_in;
-        const auto clipEnd = iterator->timeline_out;
-        if (timeline_position >= clipStart && timeline_position < clipEnd) {
-            const auto* sourceAsset = asset(clip.asset_id);
-            if (sourceAsset == nullptr) return std::nullopt;
-            const auto sourceTime = checked_add(
-                clip.source_in,
-                std::clamp<TimeNs>(
-                    clip.source_offset_for_timeline(timeline_position - clipStart),
-                    0,
-                    clip.duration));
-            const auto& framePts = sourceAsset->frame_pts();
-            const auto next = std::upper_bound(framePts.begin(), framePts.end(), sourceTime);
-            if (next != framePts.end() && *next < clip.source_out()) {
-                return checked_add(
-                    clipStart, clip.timeline_offset_for_source(*next - clip.source_in));
-            }
-            return clipEnd;
+    TimeNs cursor = 0;
+    const Clip* matched = nullptr;
+    TimeNs matchedIn = 0;
+    TimeNs matchedEnd = 0;
+    for (std::size_t index = 0; index < clips_.size(); ++index) {
+        const auto& clip = clips_[index];
+        if (index > 0) cursor -= clip.transition_in;
+        const auto end = checked_add(cursor, clip.timeline_duration());
+        if (timeline_position >= cursor && timeline_position < end) {
+            matched = &clip;
+            matchedIn = cursor;
+            matchedEnd = end;
         }
+        cursor = end;
     }
-    return std::nullopt;
+    if (matched == nullptr) return std::nullopt;
+    const auto* sourceAsset = asset(matched->asset_id);
+    if (sourceAsset == nullptr) return std::nullopt;
+    const auto sourceTime = checked_add(
+        matched->source_in,
+        std::clamp<TimeNs>(
+            matched->source_offset_for_timeline(timeline_position - matchedIn),
+            0,
+            matched->duration));
+    const auto& framePts = sourceAsset->frame_pts();
+    const auto next = std::upper_bound(framePts.begin(), framePts.end(), sourceTime);
+    if (next != framePts.end() && *next < matched->source_out()) {
+        return checked_add(
+            matchedIn, matched->timeline_offset_for_source(*next - matched->source_in));
+    }
+    return matchedEnd;
 }
 
 std::optional<TimeNs> TimelineModel::previous_frame_time(TimeNs timeline_position) const {
@@ -1048,33 +1064,41 @@ std::optional<TimeNs> TimelineModel::previous_frame_time(TimeNs timeline_positio
     if (clips_.empty() || timeline_position <= 0 || timeline_position > total) {
         return std::nullopt;
     }
-    const auto spans = snapshot();
-    for (auto iterator = spans.rbegin(); iterator != spans.rend(); ++iterator) {
-        const auto& clip = iterator->clip;
-        const auto clipStart = iterator->timeline_in;
-        const auto clipEnd = iterator->timeline_out;
-        if (timeline_position > clipStart && timeline_position <= clipEnd) {
-            const auto* sourceAsset = asset(clip.asset_id);
-            if (sourceAsset == nullptr) return std::nullopt;
-            const auto localTime = std::min(
-                timeline_position - clipStart, clip.timeline_duration());
-            const auto sourceTime = checked_add(
-                clip.source_in,
-                std::clamp<TimeNs>(
-                    clip.source_offset_for_timeline(localTime), 0, clip.duration));
-            const auto& framePts = sourceAsset->frame_pts();
-            auto previous = std::lower_bound(framePts.begin(), framePts.end(), sourceTime);
-            if (previous != framePts.begin()) {
-                --previous;
-                if (*previous >= clip.source_in) {
-                    return checked_add(
-                        clipStart, clip.timeline_offset_for_source(*previous - clip.source_in));
-                }
-            }
-            return clipStart;
+    TimeNs cursor = 0;
+    const Clip* matched = nullptr;
+    TimeNs matchedIn = 0;
+    TimeNs matchedEnd = 0;
+    for (std::size_t index = 0; index < clips_.size(); ++index) {
+        const auto& clip = clips_[index];
+        if (index > 0) cursor -= clip.transition_in;
+        const auto end = checked_add(cursor, clip.timeline_duration());
+        if (timeline_position > cursor && timeline_position <= end) {
+            matched = &clip;
+            matchedIn = cursor;
+            matchedEnd = end;
+        }
+        cursor = end;
+    }
+    if (matched == nullptr) return std::nullopt;
+    static_cast<void>(matchedEnd);
+    const auto* sourceAsset = asset(matched->asset_id);
+    if (sourceAsset == nullptr) return std::nullopt;
+    const auto localTime = std::min(
+        timeline_position - matchedIn, matched->timeline_duration());
+    const auto sourceTime = checked_add(
+        matched->source_in,
+        std::clamp<TimeNs>(
+            matched->source_offset_for_timeline(localTime), 0, matched->duration));
+    const auto& framePts = sourceAsset->frame_pts();
+    auto previous = std::lower_bound(framePts.begin(), framePts.end(), sourceTime);
+    if (previous != framePts.begin()) {
+        --previous;
+        if (*previous >= matched->source_in) {
+            return checked_add(
+                matchedIn, matched->timeline_offset_for_source(*previous - matched->source_in));
         }
     }
-    return std::nullopt;
+    return matchedIn;
 }
 
 std::optional<TimeNs> TimelineModel::nearest_frame_time(TimeNs timeline_position) const {
