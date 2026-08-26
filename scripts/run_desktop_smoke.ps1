@@ -255,20 +255,25 @@ if ($sourceEdit.ExitCode -ne 0) {
 }
 Write-Output "Source editing passed: source I/O, head-stable playback, append, insert, overwrite, replace and one-step undo"
 
-$managedColorPlayback = Start-Process -FilePath $application `
-    -ArgumentList @("--float-video-smoke", $clipA, $clipB, $clipVfr) `
-    -WindowStyle Hidden -Wait -PassThru
-if ($managedColorPlayback.ExitCode -ne 0) {
-    throw "managed per-source color preview failed with code $($managedColorPlayback.ExitCode)"
-}
-Write-Output "Managed color preview passed: explicit input spaces and clip LUTs were applied before composition without post-grade duplication"
-
-# Qt Quick and GStreamer own separate D3D11 devices. Give the driver a brief turn to retire
-# the previous process resources before creating the offscreen zero-copy verification device.
-Start-Sleep -Milliseconds 3000
+$previousD3dPreview = $env:FFGUI_ENABLE_D3D_PREVIEW
 $previousCpuPreview = $env:FFGUI_FORCE_CPU_PREVIEW
 try {
+    # Managed-source color explicitly verifies GPU LUT bindings and the D3D11
+    # compositor. The application release default is deliberately CPU, so the
+    # validation process must opt in instead of depending on the caller's shell.
+    $env:FFGUI_ENABLE_D3D_PREVIEW = "1"
     Remove-Item Env:FFGUI_FORCE_CPU_PREVIEW -ErrorAction SilentlyContinue
+    $managedColorPlayback = Start-Process -FilePath $application `
+        -ArgumentList @("--float-video-smoke", $clipA, $clipB, $clipVfr) `
+        -WindowStyle Hidden -Wait -PassThru
+    if ($managedColorPlayback.ExitCode -ne 0) {
+        throw "managed per-source color preview failed with code $($managedColorPlayback.ExitCode)"
+    }
+    Write-Output "Managed color preview passed: explicit input spaces and clip LUTs were applied before composition without post-grade duplication"
+
+    # Qt Quick and GStreamer own separate D3D11 devices. Give the driver a brief turn to retire
+    # the previous process resources before creating the offscreen zero-copy verification device.
+    Start-Sleep -Milliseconds 3000
     $d3dPlayback = Start-Process -FilePath $application `
         -ArgumentList @("--offscreen-presentation-smoke", "--playback-smoke", $clipA, $clipB, $clipVfr) `
         -Wait -PassThru
@@ -294,6 +299,11 @@ try {
     }
     Write-Output "CPU preview fallback passed: BGRA frames reached the exposed Qt scene graph"
 } finally {
+    if ($null -eq $previousD3dPreview) {
+        Remove-Item Env:FFGUI_ENABLE_D3D_PREVIEW -ErrorAction SilentlyContinue
+    } else {
+        $env:FFGUI_ENABLE_D3D_PREVIEW = $previousD3dPreview
+    }
     if ($null -eq $previousCpuPreview) {
         Remove-Item Env:FFGUI_FORCE_CPU_PREVIEW -ErrorAction SilentlyContinue
     } else {

@@ -563,7 +563,7 @@ AnalyzedMedia analyze_sequence(
                    duration, std::move(framePts), {}, {}, MediaKind::image_sequence,
                    sequence, std::move(color), std::filesystem::path(proxy.toStdWString()),
                    std::filesystem::path(exportProxy.toStdWString())},
-        build_thumbnail_atlas(ffmpeg, proxy, duration)};
+        build_thumbnail_atlas(ffmpeg, proxy, duration), sourceSize};
 }
 
 AnalyzedMedia analyze_still(
@@ -581,7 +581,8 @@ AnalyzedMedia analyze_still(
         .filePath("still-proxies");
     QDir().mkpath(cacheRoot);
     const auto proxy = QDir(cacheRoot).filePath(QString::fromLatin1(hash.result().toHex()) + "-v2.mov");
-    const auto target = proxy_dimensions(probe_dimensions(ffprobe, path));
+    const auto sourceSize = probe_dimensions(ffprobe, path);
+    const auto target = proxy_dimensions(sourceSize);
     if (!QFileInfo(proxy).isFile()) {
         const auto partial = proxy + ".partial.mov";
         QFile::remove(partial);
@@ -612,7 +613,7 @@ AnalyzedMedia analyze_still(
                    std::move(framePts), {}, {}, MediaKind::still_image, std::nullopt,
                    std::move(color), std::filesystem::path(proxy.toStdWString()),
                    std::filesystem::path(proxy.toStdWString())},
-        build_thumbnail_atlas(ffmpeg, proxy, duration)};
+        build_thumbnail_atlas(ffmpeg, proxy, duration), sourceSize};
 }
 
 }  // namespace
@@ -623,6 +624,10 @@ QString locate_ffprobe() {
 
 QString locate_ffmpeg() {
     return locate_tool("ffmpeg", "FFGUI_FFMPEG");
+}
+
+QSize probe_media_dimensions(const QString& ffprobe_path, const QString& media_path) {
+    return probe_dimensions(ffprobe_path, media_path);
 }
 
 AnalyzedMedia analyze_media(
@@ -663,6 +668,7 @@ AnalyzedMedia analyze_media(
     if (duration <= 0 || frameTimeline.frame_pts.empty()) {
         throw std::runtime_error("video duration or frame timeline could not be read");
     }
+    const auto sourceSize = probe_dimensions(ffprobe_path, absolutePath);
     auto atlas = build_thumbnail_atlas(ffmpeg_path, absolutePath, duration);
     qInfo().noquote() << "media import finished"
                       << "path=" << absolutePath
@@ -681,7 +687,7 @@ AnalyzedMedia analyze_media(
                    std::move(frameTimeline.keyframe_pts),
                    animated ? MediaKind::animated_image : MediaKind::video,
                    std::nullopt, std::move(color)},
-        std::move(atlas)};
+        std::move(atlas), sourceSize};
 }
 
 AnalyzedMedia analyze_media_source(

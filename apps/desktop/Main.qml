@@ -112,6 +112,8 @@ ApplicationWindow {
         property real range: 0.5
         property var keyframedParameters: []
         property var keyframesAtPlayhead: []
+        property var sampleTrace: EditorController.pixelInspectorTrace.nodeId === nodeId
+                                  ? EditorController.pixelInspectorTrace : ({})
         implicitWidth: 92
         implicitHeight: 116
         onRedValueChanged: { paintRed = redValue; wheelCanvas.requestPaint() }
@@ -119,6 +121,7 @@ ApplicationWindow {
         onBlueValueChanged: { paintBlue = blueValue; wheelCanvas.requestPaint() }
         onNeutralValueChanged: wheelCanvas.requestPaint()
         onRangeChanged: wheelCanvas.requestPaint()
+        onSampleTraceChanged: wheelCanvas.requestPaint()
         Canvas {
             id: wheelCanvas
             anchors.top: parent.top
@@ -142,10 +145,20 @@ ApplicationWindow {
                 ctx.beginPath(); ctx.fillStyle = "white"
                 ctx.arc(42 + dx * 34, 42 + dy * 34, 4, 0, Math.PI * 2); ctx.fill()
                 ctx.strokeStyle = "#111"; ctx.stroke()
+                if (parent.sampleTrace && parent.sampleTrace.hue !== undefined) {
+                    const angle = (parent.sampleTrace.hue - 90) * Math.PI / 180
+                    const radius = Math.min(1, parent.sampleTrace.saturation || 0) * 34
+                    ctx.beginPath(); ctx.strokeStyle = "#58d8ff"; ctx.lineWidth = 2
+                    ctx.arc(42 + Math.cos(angle) * radius,
+                            42 + Math.sin(angle) * radius, 6, 0, Math.PI * 2)
+                    ctx.stroke()
+                }
             }
         }
         MouseArea {
             anchors.fill: wheelCanvas
+            preventStealing: true
+            scrollGestureEnabled: false
             onPressed: function(mouse) { updateValues(mouse) }
             onPositionChanged: function(mouse) { if (pressed) updateValues(mouse) }
             function updateValues(mouse) {
@@ -191,9 +204,12 @@ ApplicationWindow {
         property string curveName
         property var points: []
         property int activePoint: -1
+        property var sampleTrace: EditorController.pixelInspectorTrace.nodeId === nodeId
+                                  ? EditorController.pixelInspectorTrace : ({})
         implicitHeight: 170
         onPointsChanged: curveCanvas.requestPaint()
         onActivePointChanged: curveCanvas.requestPaint()
+        onSampleTraceChanged: curveCanvas.requestPaint()
         function commit() {
             EditorController.setGradeCurvePoints(nodeId, curveName, points)
             curveCanvas.requestPaint()
@@ -220,6 +236,25 @@ ApplicationWindow {
                     const y = (1 - points[p].y) * height
                     if (p === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
                 }
+                if (sampleTrace && sampleTrace.red !== undefined) {
+                    let input = sampleTrace.luma
+                    if (curveName === "red") input = sampleTrace.red
+                    else if (curveName === "green") input = sampleTrace.green
+                    else if (curveName === "blue") input = sampleTrace.blue
+                    input = Math.max(0, Math.min(1, input))
+                    let output = input
+                    for (let p = 1; p < points.length; ++p) {
+                        if (input <= points[p].x) {
+                            const span = Math.max(0.000001, points[p].x - points[p - 1].x)
+                            const mix = (input - points[p - 1].x) / span
+                            output = points[p - 1].y + (points[p].y - points[p - 1].y) * mix
+                            break
+                        }
+                    }
+                    ctx.beginPath(); ctx.strokeStyle = "#58d8ff"; ctx.lineWidth = 2
+                    ctx.arc(input * width, (1 - output) * height, 6, 0, Math.PI * 2)
+                    ctx.stroke()
+                }
                 ctx.stroke()
                 for (let p = 0; p < points.length; ++p) {
                     ctx.beginPath(); ctx.fillStyle = p === activePoint ? "white" : "#b7c3d1"
@@ -230,6 +265,8 @@ ApplicationWindow {
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.LeftButton | Qt.RightButton
+            preventStealing: true
+            scrollGestureEnabled: false
             onPressed: function(mouse) {
                 let nearest = -1; let distance = 14
                 for (let i = 0; i < parent.points.length; ++i) {
@@ -254,14 +291,21 @@ ApplicationWindow {
                 parent.activePoint = nearest; updatePoint(mouse)
             }
             onPositionChanged: function(mouse) { if (pressed && parent.activePoint >= 0) updatePoint(mouse) }
-            onReleased: parent.activePoint = -1
+            onReleased: {
+                if (parent.activePoint >= 0) parent.commit()
+                parent.activePoint = -1
+            }
+            onCanceled: {
+                if (parent.activePoint >= 0) parent.commit()
+                parent.activePoint = -1
+            }
             function updatePoint(mouse) {
                 const copy = parent.points.slice(); const i = parent.activePoint
                 const minX = i === 0 ? 0 : copy[i - 1].x + 0.002
                 const maxX = i === copy.length - 1 ? 1 : copy[i + 1].x - 0.002
                 copy[i] = {x: Math.max(minX, Math.min(maxX, mouse.x / width)),
                            y: Math.max(0, Math.min(1, 1 - mouse.y / height))}
-                parent.points = copy; parent.commit()
+                parent.points = copy
             }
         }
     }
@@ -982,7 +1026,6 @@ ApplicationWindow {
                             }
                             ComboBox {
                                 implicitWidth: 118
-                                visible: EditorController.colorPipelineMode !== 0
                                 model: ["검수 끄기", "Gamut", "False color"]
                                 currentIndex: EditorController.reviewOverlayMode
                                 onActivated: EditorController.reviewOverlayMode = currentIndex
@@ -1003,10 +1046,15 @@ ApplicationWindow {
                                 onActivated: root.viewerZoomMode = currentIndex
                             }
                             ComboBox {
-                                implicitWidth: 108
-                                model: ["성능 1/2", "프록시", "품질 1:1"]
+                                implicitWidth: 142
+                                model: ["자동 최대 360p", "자동 최대 720p", "자동 최대 원본"]
                                 currentIndex: EditorController.previewQuality
                                 onActivated: EditorController.setPreviewQuality(currentIndex)
+                            }
+                            Label {
+                                text: EditorController.previewQualityText
+                                color: EditorController.previewQualityPending ? "#f0bd58" : "#8fc5a6"
+                                font.pixelSize: 10
                             }
                             AppButton {
                                 text: "Safe"
@@ -1082,13 +1130,15 @@ ApplicationWindow {
                                         else
                                             EditorController.inspectPreviewPixel(
                                                 mouse.x / Math.max(1, width),
-                                                mouse.y / Math.max(1, height))
+                                                mouse.y / Math.max(1, height),
+                                                root.expandedGradeNode)
                                     }
                                     onPositionChanged: function(mouse) {
                                         if (pressed)
                                             EditorController.inspectPreviewPixel(
                                                 mouse.x / Math.max(1, width),
-                                                mouse.y / Math.max(1, height))
+                                                mouse.y / Math.max(1, height),
+                                                root.expandedGradeNode)
                                     }
                                 }
                             }
@@ -1411,6 +1461,56 @@ ApplicationWindow {
                                     onClicked: EditorController.replaceSelectedClipSource()
                                     ToolTip.visible: hovered
                                     ToolTip.text: "선택 클립 길이를 유지하며 소스 교체  Shift+R"
+                                }
+                            }
+                        }
+                        Rectangle {
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.margins: 10
+                            z: 29
+                            visible: EditorController.reviewOverlayMode === 2
+                            width: 196
+                            height: falseColorLegend.implicitHeight + 14
+                            radius: 4
+                            color: "#d40b0e12"
+                            border.color: "#465364"
+                            Column {
+                                id: falseColorLegend
+                                anchors.fill: parent
+                                anchors.margins: 7
+                                spacing: 2
+                                Label {
+                                    text: EditorController.hdrMonitoring
+                                          ? "False Color · HDR nit" : "False Color · SDR IRE"
+                                    color: "#f1f4f8"; font.bold: true; font.pixelSize: 10
+                                }
+                                Repeater {
+                                    model: EditorController.hdrMonitoring ? [
+                                        {c:"#10002e", t:"0–1 nit · 블랙"},
+                                        {c:"#1433d8", t:"1–100 nit · 암부/18% 회색"},
+                                        {c:"#16c43b", t:"100–203 nit · 피부톤 참고"},
+                                        {c:"#efd614", t:"203 nit · 확산 백색"},
+                                        {c:"#f36010", t:"하이라이트"},
+                                        {c:"#f21424", t:EditorController.hdrPeakNits + "+ nit · 클리핑 위험"}
+                                    ] : [
+                                        {c:"#10002e", t:"≤0 IRE · 블랙 클리핑"},
+                                        {c:"#1433d8", t:"3–10 IRE · 암부 디테일"},
+                                        {c:"#16c43b", t:"40–45 IRE · 18% 회색"},
+                                        {c:"#8ddd10", t:"45–70 IRE · 피부톤 참고"},
+                                        {c:"#efd614", t:"70–90 IRE · 확산 하이라이트"},
+                                        {c:"#f21424", t:"≥100 IRE · 클리핑 위험"}
+                                    ]
+                                    delegate: Row {
+                                        required property var modelData
+                                        spacing: 5
+                                        Rectangle { width: 10; height: 10; color: parent.modelData.c; radius: 2 }
+                                        Label { text: parent.modelData.t; color: "#c8d1dc"; font.pixelSize: 9 }
+                                    }
+                                }
+                                Label {
+                                    text: "노출 가이드이며 합격/불합격 기준이 아닙니다"
+                                    color: "#7f8c9c"; font.pixelSize: 8
                                 }
                             }
                         }
@@ -2576,6 +2676,70 @@ ApplicationWindow {
                                                 greenValue: gradeNode.modelData.parameters.offsetG || 0
                                                 blueValue: gradeNode.modelData.parameters.offsetB || 0
                                                 neutralValue: 0; range: 0.5
+                                            }
+                                        }
+                                        ColumnLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 1
+                                            spacing: 3
+                                            Label {
+                                                text: "Log 영역 범위 · Shadow / Midtone / Highlight"
+                                                color: "#9aa7b7"; font.pixelSize: 10
+                                            }
+                                            Canvas {
+                                                Layout.fillWidth: true
+                                                Layout.preferredHeight: 34
+                                                property real low: gradeNode.modelData.parameters.lowRange || 0.25
+                                                property real high: gradeNode.modelData.parameters.highRange || 0.75
+                                                onLowChanged: requestPaint()
+                                                onHighChanged: requestPaint()
+                                                onPaint: {
+                                                    const ctx = getContext("2d")
+                                                    ctx.clearRect(0, 0, width, height)
+                                                    for (let x = 0; x < width; ++x) {
+                                                        const v = x / Math.max(1, width - 1)
+                                                        const smooth = function(a, b, n) {
+                                                            const t = Math.max(0, Math.min(1, (n - a) / Math.max(0.0001, b - a)))
+                                                            return t * t * (3 - 2 * t)
+                                                        }
+                                                        const s = 1 - smooth(0, low, v)
+                                                        const h = smooth(high, 1, v)
+                                                        const m = Math.max(0, 1 - s - h)
+                                                        ctx.fillStyle = Qt.rgba(s, m, h, 0.9)
+                                                        ctx.fillRect(x, 0, 1, height)
+                                                    }
+                                                }
+                                            }
+                                            RangeSlider {
+                                                id: logRangeSlider
+                                                Layout.fillWidth: true
+                                                from: 0.01; to: 0.99; stepSize: 0.01
+                                                first.value: gradeNode.modelData.parameters.lowRange || 0.25
+                                                second.value: gradeNode.modelData.parameters.highRange || 0.75
+                                                first.onMoved: {
+                                                    if (first.value > second.value - 0.02)
+                                                        first.value = second.value - 0.02
+                                                    EditorController.setGradeParameter(
+                                                        gradeNode.modelData.id, "lowRange", first.value)
+                                                }
+                                                second.onMoved: {
+                                                    if (second.value < first.value + 0.02)
+                                                        second.value = first.value + 0.02
+                                                    EditorController.setGradeParameter(
+                                                        gradeNode.modelData.id, "highRange", second.value)
+                                                }
+                                            }
+                                            Label {
+                                                visible: EditorController.pixelInspectorTrace.nodeId ===
+                                                         gradeNode.modelData.id
+                                                text: "샘플 가중치  S " +
+                                                      ((EditorController.pixelInspectorTrace.shadowWeight || 0) * 100).toFixed(0) +
+                                                      "%  M " +
+                                                      ((EditorController.pixelInspectorTrace.midtoneWeight || 0) * 100).toFixed(0) +
+                                                      "%  H " +
+                                                      ((EditorController.pixelInspectorTrace.highlightWeight || 0) * 100).toFixed(0) + "%"
+                                                color: "#58d8ff"; font.pixelSize: 10
                                             }
                                         }
                                         Label { text: "혼합"; color: "#9aa7b7" }

@@ -71,11 +71,11 @@ Debug 빌드는 Qt와 필요한 GStreamer 런타임을 실행 폴더에 자동 �
 않습니다. 실행 가능한 배포본은 다음 명령으로 생성합니다.
 
 ```powershell
-.\scripts\package_release.ps1 -Version 0.1.2
-.\scripts\test_release_package.ps1 -Version 0.1.2
+.\scripts\package_release.ps1 -Version 0.1.3
+.\scripts\test_release_package.ps1 -Version 0.1.3
 ```
 
-배포용 EXE는 `out/release-v0.1.2/ffmpegGUI-next-v0.1.2-win-x64`에 있으며 Qt DLL,
+배포용 EXE는 `out/release-v0.1.3/ffmpegGUI-next-v0.1.3-win-x64`에 있으며 Qt DLL,
 QML 모듈과 필요한 GStreamer 런타임을 함께 포함합니다.
 
 `run_ges_smoke.ps1`은 CFR MP4, CFR MKV, VFR MKV를 생성해 트림된 4개 샷을 하나의

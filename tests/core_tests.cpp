@@ -409,6 +409,11 @@ void test_advanced_grade_nodes_share_the_float_reference_contract() {
     ffgui::apply_grade_graph_rgba32f(logPixels, 2, logGraph);
     require(logPixels[0] - 0.02F > logPixels[4] - 2.0F + 0.05F,
             "log shadow wheel must protect highlights while changing dark values");
+    auto crossedLogRange = log;
+    crossedLogRange.parameters["lowRange"] = 0.74;
+    crossedLogRange.parameters["highRange"] = 0.75;
+    require_throws<std::invalid_argument>([&] { crossedLogRange.validate(); },
+        "log wheel tonal handles must preserve a visible non-crossing midtone range");
 
     auto curves = ffgui::make_default_grade_node(ffgui::GradeNodeType::rgb_curves, "curves");
     curves.curves["red"] = {{0.0, 0.0}, {0.5, 0.8}, {1.0, 1.0}};

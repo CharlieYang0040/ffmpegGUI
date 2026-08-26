@@ -79,6 +79,14 @@ void GradeNode::validate() const {
             throw std::invalid_argument("grade parameter keyframes are invalid");
         }
     }
+    if (type == GradeNodeType::log_wheels) {
+        const auto low = parameters.find("lowRange");
+        const auto high = parameters.find("highRange");
+        if (low == parameters.end() || high == parameters.end() || low->second < 0.01 ||
+            high->second > 0.99 || high->second - low->second < 0.02) {
+            throw std::invalid_argument("log wheel tonal ranges are invalid");
+        }
+    }
     if (type == GradeNodeType::lut && external_path.empty()) {
         throw std::invalid_argument("LUT node requires a file path");
     }

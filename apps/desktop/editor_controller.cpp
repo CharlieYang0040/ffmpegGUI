@@ -256,7 +256,12 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         grade_ui_playhead_timer_.start();
     });
     connect(this, &EditorController::playingChanged, this, [this] {
-        if (!playing_ && !scrubbing_) emitGradeUiChanged();
+        if (!playing_ && !scrubbing_) {
+            emitGradeUiChanged();
+            if (!source_viewer_open_ && !preview_should_play_ && durationNs() > 0) {
+                QTimer::singleShot(0, this, &EditorController::restorePlayheadPreview);
+            }
+        }
     });
     connect(this, &EditorController::selectedClipChanged, this, [this] {
         emitGradeUiChanged();
@@ -289,6 +294,8 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         emit selectedClipChanged();
     });
     QSettings settings;
+    preview_quality_ = std::clamp(settings.value(
+        QStringLiteral("preview/adaptiveMaximum"), 2).toInt(), 0, 2);
     output_directory_ = settings.value(QStringLiteral("output/lastDirectory")).toString();
     if (output_directory_.isEmpty()) {
         output_directory_ = QDir(
@@ -312,6 +319,9 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                     const auto duration = item.asset.duration();
                     if (!item.thumbnail_atlas.isEmpty()) {
                         thumbnail_atlases_.insert(assetKey, std::move(item.thumbnail_atlas));
+                    }
+                    if (item.source_size.isValid()) {
+                        media_source_sizes_.insert(assetKey, item.source_size);
                     }
                     if (item.replace_existing) {
                         timeline_.replace_asset(std::move(item.asset));
@@ -554,7 +564,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 pending_scope_frame_.reset();
                 scope_frame_delivery_queued_ = false;
             }
-            if (frame.has_value() && scopes_visible_) {
+            if (frame.has_value() && scopes_visible_ && frame->cpu_pixels == nullptr) {
                 submitScopeFrame(std::move(*frame));
             }
         }, Qt::QueuedConnection);
@@ -564,7 +574,11 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         QMetaObject::invokeMethod(
             this,
             [this, position] {
-                if (audio_skimming_) return;
+                // Source-viewer audio is auditioned through the timeline player, but its
+                // position must never become the program-monitor playhead.  Keep this guard
+                // for the entire time the source viewer is open so queued position callbacks
+                // arriving just after an audio-skim pause cannot leak through.
+                if (audio_skimming_ || source_viewer_open_) return;
                 if (playhead_ns_ != position) {
                     playhead_ns_ = position;
                     emit playheadChanged();
@@ -602,6 +616,9 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                     }
                     return;
                 }
+                // A delayed state callback from source audition belongs to the source
+                // viewer, not the program transport.
+                if (source_viewer_open_) return;
                 const bool nowPlaying = state == ffgui::PlaybackState::playing;
                 if (playing_ != nowPlaying) {
                     playing_ = nowPlaying;
@@ -697,6 +714,20 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             }
         }
         emit sourceViewerChanged();
+    });
+    preview_proxy_dwell_timer_.setSingleShot(true);
+    preview_proxy_dwell_timer_.setInterval(250);
+    connect(&preview_proxy_dwell_timer_, &QTimer::timeout, this, [this] {
+        if (adaptive_preview_target_ns_.has_value() && skim_target_ns_ == adaptive_preview_target_ns_) {
+            requestAdaptivePreviewTier(1, *adaptive_preview_target_ns_);
+        }
+    });
+    preview_original_dwell_timer_.setSingleShot(true);
+    preview_original_dwell_timer_.setInterval(900);
+    connect(&preview_original_dwell_timer_, &QTimer::timeout, this, [this] {
+        if (adaptive_preview_target_ns_.has_value() && skim_target_ns_ == adaptive_preview_target_ns_) {
+            requestAdaptivePreviewTier(2, *adaptive_preview_target_ns_);
+        }
     });
 #ifdef FFGUI_HAS_GES
     connect(
@@ -2150,8 +2181,17 @@ void EditorController::setGradeParameters(
     for (auto iterator = parameters.cbegin(); iterator != parameters.cend(); ++iterator) {
         const auto key = iterator.key().toStdString();
         if (key.empty() || !node->parameters.contains(key)) continue;
-        const auto value = iterator.value().toDouble();
+        auto value = iterator.value().toDouble();
         if (!std::isfinite(value)) continue;
+        if (node->type == ffgui::GradeNodeType::log_wheels && key == "lowRange") {
+            const auto high = node->parameters.contains("highRange")
+                ? node->parameters["highRange"] : 0.75;
+            value = std::clamp(value, 0.01, high - 0.02);
+        } else if (node->type == ffgui::GradeNodeType::log_wheels && key == "highRange") {
+            const auto low = node->parameters.contains("lowRange")
+                ? node->parameters["lowRange"] : 0.25;
+            value = std::clamp(value, low + 0.02, 0.99);
+        }
         auto& keyframes = node->parameter_keyframes[key];
         const bool animates = !keyframes.empty() && sourceTime.has_value();
         if (animates) {
@@ -2174,6 +2214,24 @@ void EditorController::setGradeParameters(
     }
     if (!changed) return;
     node->validate();
+    if (node->type == ffgui::GradeNodeType::log_wheels &&
+        pixel_inspector_trace_.value(QStringLiteral("nodeId")).toString() == nodeId) {
+        const auto normalized = std::max(0.0, pixel_inspector_trace_.value(
+            QStringLiteral("luma")).toDouble());
+        const auto luma = normalized / (1.0 + normalized);
+        const auto smooth = [](double first, double second, double value) {
+            const auto amount = std::clamp((value - first) /
+                std::max(0.0001, second - first), 0.0, 1.0);
+            return amount * amount * (3.0 - 2.0 * amount);
+        };
+        const auto shadow = 1.0 - smooth(0.0, node->parameters["lowRange"], luma);
+        const auto highlight = smooth(node->parameters["highRange"], 1.0, luma);
+        pixel_inspector_trace_[QStringLiteral("shadowWeight")] = shadow;
+        pixel_inspector_trace_[QStringLiteral("midtoneWeight")] =
+            std::max(0.0, 1.0 - shadow - highlight);
+        pixel_inspector_trace_[QStringLiteral("highlightWeight")] = highlight;
+        emit scopeFrameChanged();
+    }
     if (editsAnimation) {
         timeline_.set_clip_grade_graph(selectedId, std::move(graph));
         publishColorPreview(false);
@@ -2338,6 +2396,12 @@ void EditorController::setReviewOverlayMode(int mode) {
     const auto value = static_cast<ffgui::ReviewOverlayMode>(clamped);
     if (review_overlay_mode_ == value) return;
     review_overlay_mode_ = value;
+    if (value != ffgui::ReviewOverlayMode::off && use_d3d_scene_graph_) {
+        // Review overlays require the exact displayed pixels. Keep the optional
+        // zero-copy path for normal viewing, but switch to the proven CPU path
+        // while an always-on inspection overlay is active.
+        recoverCpuPreview();
+    }
     emit scopeSettingsChanged();
 #ifdef FFGUI_HAS_GES
     if (!timeline_.clips().empty()) {
@@ -2418,6 +2482,7 @@ void EditorController::loadFiles(const QStringList& paths) {
                         std::move(analyzed.asset),
                         clipId,
                         std::move(analyzed.thumbnail_atlas),
+                        analyzed.source_size,
                         false});
                 }
                 return result;
@@ -2486,7 +2551,8 @@ void EditorController::updateExrSelection(
                 ffprobe, ffmpeg, sourcePath, assetId.toStdString(), std::move(sequence));
             std::vector<PendingImport> result;
             result.push_back(PendingImport{
-                std::move(analyzed.asset), {}, std::move(analyzed.thumbnail_atlas), true});
+                std::move(analyzed.asset), {}, std::move(analyzed.thumbnail_atlas),
+                analyzed.source_size, true});
             return result;
         }));
 }
@@ -2533,9 +2599,7 @@ void EditorController::seek(qint64 timelinePosition) {
     emit playheadChanged();
 #ifdef FFGUI_HAS_GES
     preview_should_play_ = false;
-    if (submitFloatScrubFrame(playhead_ns_)) return;
-    pending_preview_seek_ = playhead_ns_;
-    queuePreviewOperation(false);
+    restorePlayheadPreview();
 #endif
 }
 
@@ -2566,8 +2630,7 @@ void EditorController::scrub(qint64 timelinePosition, bool finalPosition) {
         if (player_) player_->set_scope_capture_enabled(scopes_visible_);
     }
     pending_live_seek_.reset();
-    pending_preview_seek_ = playhead_ns_;
-    queuePreviewOperation(false);
+    restorePlayheadPreview();
     if (scopes_visible_ && pending_scope_analysis_frame_.has_value()) {
         auto frame = std::move(*pending_scope_analysis_frame_);
         pending_scope_analysis_frame_.reset();
@@ -2887,6 +2950,15 @@ void EditorController::togglePlayback() {
         playhead_ns_ = 0;
         emit playheadChanged();
     }
+    if (preview_should_play_ && preview_native_pipeline_) {
+        player_->set_preview_resolution(1280, 720);
+        preview_native_pipeline_ = false;
+        preview_pipeline_quality_ = 1;
+        preview_pipeline_size_ = QSize(1280, 720);
+        preview_requested_quality_ = 1;
+        ++preview_generation_;
+        emit editUiChanged();
+    }
     // A normal-rate seek is also required when pausing a reverse shuttle. Without it,
     // GStreamer can remain in the completed negative-rate segment and time out while
     // trying to enter PAUSED.
@@ -2934,6 +3006,15 @@ void EditorController::startShuttle(qreal rate) {
         return;
     }
     preview_should_play_ = true;
+    if (preview_native_pipeline_) {
+        player_->set_preview_resolution(1280, 720);
+        preview_native_pipeline_ = false;
+        preview_pipeline_quality_ = 1;
+        preview_pipeline_size_ = QSize(1280, 720);
+        preview_requested_quality_ = 1;
+        ++preview_generation_;
+        emit editUiChanged();
+    }
     pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
 #endif
@@ -3010,6 +3091,15 @@ void EditorController::playAround() {
     shuttle_rate_ = 1.0;
     emit shuttleRateChanged();
     preview_should_play_ = true;
+    if (preview_native_pipeline_) {
+        player_->set_preview_resolution(1280, 720);
+        preview_native_pipeline_ = false;
+        preview_pipeline_quality_ = 1;
+        preview_pipeline_size_ = QSize(1280, 720);
+        preview_requested_quality_ = 1;
+        ++preview_generation_;
+        emit editUiChanged();
+    }
     pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
     setStatus(transport_range_loop_
@@ -3209,7 +3299,20 @@ void EditorController::storeInspectableFrame(const ffgui::PreviewVideoFrame& fra
 }
 
 void EditorController::presentPreviewFrame(ffgui::PreviewVideoFrame frame) {
+    const auto expectedPosition = skim_target_ns_.value_or(playhead_ns_);
+    if (!playing_ && frame.pts >= 0 && std::llabs(frame.pts - expectedPosition) > 500'000'000) {
+        return;
+    }
+    if (preview_quality_pending_) {
+        preview_displayed_quality_ = preview_requested_quality_;
+        preview_quality_pending_ = false;
+        emit editUiChanged();
+    }
     storeInspectableFrame(frame);
+    if (scopes_visible_ && frame.cpu_pixels != nullptr &&
+        frame.cpu_format == ffgui::PreviewCpuFormat::bgra8) {
+        submitScopeFrame(frame);
+    }
     auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
     if (item == nullptr) return;
     const bool liveSkim = playing_ || skim_target_ns_.has_value() || audio_skimming_ || scrubbing_;
@@ -3262,7 +3365,7 @@ void EditorController::presentPreviewFrame(ffgui::PreviewVideoFrame frame) {
         item->submitFrame(std::move(comparison));
         return;
     }
-    if (!liveSkim && review_overlay_mode_ != ffgui::ReviewOverlayMode::off &&
+    if (review_overlay_mode_ != ffgui::ReviewOverlayMode::off &&
         frame.cpu_pixels != nullptr && frame.cpu_format == ffgui::PreviewCpuFormat::bgra8) {
         auto overlay = frame;
         overlay.cpu_pixels = std::make_shared<std::vector<std::uint8_t>>(*frame.cpu_pixels);
@@ -3289,7 +3392,7 @@ void EditorController::recoverCpuPreview() {
     setStatus(QStringLiteral("GPU 장치가 제거되어 CPU 미리보기로 복구했습니다"));
 }
 
-void EditorController::inspectPreviewPixel(qreal x, qreal y) {
+void EditorController::inspectPreviewPixel(qreal x, qreal y, const QString& activeNodeId) {
     auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
     QPointF uv = item != nullptr
         ? item->videoUvFromItem(x * item->width(), y * item->height())
@@ -3297,6 +3400,7 @@ void EditorController::inspectPreviewPixel(qreal x, qreal y) {
     if (uv.x() < 0.0 || uv.y() < 0.0) {
         if (!pixel_inspector_text_.isEmpty()) {
             pixel_inspector_text_.clear();
+            pixel_inspector_trace_.clear();
             emit scopeFrameChanged();
         }
         return;
@@ -3321,8 +3425,59 @@ void EditorController::inspectPreviewPixel(qreal x, qreal y) {
         }
     }
     const auto text = QString::fromStdString(ffgui::format_pixel_inspection(inspection));
-    if (pixel_inspector_text_ == text) return;
+    QVariantMap trace;
+    if (inspection.valid) {
+        const auto maximum = std::max({inspection.red, inspection.green, inspection.blue});
+        const auto minimum = std::min({inspection.red, inspection.green, inspection.blue});
+        const auto delta = maximum - minimum;
+        double hue = 0.0;
+        if (delta > 1.0e-6F) {
+            if (maximum == inspection.red) hue = 60.0 * std::fmod(
+                (inspection.green - inspection.blue) / delta + 6.0, 6.0);
+            else if (maximum == inspection.green) hue = 60.0 * (
+                (inspection.blue - inspection.red) / delta + 2.0);
+            else hue = 60.0 * ((inspection.red - inspection.green) / delta + 4.0);
+        }
+        const auto saturation = std::abs(maximum) > 1.0e-6F ? delta / std::abs(maximum) : 0.0F;
+        double lowRange = 0.25;
+        double highRange = 0.75;
+        if (!activeNodeId.isEmpty() && !selected_clip_id_.isEmpty()) {
+            const auto clip = std::ranges::find(
+                timeline_.clips(), selected_clip_id_.toStdString(), &ffgui::Clip::id);
+            const auto* node = clip == timeline_.clips().end()
+                ? nullptr : clip->grade.node(activeNodeId.toStdString());
+            if (node != nullptr) {
+                if (const auto found = node->parameters.find("lowRange"); found != node->parameters.end())
+                    lowRange = found->second;
+                if (const auto found = node->parameters.find("highRange"); found != node->parameters.end())
+                    highRange = found->second;
+            }
+        }
+        const auto normalizedLuma = std::max(0.0F, inspection.luma) /
+            (1.0F + std::max(0.0F, inspection.luma));
+        const auto smooth = [](double first, double second, double value) {
+            if (second <= first) return value >= second ? 1.0 : 0.0;
+            const auto amount = std::clamp((value - first) / (second - first), 0.0, 1.0);
+            return amount * amount * (3.0 - 2.0 * amount);
+        };
+        const auto shadow = 1.0 - smooth(0.0, lowRange, normalizedLuma);
+        const auto highlight = smooth(highRange, 1.0, normalizedLuma);
+        trace = {
+            {QStringLiteral("nodeId"), activeNodeId},
+            {QStringLiteral("red"), inspection.red},
+            {QStringLiteral("green"), inspection.green},
+            {QStringLiteral("blue"), inspection.blue},
+            {QStringLiteral("luma"), inspection.luma},
+            {QStringLiteral("hue"), hue},
+            {QStringLiteral("saturation"), saturation},
+            {QStringLiteral("shadowWeight"), shadow},
+            {QStringLiteral("midtoneWeight"), std::max(0.0, 1.0 - shadow - highlight)},
+            {QStringLiteral("highlightWeight"), highlight}
+        };
+    }
+    if (pixel_inspector_text_ == text && pixel_inspector_trace_ == trace) return;
     pixel_inspector_text_ = text;
+    pixel_inspector_trace_ = std::move(trace);
     emit scopeFrameChanged();
 }
 
@@ -3834,14 +3989,93 @@ void EditorController::skim(qint64 timelinePosition, bool active) {
     if (active) {
         skim_target_ns_ = target;
         if (!submitFloatScrubFrame(target)) submitCachedScrubFrame(target);
+        scheduleAdaptivePreview(target);
         return;
     }
     skim_target_ns_.reset();
-    // Passive pointer movement must never start/stop the GES pipeline. Alternating
-    // cached CPU frames with D3D playback textures on every hover tick corrupted
-    // presentation of the entire Qt Quick window. Restore from the same isolated
-    // frame path used for the hover instead.
-    if (!submitFloatScrubFrame(playhead_ns_)) submitCachedScrubFrame(playhead_ns_);
+    restorePlayheadPreview();
+}
+
+void EditorController::scheduleAdaptivePreview(qint64 timelinePosition) {
+    const auto changed = adaptive_preview_target_ns_ != timelinePosition;
+    adaptive_preview_target_ns_ = timelinePosition;
+    if (changed) {
+        preview_proxy_dwell_timer_.start();
+        preview_original_dwell_timer_.start();
+    }
+    preview_requested_quality_ = 0;
+    preview_displayed_quality_ = 0;
+    preview_quality_pending_ = preview_quality_ > 0;
+    emit editUiChanged();
+}
+
+void EditorController::requestAdaptivePreviewTier(int tier, qint64 timelinePosition) {
+    tier = std::clamp(tier, 0, preview_quality_);
+    if (tier <= 0 || playing_ || source_viewer_open_) return;
+    if (skim_target_ns_.has_value() && skim_target_ns_ != timelinePosition) return;
+    if (!skim_target_ns_.has_value() && timelinePosition != playhead_ns_) return;
+#ifdef FFGUI_HAS_GES
+    preview_requested_quality_ = tier;
+    preview_quality_pending_ = true;
+    if (tier == 1) {
+        if (preview_pipeline_quality_ != 1 || preview_native_pipeline_) {
+            player_->set_preview_resolution(1280, 720);
+            preview_native_pipeline_ = false;
+            preview_pipeline_quality_ = 1;
+            preview_pipeline_size_ = QSize(1280, 720);
+            ++preview_generation_;
+            pending_preview_seek_ = timelinePosition;
+            queuePreviewOperation(false);
+        } else {
+            queueLiveSeek(timelinePosition);
+        }
+    } else {
+        const auto sourceSize = previewSourceSizeAt(timelinePosition);
+        if (!preview_native_pipeline_ || preview_pipeline_size_ != sourceSize) {
+            player_->set_preview_resolution(sourceSize.width(), sourceSize.height());
+            preview_native_pipeline_ = true;
+            preview_pipeline_quality_ = 2;
+            preview_pipeline_size_ = sourceSize;
+            ++preview_generation_;
+        }
+        pending_preview_seek_ = timelinePosition;
+        queuePreviewOperation(false);
+    }
+    emit editUiChanged();
+#else
+    static_cast<void>(timelinePosition);
+#endif
+}
+
+QSize EditorController::previewSourceSizeAt(qint64 timelinePosition) const {
+    const auto mapped = timeline_.locate(std::clamp<qint64>(timelinePosition, 0, durationNs()));
+    if (mapped.has_value()) {
+        const auto size = media_source_sizes_.value(QString::fromStdString(mapped->asset_id));
+        if (size.isValid()) return size;
+    }
+    return QSize(1920, 1080);
+}
+
+void EditorController::restorePlayheadPreview() {
+    adaptive_preview_target_ns_.reset();
+    preview_proxy_dwell_timer_.stop();
+    preview_original_dwell_timer_.stop();
+    // Source and program monitors share the presentation item.  A queued program
+    // restore while the source viewer is open would replace the source frame and
+    // can race its audio audition pipeline.
+    if (source_viewer_open_) {
+        updateSourcePreview();
+        return;
+    }
+    if (submitFloatScrubFrame(playhead_ns_)) {
+        preview_requested_quality_ = preview_quality_;
+        preview_displayed_quality_ = preview_quality_;
+        preview_quality_pending_ = false;
+        emit editUiChanged();
+        return;
+    }
+    requestAdaptivePreviewTier(preview_quality_, playhead_ns_);
+    if (preview_quality_ == 0) submitCachedScrubFrame(playhead_ns_);
 }
 
 void EditorController::skimAsset(const QString& assetId, qint64 sourceTime, bool active) {
@@ -4124,17 +4358,19 @@ void EditorController::setPreviewQuality(int quality) {
     quality = std::clamp(quality, 0, 2);
     if (preview_quality_ == quality) return;
     preview_quality_ = quality;
-#ifdef FFGUI_HAS_GES
-    static constexpr std::array<std::pair<int, int>, 3> resolutions{{
-        {640, 360}, {1280, 720}, {1920, 1080}}};
-    player_->set_preview_resolution(
-        resolutions[quality].first, resolutions[quality].second);
-    if (!timeline_.clips().empty()) queuePreviewOperation(true);
-#endif
+    QSettings().setValue(QStringLiteral("preview/adaptiveMaximum"), quality);
+    if (!playing_ && !skim_target_ns_.has_value() && durationNs() > 0) restorePlayheadPreview();
     emit editUiChanged();
-    setStatus(quality == 0 ? QStringLiteral("미리보기 · 성능 1/2")
-        : quality == 1 ? QStringLiteral("미리보기 · 프록시 720p")
-                       : QStringLiteral("미리보기 · 품질 1:1"));
+    setStatus(quality == 0 ? QStringLiteral("자동 미리보기 · 최대 360p")
+        : quality == 1 ? QStringLiteral("자동 미리보기 · 최대 720p")
+                       : QStringLiteral("자동 미리보기 · 최대 원본"));
+}
+
+QString EditorController::previewQualityText() const {
+    const auto label = preview_displayed_quality_ <= 0 ? QStringLiteral("360p 빠름")
+        : preview_displayed_quality_ == 1 ? QStringLiteral("720p 프록시")
+                                         : QStringLiteral("원본");
+    return preview_quality_pending_ ? label + QStringLiteral(" → 승격 중") : label;
 }
 
 void EditorController::beginDynamicRoll(
@@ -4228,6 +4464,9 @@ void EditorController::openSourceAsset(const QString& assetId) {
     }
     stopSourcePlayback();
     if (playing_ || preview_should_play_) shuttleStop();
+    adaptive_preview_target_ns_.reset();
+    preview_proxy_dwell_timer_.stop();
+    preview_original_dwell_timer_.stop();
     selected_source_asset_id_ = assetId;
     if (!source_ranges_.contains(assetId)) {
         source_ranges_.insert(assetId, qMakePair<qint64, qint64>(0, asset->duration()));
@@ -4972,6 +5211,8 @@ void EditorController::saveProject(const QString& path) {
                 {"framePtsNs", framePts},
                 {"audioPeaks", audioPeaks},
                 {"keyframePtsNs", keyframePts},
+                {"sourceWidth", media_source_sizes_.value(QString::fromStdString(id)).width()},
+                {"sourceHeight", media_source_sizes_.value(QString::fromStdString(id)).height()},
                 {"thumbnailAtlas", thumbnail_atlases_.value(QString::fromStdString(id))}};
             const auto& color = asset.source_color();
             assetObject.insert("sourceColor", QJsonObject{
@@ -5161,6 +5402,7 @@ void EditorController::loadProject(const QString& path) {
 
         ffgui::TimelineModel loaded;
         QHash<QString, QString> loadedAtlases;
+        QHash<QString, QSize> loadedSourceSizes;
         for (const auto value : root.value("assets").toArray()) {
             const auto object = value.toObject();
             const auto assetId = object.value("id").toString();
@@ -5262,6 +5504,15 @@ void EditorController::loadProject(const QString& path) {
             if (QFileInfo(atlas).isFile()) {
                 loadedAtlases.insert(assetId, atlas);
             }
+            QSize sourceSize{
+                object.value("sourceWidth").toInt(), object.value("sourceHeight").toInt()};
+            if (!sourceSize.isValid() && QFileInfo(sourcePath).isFile()) {
+                try {
+                    sourceSize = ffgui::probe_media_dimensions(ffgui::locate_ffprobe(), sourcePath);
+                } catch (const std::exception&) {
+                }
+            }
+            if (sourceSize.isValid()) loadedSourceSizes.insert(assetId, sourceSize);
         }
         for (const auto value : root.value("clips").toArray()) {
             const auto object = value.toObject();
@@ -5315,6 +5566,7 @@ void EditorController::loadProject(const QString& path) {
         loaded.clear_history();
         timeline_ = std::move(loaded);
         thumbnail_atlases_ = std::move(loadedAtlases);
+        media_source_sizes_ = std::move(loadedSourceSizes);
         thumbnail_images_.clear();
         waveform_cache_.clear();
         stamp_enabled_ = stamp.value("enabled").toBool(false);

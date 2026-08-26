@@ -19,6 +19,7 @@
 #include <QProcess>
 #include <QStringList>
 #include <QTimer>
+#include <QSize>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QUrl>
@@ -60,6 +61,9 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool playing READ playing NOTIFY playingChanged)
     Q_PROPERTY(qreal shuttleRate READ shuttleRate NOTIFY shuttleRateChanged)
     Q_PROPERTY(int previewQuality READ previewQuality WRITE setPreviewQuality NOTIFY editUiChanged)
+    Q_PROPERTY(int previewDisplayedQuality READ previewDisplayedQuality NOTIFY editUiChanged)
+    Q_PROPERTY(bool previewQualityPending READ previewQualityPending NOTIFY editUiChanged)
+    Q_PROPERTY(QString previewQualityText READ previewQualityText NOTIFY editUiChanged)
     Q_PROPERTY(qreal programAudioPeak READ programAudioPeak NOTIFY playheadChanged)
     Q_PROPERTY(bool previewBusy READ previewBusy NOTIFY previewBusyChanged)
     Q_PROPERTY(bool previewFailed READ previewFailed NOTIFY previewFailedChanged)
@@ -139,6 +143,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(int gradeMatteMode READ gradeMatteMode NOTIFY gradeUiChanged)
     Q_PROPERTY(QString gradeMatteNodeId READ gradeMatteNodeId NOTIFY gradeUiChanged)
     Q_PROPERTY(QString pixelInspectorText READ pixelInspectorText NOTIFY scopeFrameChanged)
+    Q_PROPERTY(QVariantMap pixelInspectorTrace READ pixelInspectorTrace NOTIFY scopeFrameChanged)
     Q_PROPERTY(QString scopeStageHint READ scopeStageHint NOTIFY scopeFrameChanged)
     Q_PROPERTY(qreal outOfGamutPercent READ outOfGamutPercent NOTIFY scopeFrameChanged)
     Q_PROPERTY(quint64 scopeFramesAnalyzed READ scopeFramesAnalyzed NOTIFY scopeFrameChanged)
@@ -187,6 +192,9 @@ public:
     [[nodiscard]] bool playing() const noexcept { return playing_; }
     [[nodiscard]] qreal shuttleRate() const noexcept { return shuttle_rate_; }
     [[nodiscard]] int previewQuality() const noexcept { return preview_quality_; }
+    [[nodiscard]] int previewDisplayedQuality() const noexcept { return preview_displayed_quality_; }
+    [[nodiscard]] bool previewQualityPending() const noexcept { return preview_quality_pending_; }
+    [[nodiscard]] QString previewQualityText() const;
     [[nodiscard]] qreal programAudioPeak() const noexcept;
     [[nodiscard]] bool previewBusy() const noexcept { return preview_busy_; }
     [[nodiscard]] bool previewFailed() const noexcept { return preview_failed_; }
@@ -277,6 +285,7 @@ public:
         return static_cast<int>(review_overlay_mode_);
     }
     [[nodiscard]] QString pixelInspectorText() const { return pixel_inspector_text_; }
+    [[nodiscard]] QVariantMap pixelInspectorTrace() const { return pixel_inspector_trace_; }
     [[nodiscard]] QString scopeStageHint() const;
     [[nodiscard]] qreal outOfGamutPercent() const noexcept { return out_of_gamut_percent_; }
     [[nodiscard]] quint64 scopeFramesAnalyzed() const noexcept { return scope_frames_analyzed_; }
@@ -475,7 +484,7 @@ public slots:
     void setScopeMode(int mode);
     void setScopeReferenceStage(int stage);
     void setReviewOverlayMode(int mode);
-    void inspectPreviewPixel(qreal x, qreal y);
+    void inspectPreviewPixel(qreal x, qreal y, const QString& activeNodeId = {});
     void attachScopeItem(QObject* item);
     void cancelExport();
     void setExportQuality(int quality);
@@ -550,6 +559,7 @@ private:
         ffgui::MediaAsset asset;
         std::string clip_id;
         QString thumbnail_atlas;
+        QSize source_size;
         bool replace_existing{};
     };
 
@@ -599,6 +609,10 @@ private:
     void submitScopeFrame(ffgui::PreviewVideoFrame frame);
     void startScopeFrame(ffgui::PreviewVideoFrame frame);
     void presentPreviewFrame(ffgui::PreviewVideoFrame frame);
+    void scheduleAdaptivePreview(qint64 timeline_position);
+    void requestAdaptivePreviewTier(int tier, qint64 timeline_position);
+    void restorePlayheadPreview();
+    [[nodiscard]] QSize previewSourceSizeAt(qint64 timeline_position) const;
     void recoverCpuPreview();
     void syncOutputSpaceFromDisplayView();
     void applyHdrDisplayPath();
@@ -693,6 +707,12 @@ private:
     int temporary_tool_key_{};
     bool timeline_snapping_{true};
     int preview_quality_{1};
+    int preview_displayed_quality_{1};
+    int preview_requested_quality_{1};
+    int preview_pipeline_quality_{1};
+    QSize preview_pipeline_size_{1280, 720};
+    bool preview_quality_pending_{};
+    bool preview_native_pipeline_{};
     QString dynamic_roll_left_id_;
     QString dynamic_roll_right_id_;
     std::uint64_t generated_clip_id_{};
@@ -737,6 +757,7 @@ private:
     int shot_compare_mode_{};
     std::optional<ffgui::FloatImageFrame> shot_still_frame_;
     QString pixel_inspector_text_;
+    QVariantMap pixel_inspector_trace_;
     qreal out_of_gamut_percent_{};
     bool last_scope_approximate_{};
     std::uint32_t inspect_width_{};
@@ -760,6 +781,9 @@ private:
     QTimer audio_skim_debounce_timer_;
     QTimer audio_skim_stop_timer_;
     QTimer source_playback_timer_;
+    QTimer preview_proxy_dwell_timer_;
+    QTimer preview_original_dwell_timer_;
+    std::optional<qint64> adaptive_preview_target_ns_;
     QElapsedTimer source_playback_clock_;
     qint64 source_playback_origin_ns_{};
     int source_audio_tick_{};
@@ -810,6 +834,7 @@ private:
 #endif
     QHash<QString, QString> thumbnail_atlases_;
     QHash<QString, QImage> thumbnail_images_;
+    QHash<QString, QSize> media_source_sizes_;
     std::uint64_t scrub_frame_serial_{1ULL << 63};
     std::uint64_t scrub_frames_submitted_{};
     mutable std::optional<QVariantList> clips_cache_;

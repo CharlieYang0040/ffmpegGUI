@@ -632,9 +632,11 @@ int main(int argc, char* argv[]) {
         controller.toggleSourcePlayback();
         QTimer::singleShot(900, &application, [&] {
             controller.toggleSourcePlayback();
-            const bool sourcePlaybackPassed = controller.sourcePositionNs() > sourceStart &&
-                controller.playheadNs() == timelineHead &&
-                controller.audioBuffersReceived() > audioBefore;
+            const bool sourceAdvanced = controller.sourcePositionNs() > sourceStart;
+            const bool timelineHeadStable = controller.playheadNs() == timelineHead;
+            const bool sourceAudioDelivered = controller.audioBuffersReceived() > audioBefore;
+            const bool sourcePlaybackPassed = sourceAdvanced && timelineHeadStable &&
+                sourceAudioDelivered;
             const bool passed = appendPassed && appendUndoPassed && insertPassed &&
                 insertUndoPassed && overwritePassed && overwriteUndoPassed &&
                 replacePassed && replaceUndoPassed && sourcePlaybackPassed &&
@@ -645,6 +647,11 @@ int main(int argc, char* argv[]) {
                               << "overwrite=" << overwritePassed << overwriteUndoPassed
                               << "replace=" << replacePassed << replaceUndoPassed
                               << "source_playback=" << sourcePlaybackPassed
+                              << "source_advanced=" << sourceAdvanced
+                              << "timeline_head_stable=" << timelineHeadStable
+                              << "timeline_head_delta=" << controller.playheadNs() - timelineHead
+                              << "source_delta=" << controller.sourcePositionNs() - sourceStart
+                              << "source_audio=" << sourceAudioDelivered
                               << "audio_delta=" << controller.audioBuffersReceived() - audioBefore
                               << "passed=" << passed;
             application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
