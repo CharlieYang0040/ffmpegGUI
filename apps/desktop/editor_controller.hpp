@@ -41,6 +41,7 @@ class EditorController final : public QObject {
     QML_SINGLETON
     Q_PROPERTY(QVariantList clips READ clips NOTIFY clipsChanged)
     Q_PROPERTY(QVariantList mediaAssets READ mediaAssets NOTIFY mediaAssetsChanged)
+    Q_PROPERTY(quint64 mediaUsageRevision READ mediaUsageRevision NOTIFY mediaUsageChanged)
     Q_PROPERTY(QVariantList captions READ captions NOTIFY captionsChanged)
     Q_PROPERTY(QVariantList timelineMarkers READ timelineMarkers NOTIFY timelineChanged)
     Q_PROPERTY(qint64 durationNs READ durationNs NOTIFY timelineChanged)
@@ -129,6 +130,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(QString shotStillPath READ shotStillPath NOTIFY shotLibraryChanged)
     Q_PROPERTY(int shotCompareMode READ shotCompareMode WRITE setShotCompareMode NOTIFY shotLibraryChanged)
     Q_PROPERTY(QVariantList selectedGradeNodes READ selectedGradeNodes NOTIFY gradeUiChanged)
+    Q_PROPERTY(quint64 gradeUiRevision READ gradeUiRevision NOTIFY gradeUiChanged)
     Q_PROPERTY(bool gradeClipboardAvailable READ gradeClipboardAvailable NOTIFY gradeClipboardChanged)
     Q_PROPERTY(bool scopesVisible READ scopesVisible WRITE setScopesVisible NOTIFY scopeSettingsChanged)
     Q_PROPERTY(int scopeMode READ scopeMode WRITE setScopeMode NOTIFY scopeSettingsChanged)
@@ -166,6 +168,8 @@ public:
     [[nodiscard]] const QVariantList& clips() const;
     [[nodiscard]] QVariant clipAtPlayhead() const;
     [[nodiscard]] QVariantList mediaAssets() const;
+    [[nodiscard]] quint64 mediaUsageRevision() const noexcept { return timeline_.revision(); }
+    Q_INVOKABLE int mediaAssetUseCount(const QString& assetId) const;
     [[nodiscard]] QVariantList captions() const;
     [[nodiscard]] QVariantList timelineMarkers() const;
     [[nodiscard]] qint64 durationNs() const noexcept;
@@ -262,6 +266,7 @@ public:
     [[nodiscard]] QString shotStillPath() const { return shot_still_path_; }
     [[nodiscard]] int shotCompareMode() const noexcept { return shot_compare_mode_; }
     [[nodiscard]] const QVariantList& selectedGradeNodes() const;
+    [[nodiscard]] quint64 gradeUiRevision() const noexcept { return grade_ui_revision_; }
     [[nodiscard]] bool gradeClipboardAvailable() const noexcept {
         return grade_node_clipboard_.has_value();
     }
@@ -508,6 +513,7 @@ signals:
     void timelineChanged();
     void clipsChanged();
     void mediaAssetsChanged();
+    void mediaUsageChanged();
     void captionsChanged();
     void playheadChanged();
     void rangeChanged();
@@ -604,6 +610,9 @@ private:
     void startExportProcess(ffgui::ExportVideoEncoder encoder);
     void startExportValidation();
     void finishExport(bool success);
+#ifdef FFGUI_HAS_GES
+    void drainPreviewForDeferredExport();
+#endif
     [[nodiscard]] QString sequenceName() const;
     [[nodiscard]] QString nextOutputPath() const;
     [[nodiscard]] bool ensureOutputDirectory();
@@ -617,6 +626,7 @@ private:
         bool rebuilt{};
         bool color_only{};
         bool success{};
+        std::optional<qint64> seek_target;
         QString error;
     };
     struct LiveSeekResult final {
@@ -672,6 +682,8 @@ private:
     bool preview_busy_{};
     bool preview_failed_{};
     bool preview_suspended_for_export_{};
+    std::optional<QUrl> deferred_export_url_;
+    bool deferred_export_preview_drained_{};
     QString status_{"미디어를 추가하세요"};
     QString selected_clip_id_;
     QStringList selected_clip_ids_;
@@ -766,8 +778,10 @@ private:
 #ifdef FFGUI_HAS_GES
     QFutureWatcher<PreviewOperationResult> preview_watcher_;
     QFutureWatcher<LiveSeekResult> live_seek_watcher_;
+    QFutureWatcher<QString> export_preview_stop_watcher_;
     std::optional<qint64> pending_preview_seek_;
     std::optional<qint64> pending_live_seek_;
+    bool preview_seek_retry_used_{};
     bool preview_operation_pending_{};
     bool preview_color_only_pending_{};
     bool preview_should_play_{};
@@ -801,6 +815,7 @@ private:
     mutable std::optional<QVariantList> clips_cache_;
     mutable QHash<QString, int> clip_index_by_id_;
     mutable std::optional<QVariantList> grade_nodes_cache_;
+    quint64 grade_ui_revision_{0};
     mutable std::optional<QVariantList> media_assets_cache_;
     mutable std::optional<QVariantList> captions_cache_;
     mutable QHash<QString, QVariantList> waveform_cache_;

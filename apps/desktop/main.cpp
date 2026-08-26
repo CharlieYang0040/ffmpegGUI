@@ -25,12 +25,33 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <utility>
 
 namespace {
 
 std::unique_ptr<QFile> applicationLog;
 QMutex applicationLogMutex;
 QtMessageHandler previousMessageHandler{};
+
+class SmokeStageGuard final {
+public:
+    explicit SmokeStageGuard(QString smokeName)
+        : smoke_name_(std::move(smokeName)) {}
+
+    ~SmokeStageGuard() {
+        if (!completed_) {
+            qCritical().noquote() << smoke_name_ << "failed at stage:" << stage_;
+        }
+    }
+
+    void setStage(QString stage) { stage_ = std::move(stage); }
+    void complete() noexcept { completed_ = true; }
+
+private:
+    QString smoke_name_;
+    QString stage_{QStringLiteral("initialization")};
+    bool completed_{};
+};
 
 void writeApplicationLog(
     QtMsgType type,
@@ -150,6 +171,7 @@ int main(int argc, char* argv[]) {
     bool playbackSmoke = false;
     bool loopSmoke = false;
     bool offscreenPresentationSmoke = false;
+    bool deviceRemovalSmoke = false;
     bool hevcExportSmoke = false;
     bool gifExportSmoke = false;
     bool floatExportSmoke = false;
@@ -174,6 +196,11 @@ int main(int argc, char* argv[]) {
         }
         if (arguments[index] == "--offscreen-presentation-smoke") {
             offscreenPresentationSmoke = true;
+            continue;
+        }
+        if (arguments[index] == "--device-removal-smoke") {
+            deviceRemovalSmoke = true;
+            playbackSmoke = true;
             continue;
         }
         if (arguments[index] == "--export-smoke" && index + 1 < arguments.size()) {
@@ -777,6 +804,8 @@ int main(int argc, char* argv[]) {
         return application.exec();
     }
     if (!roundtripProject.isEmpty()) {
+        SmokeStageGuard roundtripGuard(QStringLiteral("project roundtrip"));
+        roundtripGuard.setStage(QStringLiteral("import and frame mapping"));
         const auto importedClips = controller.clips();
         if (importedClips.isEmpty()) return EXIT_FAILURE;
         if (controller.frameNumberAt(0) != 0 ||
@@ -802,6 +831,7 @@ int main(int argc, char* argv[]) {
         controller.duplicateSelectedClip();
         controller.undo();
         controller.redo();
+        roundtripGuard.setStage(QStringLiteral("asset insertion and multi-clip editing"));
         const auto importedAssets = controller.mediaAssets();
         if (importedAssets.isEmpty()) return EXIT_FAILURE;
         controller.insertAssetAtTime(
@@ -838,6 +868,7 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
         controller.undo();
+        roundtripGuard.setStage(QStringLiteral("preview rebuild after structural edits"));
         QEventLoop previewRefreshLoop;
         QTimer previewRefreshTimeout;
         previewRefreshTimeout.setSingleShot(true);
@@ -858,6 +889,7 @@ int main(int argc, char* argv[]) {
             controller.previewRebuildCount() > 2) {
             return EXIT_FAILURE;
         }
+        roundtripGuard.setStage(QStringLiteral("marked range and clip audio"));
         const auto beforeRangeDeleteDuration = controller.durationNs();
         controller.seek(100'000'000);
         controller.setInPoint();
@@ -881,6 +913,7 @@ int main(int argc, char* argv[]) {
             audioClip.value("audioFadeOutNs").toLongLong() != 300'000'000) {
             return EXIT_FAILURE;
         }
+        roundtripGuard.setStage(QStringLiteral("captions, SRT, stamp, and output settings"));
         controller.seek(700'000'000);
         controller.addCaptionAtPlayhead();
         if (controller.captions().size() != 1) return EXIT_FAILURE;
@@ -932,6 +965,7 @@ int main(int argc, char* argv[]) {
         controller.setGifColors(2);
         controller.setGifDither(1);
         controller.setGifLoop(false);
+        roundtripGuard.setStage(QStringLiteral("speed, transition, and primary color"));
         controller.selectClip(audioClipId);
         const auto beforeSpeedDuration = controller.durationNs();
         controller.setSelectedClipSpeedPercent(150);
@@ -953,6 +987,7 @@ int main(int argc, char* argv[]) {
             300'000'000) {
             return EXIT_FAILURE;
         }
+        roundtripGuard.setStage(QStringLiteral("grade graph editing and cache consistency"));
         controller.selectClip(audioClipId);
         controller.setSelectedClipBrightness(10);
         controller.setSelectedClipContrast(115);
@@ -1098,6 +1133,7 @@ int main(int argc, char* argv[]) {
             controller.togglePlayback();
             if (controller.playing()) return EXIT_FAILURE;
         }
+        roundtripGuard.setStage(QStringLiteral("project save and reload"));
         const auto expectedDuration = controller.durationNs();
         const auto expectedClipCount = controller.clips().size();
         controller.saveProject(roundtripProject);
@@ -1115,7 +1151,8 @@ int main(int argc, char* argv[]) {
         controller.selectClip(sharedTargetClipId);
         const auto loadedSharedTargetNodes = controller.selectedGradeNodes();
         controller.selectClip(audioClipId);
-        return controller.durationNs() == expectedDuration && expectedDuration > 0 &&
+        roundtripGuard.setStage(QStringLiteral("reloaded state verification"));
+        const bool passed = controller.durationNs() == expectedDuration && expectedDuration > 0 &&
                controller.clips().size() == expectedClipCount &&
                loadedAudio.value("audioGain").toDouble() == 1.25 &&
                loadedAudio.value("audioFadeInNs").toLongLong() == 200'000'000 &&
@@ -1152,11 +1189,11 @@ int main(int argc, char* argv[]) {
                    QDir::toNativeSeparators(lutPath) &&
                loadedSharedTargetNodes.size() == 1 &&
                loadedSharedTargetNodes.front().toMap().value("shared").toBool() &&
-               loadedSharedTargetNodes.front().toMap().value("keyframedParameters")
-                   .toStringList().contains(QStringLiteral("exposure")) &&
-               expectedClipCount == importedClipCount + 4
-            ? EXIT_SUCCESS
-            : EXIT_FAILURE;
+                loadedSharedTargetNodes.front().toMap().value("keyframedParameters")
+                    .toStringList().contains(QStringLiteral("exposure")) &&
+                expectedClipCount == importedClipCount + 4;
+        if (passed) roundtripGuard.complete();
+        return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
     if (floatExportSmoke) {
         const auto exportClips = controller.clips();
@@ -1282,6 +1319,7 @@ int main(int argc, char* argv[]) {
             : EXIT_FAILURE;
     }
     if (playbackSmoke) {
+        std::uint64_t deliveredAtDeviceRemoval = 0;
         const auto playbackClips = controller.clips();
         if (playbackClips.isEmpty()) return EXIT_FAILURE;
         controller.selectClip(playbackClips.front().toMap().value("id").toString());
@@ -1304,10 +1342,26 @@ int main(int argc, char* argv[]) {
         QTimer::singleShot(760, &controller, [&controller] { controller.scrub(1'400'000'000, false); });
         QTimer::singleShot(850, &controller, [&controller] { controller.scrub(500'000'000, true); });
         QTimer::singleShot(1100, &controller, &EditorController::togglePlayback);
+        if (deviceRemovalSmoke) {
+            QTimer::singleShot(2200, &controller, [&application, &controller,
+                                                   &engine, &deliveredAtDeviceRemoval] {
+                deliveredAtDeviceRemoval = controller.videoFramesDelivered();
+                auto* previewItem = engine.rootObjects().isEmpty()
+                    ? nullptr
+                    : engine.rootObjects().front()->findChild<QObject*>(
+                          QStringLiteral("inProcessVideoPreview"));
+                if (previewItem == nullptr ||
+                    !QMetaObject::invokeMethod(
+                        previewItem, "gpuDeviceRemoved", Qt::QueuedConnection)) {
+                    application.exit(20);
+                }
+            });
+        }
         QTimer::singleShot(
-            loopSmoke ? 9000 : 5000,
+            loopSmoke ? 9000 : (deviceRemovalSmoke ? 8000 : 5000),
             &application,
-            [&application, &controller, offscreenPresentationSmoke, loopSmoke] {
+            [&application, &controller, &deliveredAtDeviceRemoval,
+             offscreenPresentationSmoke, loopSmoke, deviceRemovalSmoke] {
                 qInfo().noquote() << "playback smoke counters"
                                   << "received=" << controller.videoFramesReceived()
                                   << "delivered=" << controller.videoFramesDelivered()
@@ -1318,6 +1372,13 @@ int main(int argc, char* argv[]) {
                                   << "playhead_ns=" << controller.playheadNs()
                                   << "failed=" << controller.previewFailed();
                 if (controller.previewFailed()) application.exit(14);
+                else if (deviceRemovalSmoke && !controller.cpuPreviewFallback()) {
+                    application.exit(20);
+                }
+                else if (deviceRemovalSmoke &&
+                         controller.videoFramesDelivered() <= deliveredAtDeviceRemoval + 2) {
+                    application.exit(21);
+                }
                 else if (loopSmoke &&
                          (!controller.playing() || controller.playheadNs() >= controller.durationNs())) {
                     application.exit(17);

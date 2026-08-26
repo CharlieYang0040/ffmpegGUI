@@ -1,7 +1,8 @@
 param(
     [string]$QtVersion = "6.10.2",
     [string]$GStreamerVersion = "1.28.5",
-    [string]$FFmpegVersion = "8.1.2"
+    [string]$FFmpegVersion = "8.1.2",
+    [string]$VcpkgCommit = "ea1a7396b05637a53bf23c078647ecc0edee4b80"
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,8 +22,26 @@ $ffmpegArchiveName = "ffmpeg-$FFmpegVersion-essentials_build.zip"
 $ffmpegArchive = Join-Path $downloads $ffmpegArchiveName
 $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/packages/$ffmpegArchiveName"
 $knownFFmpegHash = "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec"
+$vcpkgInstall = Join-Path $toolsRoot "vcpkg"
+$vcpkgExecutable = Join-Path $vcpkgInstall "vcpkg.exe"
 
 New-Item -ItemType Directory -Path $toolsRoot, $downloads -Force | Out-Null
+
+if (-not (Test-Path -LiteralPath $vcpkgExecutable)) {
+    if (-not (Test-Path -LiteralPath $vcpkgInstall)) {
+        & git clone https://github.com/microsoft/vcpkg.git $vcpkgInstall
+        if ($LASTEXITCODE -ne 0) { throw "failed to clone vcpkg" }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $vcpkgInstall ".git"))) {
+        throw "the existing .tools/vcpkg directory is not a vcpkg Git checkout"
+    }
+    & git -C $vcpkgInstall checkout --detach $VcpkgCommit
+    if ($LASTEXITCODE -ne 0) { throw "failed to checkout vcpkg baseline $VcpkgCommit" }
+    & (Join-Path $vcpkgInstall "bootstrap-vcpkg.bat") -disableMetrics
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $vcpkgExecutable)) {
+        throw "failed to bootstrap vcpkg"
+    }
+}
 
 if (-not (Test-Path -LiteralPath (Join-Path $qtInstall "bin\qmake.exe"))) {
     if (-not (Test-Path -LiteralPath (Join-Path $venv "Scripts\python.exe"))) {
@@ -83,3 +102,4 @@ Write-Output "Native dependencies are ready."
 Write-Output "Qt: $qtInstall"
 Write-Output "GStreamer: $gstInstall"
 Write-Output "FFmpeg: $ffmpegInstall"
+Write-Output "vcpkg: $vcpkgInstall"

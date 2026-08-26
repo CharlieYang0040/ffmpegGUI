@@ -75,9 +75,9 @@ TimelineModel
 - GStreamer는 전용 GLib 컨텍스트 스레드에서 동작한다.
 - FFmpeg 출력은 별도 프로세스로 실행해 충돌과 취소를 격리한다.
 - 썸네일·파형·PTS 분석은 제한된 작업 큐에서 수행한다.
-- 기본 경로는 1280x720 RGBA D3D11 appsink 텍스처를 Qt Scene Graph와 직접 공유한다.
-  공유 조건을 충족하지 않는 GPU 텍스처만 같은 장치의 표시용 텍스처로 복사하며,
-  `FFGUI_FORCE_CPU_PREVIEW=1`일 때는 BGRA CPU 버퍼 업로드 경로를 사용한다.
+- 기본 경로는 1280x720 BGRA CPU appsink 프레임을 Qt Scene Graph texture로 올린다.
+  `FFGUI_ENABLE_D3D_PREVIEW=1`인 실험 모드에서만 RGBA D3D11 texture를 직접 공유하며,
+  `FFGUI_FORCE_CPU_PREVIEW=1`은 해당 opt-in을 무시하고 안전 경로를 강제한다.
 - 프레임에는 GStreamer PTS를 함께 전달해 seek 이전 큐의 프레임과 현재
   타임라인 위치의 프레임을 구분한다.
 - 파이프라인 상태와 사용자 콜백은 별도 mutex로 보호한다. 따라서 stopped 상태의
@@ -107,14 +107,14 @@ TimelineModel
 원본 PTS 기준 0→1 선형 제어를 연결한다. 따라서 네이티브 전환 객체 없이 겹친 앞 영상을
 배경으로 유지하면서 디졸브한다.
 
-현재 기본 영상 출력은 `d3d11upload ! d3d11convert ! RGBA D3D11 appsink`이며 별도
-네이티브 `QWindow`, HWND와 `d3d11videosink`를 사용하지 않는다. Qt와 GStreamer가 같은
-D3D11 장치를 쓰고 멀티스레드 보호를 켠 상태에서 셰이더 리소스 텍스처를 Scene Graph에
+현재 기본 영상 출력은 system-memory `BGRA appsink`이며 별도
+네이티브 `QWindow`, HWND와 `d3d11videosink`를 사용하지 않는다. D3D11 opt-in에서는
+Qt와 GStreamer가 같은 장치를 쓰고 멀티스레드 보호를 켠 상태에서 셰이더 리소스 텍스처를 Scene Graph에
 직접 전달한다. 실제 노출 창 회귀에서 CFR MP4·CFR MKV·VFR MKV는 수신 139·전달 139·
 표시 138프레임, 4K H.264/HEVC는 수신·전달·표시 122프레임을 확인했다.
 
-`FFGUI_FORCE_CPU_PREVIEW=1`은 드라이버·원격 데스크톱 호환성 진단을 위한 안전 경로다.
-이 모드도 실제 노출 창에서 CPU BGRA 프레임 표시를 별도로 회귀한다. 런타임에 D3D11 장치가
+CPU BGRA는 드라이버·원격 데스크톱을 포함한 릴리스 안전 경로다.
+실제 노출 창에서 CPU 프레임 표시를 별도로 확인한다. opt-in 런타임에 D3D11 장치가
 제거되면 Scene Graph가 `GetDeviceRemovedReason`을 보고 CPU appsink로 파이프라인을 다시
 만들어 미리보기를 이어 간다.
 
@@ -187,7 +187,8 @@ scrub·편집 요청은 마지막 위치와 최신 타임라인 세대로 합친
 겹친 seek로 `GES timeline seek failed`가 발생하지 않는다. 타임라인 눈금과 편집 피드백의 프레임 번호는 고정 FPS 환산이 아니라
 각 클립의 FFprobe PTS와 트림·속도 매핑을 누적해 계산한다.
 
-현재 GES 미리보기 출력 프로필은 1280x720 RGBA D3D11이다. 4K H.264/HEVC 원본은 선택된
+현재 릴리스 GES 미리보기 출력 프로필은 1280x720 BGRA system memory다. D3D11 opt-in은
+같은 해상도의 RGBA texture를 사용한다. 4K H.264/HEVC 원본은 선택된
 디코더가 원본 해상도로 해제하고 미리보기 합성 단계에서 축소한다. CPU appsink 30초
 soak는 112회 PTS 일치 seek, 최대 851.373ms, 측정 구간 private memory 증가 0MiB를
 확인했다. CPU BGRA 30초 soak도 112회 PTS 일치 seek, 최대 851.373ms, 메모리 증가

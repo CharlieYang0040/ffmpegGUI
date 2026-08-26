@@ -854,17 +854,23 @@ void GesSequencePlayer::seek(TimeNs timeline_position, PreviewSeekMode mode) {
         ? static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE)
         : static_cast<GstSeekFlags>(
             GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT | GST_SEEK_FLAG_SNAP_NEAREST);
-    if (!gst_element_seek_simple(pipeline, GST_FORMAT_TIME, flags, target)) {
-        if (!accurate) {
-            const auto fallback = static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH);
-            if (gst_element_seek_simple(pipeline, GST_FORMAT_TIME, fallback, target)) {
+    auto seeked = gst_element_seek_simple(pipeline, GST_FORMAT_TIME, flags, target);
+    if (!seeked) {
+        // GES can transiently reject an ACCURATE seek after preroll or EOS even
+        // though the same paused pipeline accepts a plain flushing seek. Treat
+        // that as a recoverable precision downgrade instead of surfacing a
+        // sticky preview failure that disappears on the user's next click.
+        const auto fallback = static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH);
+        seeked = gst_element_seek_simple(pipeline, GST_FORMAT_TIME, fallback, target);
+        if (seeked && !accurate) {
                 gst_object_unref(bus);
                 lock.unlock();
                 position_ns_.store(target);
                 if (notifyPaused) notify_state(PlaybackState::paused);
                 return;
-            }
         }
+    }
+    if (!seeked) {
         gst_object_unref(bus);
         throw std::runtime_error("GES timeline seek failed");
     }
@@ -1011,6 +1017,17 @@ void GesSequencePlayer::set_d3d11_device(void* device) {
     d3d11_device_handle_.store(device, std::memory_order_release);
 }
 
+void GesSequencePlayer::fallback_to_cpu_preview() {
+    std::scoped_lock lock(mutex_);
+    // Keep all backend selectors consistent before the next timeline rebuild.
+    // Leaving the compositor in direct-D3D mode while only changing the sink
+    // makes CPU fallback preroll against the removed device and eventually time out.
+    video_sink_factory_ = "cpu-appsink";
+    d3d11_device_handle_.store(nullptr, std::memory_order_release);
+    d3d11_color_lut_available_ = false;
+    direct_d3d_compositor_enabled_ = false;
+}
+
 void GesSequencePlayer::set_video_sink_factory(std::string factory) {
     if (factory.empty()) factory = "fakesink";
     std::scoped_lock lock(mutex_);
@@ -1140,10 +1157,20 @@ void GesSequencePlayer::audio_identity_handoff(
     audio_handoff(nullptr, buffer, nullptr, user_data);
 }
 
+GstFlowReturn GesSequencePlayer::new_video_preroll(GstAppSink* sink, void* user_data) {
+    return deliver_video_sample(gst_app_sink_pull_preroll(sink), user_data);
+}
+
 GstFlowReturn GesSequencePlayer::new_video_sample(GstAppSink* sink, void* user_data) {
+    return deliver_video_sample(gst_app_sink_pull_sample(sink), user_data);
+}
+
+GstFlowReturn GesSequencePlayer::deliver_video_sample(GstSample* sample, void* user_data) {
     auto* player = static_cast<GesSequencePlayer*>(user_data);
-    if (player == nullptr) return GST_FLOW_ERROR;
-    auto* sample = gst_app_sink_pull_sample(sink);
+    if (player == nullptr) {
+        if (sample != nullptr) gst_sample_unref(sample);
+        return GST_FLOW_ERROR;
+    }
     if (sample == nullptr) return GST_FLOW_EOS;
     auto holder = std::shared_ptr<void>(sample, [](void* value) {
         gst_sample_unref(static_cast<GstSample*>(value));
@@ -1558,6 +1585,7 @@ void GesSequencePlayer::rebuild_pipeline_locked(
                     throw std::runtime_error("appsink bin has no qtappsink element");
                 }
                 GstAppSinkCallbacks callbacks{};
+                callbacks.new_preroll = GesSequencePlayer::new_video_preroll;
                 callbacks.new_sample = GesSequencePlayer::new_video_sample;
                 gst_app_sink_set_callbacks(GST_APP_SINK(appSink), &callbacks, this, nullptr);
                 gst_object_unref(appSink);

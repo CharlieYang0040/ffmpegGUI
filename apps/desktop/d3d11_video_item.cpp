@@ -95,21 +95,38 @@ QPointF VideoPreviewItem::videoUvFromItem(qreal x, qreal y) const {
 
 bool VideoPreviewItem::noteDeviceRemoved(long status) {
     if (SUCCEEDED(static_cast<HRESULT>(status))) return false;
-    if (device_lost_) return true;
-    device_lost_ = true;
+    if (device_lost_.exchange(true, std::memory_order_acq_rel)) return true;
     qWarning().noquote() << "D3D11 preview device removed"
                          << Qt::hex << static_cast<quint32>(status);
     QMetaObject::invokeMethod(this, [this] {
         emit deviceLostChanged();
         emit gpuDeviceRemoved();
     }, Qt::QueuedConnection);
-    invalidateGraphics();
     return true;
 }
 
 QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     auto* root = oldNode != nullptr ? oldNode : new QSGNode();
     auto* node = static_cast<QSGSimpleTextureNode*>(root->firstChild());
+    const auto discardRemovedDevice = [&] {
+        // QSGD3D11Texture wraps the native texture without taking ownership of it.
+        // Destroy the wrapper on the render thread before releasing the bridge texture
+        // and Qt device; reversing this order caused the forced-loss access violation.
+        if (node != nullptr) {
+            root->removeChildNode(node);
+            delete node;
+            node = nullptr;
+        }
+        {
+            std::scoped_lock lock(frame_mutex_);
+            pending_frame_ = {};
+            render_frame_ = {};
+            rendered_serial_ = 0;
+            layout_width_ = 0;
+            layout_height_ = 0;
+        }
+        invalidateGraphics();
+    };
     ffgui::PreviewVideoFrame next;
     {
         std::scoped_lock lock(frame_mutex_);
@@ -139,6 +156,7 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
             auto* qtDevice = reinterpret_cast<ID3D11Device*>(devicePointer());
             if (qtDevice != nullptr &&
                 noteDeviceRemoved(static_cast<long>(qtDevice->GetDeviceRemovedReason()))) {
+                discardRemovedDevice();
                 return root;
             }
             if (next.device != qtDevice || qtDevice == nullptr) return root;
@@ -168,10 +186,11 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
                 displayDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
                 const auto created = qtDevice->CreateTexture2D(
                     &displayDescription, nullptr, &display_texture_);
-                if (noteDeviceRemoved(static_cast<long>(created)) ||
-                    FAILED(created) || display_texture_ == nullptr) {
+                const bool deviceRemoved = noteDeviceRemoved(static_cast<long>(created));
+                if (deviceRemoved || FAILED(created) || display_texture_ == nullptr) {
                     qWarning().noquote() << "D3D11 preview bridge texture creation failed"
                                          << Qt::hex << created;
+                    if (deviceRemoved) discardRemovedDevice();
                     return root;
                 }
                 qInfo().noquote() << "D3D11 preview bridge created"
@@ -198,6 +217,7 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
                     nullptr);
                 context->Release();
                 if (noteDeviceRemoved(static_cast<long>(qtDevice->GetDeviceRemovedReason()))) {
+                    discardRemovedDevice();
                     return root;
                 }
                 if (node == nullptr) {
@@ -286,6 +306,7 @@ void VideoPreviewItem::releaseResources() {
 }
 
 void VideoPreviewItem::initializeGraphics() {
+    if (device_lost_.load(std::memory_order_acquire)) return;
     auto* itemWindow = window();
     if (itemWindow == nullptr ||
         itemWindow->rendererInterface()->graphicsApi() != QSGRendererInterface::Direct3D11) {
@@ -309,6 +330,7 @@ void VideoPreviewItem::initializeGraphics() {
         if (device_ != nullptr) device_->Release();
         device_ = device;
         device_->AddRef();
+        device_lost_.store(false, std::memory_order_release);
     }
     QMetaObject::invokeMethod(this, [this, device] {
         emit gpuReadyChanged();

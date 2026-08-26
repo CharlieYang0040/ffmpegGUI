@@ -69,6 +69,7 @@ public:
     void set_error_callback(ErrorCallback callback) override;
     void set_video_window_handle(std::uintptr_t window_handle);
     void set_d3d11_device(void* device);
+    void fallback_to_cpu_preview();
     void set_video_sink_factory(std::string factory);
     void set_preview_resolution(int width, int height);
     void set_video_frame_callback(std::function<void(PreviewVideoFrame)> callback);
@@ -129,7 +130,9 @@ private:
     void monitor(std::stop_token stop_token);
     static void audio_handoff(GstElement*, GstBuffer*, GstPad*, void* user_data);
     static void audio_identity_handoff(GstElement*, GstBuffer*, void* user_data);
+    static GstFlowReturn new_video_preroll(GstAppSink* sink, void* user_data);
     static GstFlowReturn new_video_sample(GstAppSink* sink, void* user_data);
+    static GstFlowReturn deliver_video_sample(GstSample* sample, void* user_data);
 
     std::string video_sink_factory_;
     std::string audio_sink_factory_;

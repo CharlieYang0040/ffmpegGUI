@@ -6,6 +6,7 @@
 #include <QPointF>
 #include <QtQml/qqmlregistration.h>
 
+#include <atomic>
 #include <mutex>
 
 struct ID3D11Device;
@@ -22,7 +23,9 @@ public:
     ~VideoPreviewItem() override;
 
     [[nodiscard]] bool gpuReady() const noexcept;
-    [[nodiscard]] bool deviceLost() const noexcept { return device_lost_; }
+    [[nodiscard]] bool deviceLost() const noexcept {
+        return device_lost_.load(std::memory_order_acquire);
+    }
     [[nodiscard]] quintptr devicePointer() const noexcept;
     void submitFrame(ffgui::PreviewVideoFrame frame);
     [[nodiscard]] QPointF videoUvFromItem(qreal x, qreal y) const;
@@ -52,5 +55,5 @@ private:
     mutable std::mutex device_mutex_;
     ID3D11Device* device_{};
     ID3D11Texture2D* display_texture_{};
-    bool device_lost_{};
+    std::atomic_bool device_lost_{};
 };

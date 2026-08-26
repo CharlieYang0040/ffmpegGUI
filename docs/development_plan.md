@@ -2,6 +2,10 @@
 
 최종 갱신: 2026-08-22
 
+> **안정화 우선:** 이 문서의 체크 표시는 역사적인 구현 기록이며 현재 앱의 사용자 기능
+> 완성을 뜻하지 않는다. 현재 판정, 결함 우선순위와 릴리스 게이트는
+> [안정화 감사 기준선](stability_audit.md)을 단일 기준으로 사용한다.
+
 ## 0. 시작 기준선
 
 - 기존 `ffmpegGUI v2.0.2` 저장소와 릴리스를 변경하지 않는다.
@@ -161,6 +165,13 @@
 - [x] CFR MP4·CFR/VFR MKV 노출 창 139/139/138 수신·전달·표시 회귀
 - [x] 4K H.264/HEVC 노출 창 122/122/122 수신·전달·표시 회귀
 - [x] D3D11 기본 경로와 `FFGUI_FORCE_CPU_PREVIEW=1` 폴백 자동 회귀
+
+## 2026-08-25 실제 UI 안정화
+
+- [x] 미디어 카드와 타임라인 passive hover가 GES audio play/stop을 반복하지 않도록 격리
+- [x] 실제 Release UI에서 재현된 D3D bufferpool/device-loss 반복을 근거로 CPU BGRA를 기본 경로로 전환
+- [x] D3D11 제로카피를 `FFGUI_ENABLE_D3D_PREVIEW=1` opt-in으로 유지하고 첫 native 오류에서 CPU로 강등
+- [x] 영상 추가→hover→재생/정지→컬러 편집→타임라인 seek 실제 조작으로 재검증
 
 ## 2026-08-08 편집 입출력 가시성 및 진단 복구
 

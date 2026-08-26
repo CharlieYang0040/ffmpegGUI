@@ -483,11 +483,22 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             }
         });
 #ifdef FFGUI_HAS_GES
-    use_d3d_scene_graph_ = qEnvironmentVariableIntValue("FFGUI_FORCE_CPU_PREVIEW") != 1;
+    // The direct D3D11 compositor is still driver-sensitive: a normal seek after a
+    // color update can invalidate its buffer pool and take Qt Quick's device down
+    // with it.  Keep the release default on the system-memory presentation path;
+    // the zero-copy path remains available as an explicit experimental opt-in.
+    use_d3d_scene_graph_ =
+        qEnvironmentVariableIntValue("FFGUI_ENABLE_D3D_PREVIEW") == 1 &&
+        qEnvironmentVariableIntValue("FFGUI_FORCE_CPU_PREVIEW") != 1;
     in_process_preview_ = true;
     player_ = std::make_unique<ffgui::GesSequencePlayer>(
         use_d3d_scene_graph_ ? "d3d11-appsink" : "cpu-appsink",
         "wasapi2sink");
+    if (!use_d3d_scene_graph_) {
+        // CPU presentation must also disable D3D color/compositor elements.  Merely
+        // selecting a CPU appsink can otherwise leave the unstable GPU graph in use.
+        player_->fallback_to_cpu_preview();
+    }
     player_->set_preview_resolution(1280, 720);
     player_->set_video_frame_callback([this](ffgui::PreviewVideoFrame frame) {
         if (frame.cpu_format == ffgui::PreviewCpuFormat::rgba16le) {
@@ -612,7 +623,14 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             [this, message = std::move(message)] {
                 qWarning().noquote() << "GStreamer playback error:"
                                      << QString::fromUtf8(message);
-                setStatus(QString::fromUtf8(message));
+                if (use_d3d_scene_graph_ && !cpu_preview_fallback_) {
+                    // Any native preview error is enough to retire the experimental
+                    // GPU graph for this session.  Rebuilding the same failed D3D
+                    // graph caused multi-second event-loop stalls and device-loss loops.
+                    recoverCpuPreview();
+                } else {
+                    setStatus(QString::fromUtf8(message));
+                }
             },
             Qt::QueuedConnection);
     });
@@ -666,6 +684,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             source_position_ns_ = range->second;
             stopSourcePlayback();
             updateSourcePreview();
+            setStatus(QStringLiteral("소스 구간 끝"));
             emit sourceViewerChanged();
             return;
         }
@@ -688,7 +707,31 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             const auto result = preview_watcher_.result();
             const bool generationAdvanced = result.generation != preview_generation_;
             const bool retryPending = preview_operation_pending_ || generationAdvanced;
+            const bool recoverableSeekFailure =
+                !result.success && !retryPending && result.seek_target.has_value() &&
+                result.error == QStringLiteral("GES timeline seek failed") &&
+                !preview_seek_retry_used_;
+            if (recoverableSeekFailure) {
+                preview_seek_retry_used_ = true;
+                pending_preview_seek_ = *result.seek_target;
+                preview_operation_pending_ = true;
+                qWarning().noquote()
+                    << "preview seek was transiently rejected; retrying once at"
+                    << *result.seek_target;
+                // Yield long enough for the flushing seek rejection to settle on
+                // the GStreamer streaming thread. Retrying in the same event-loop
+                // tick deterministically hits the same transient state.
+                QTimer::singleShot(120, this, &EditorController::startPreviewOperation);
+                return;
+            }
+            if (!result.success && use_d3d_scene_graph_ && !cpu_preview_fallback_) {
+                // The render item does not always see a failing GStreamer buffer pool
+                // before Qt invalidates its scene graph, so also fall back at the
+                // operation boundary where the failure is deterministic.
+                recoverCpuPreview();
+            }
             if (result.success) {
+                preview_seek_retry_used_ = false;
                 if (preview_failed_) {
                     preview_failed_ = false;
                     emit previewFailedChanged();
@@ -700,6 +743,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                     ++preview_color_update_count_;
                 }
             } else {
+                preview_seek_retry_used_ = false;
                 if (retryPending) {
                     qWarning().noquote() << "stale preview operation failed; retrying latest request:"
                                          << result.error;
@@ -714,6 +758,15 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                         ? QStringLiteral("미리보기를 준비하지 못했습니다")
                         : result.error);
                 }
+            }
+
+            if (deferred_export_url_.has_value()) {
+                if (preview_busy_) {
+                    preview_busy_ = false;
+                    emit previewBusyChanged();
+                }
+                drainPreviewForDeferredExport();
+                return;
             }
 
             if (retryPending) {
@@ -742,11 +795,40 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             if (!result.success && !result.error.isEmpty()) {
                 qWarning().noquote() << "live preview seek failed" << result.error;
             }
+            if (deferred_export_url_.has_value()) {
+                drainPreviewForDeferredExport();
+                return;
+            }
             if (preview_operation_pending_) {
                 startPreviewOperation();
                 return;
             }
             pumpLiveSeek();
+        });
+    connect(
+        &export_preview_stop_watcher_,
+        &QFutureWatcher<QString>::finished,
+        this,
+        [this] {
+            const auto error = export_preview_stop_watcher_.result();
+            if (!error.isEmpty()) {
+                deferred_export_url_.reset();
+                deferred_export_preview_drained_ = false;
+                preview_suspended_for_export_ = false;
+                setStatus(QStringLiteral("내보내기 준비 실패 · %1").arg(error));
+                if (!timeline_.clips().empty()) queuePreviewOperation(true);
+                return;
+            }
+            if (!deferred_export_url_.has_value()) {
+                preview_suspended_for_export_ = false;
+                return;
+            }
+            const auto url = *deferred_export_url_;
+            deferred_export_url_.reset();
+            deferred_export_preview_drained_ = true;
+            QMetaObject::invokeMethod(this, [this, url] {
+                exportTimelineUrl(url);
+            }, Qt::QueuedConnection);
         });
     connect(
         &float_scrub_watcher_,
@@ -911,6 +993,9 @@ EditorController::~EditorController() {
     pending_live_seek_.reset();
     if (live_seek_watcher_.isRunning()) live_seek_watcher_.waitForFinished();
     if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
+    if (export_preview_stop_watcher_.isRunning()) {
+        export_preview_stop_watcher_.waitForFinished();
+    }
 #endif
     if (import_watcher_.isRunning()) import_watcher_.waitForFinished();
     if (export_process_.state() != QProcess::NotRunning) {
@@ -1324,6 +1409,12 @@ QVariantList EditorController::mediaAssets() const {
     return media_assets_cache_.value();
 }
 
+int EditorController::mediaAssetUseCount(const QString& assetId) const {
+    const auto id = assetId.toStdString();
+    return static_cast<int>(std::ranges::count_if(
+        timeline_.clips(), [&id](const auto& clip) { return clip.asset_id == id; }));
+}
+
 QVariantList EditorController::captions() const {
     if (captions_cache_.has_value()) return captions_cache_.value();
     QVariantList result;
@@ -1511,6 +1602,7 @@ bool EditorController::selectedGradeHasKeyframes() const {
 
 void EditorController::emitGradeUiChanged() {
     grade_nodes_cache_.reset();
+    ++grade_ui_revision_;
     emit gradeUiChanged();
 }
 
@@ -2181,6 +2273,7 @@ void EditorController::attachVideoItem(QObject* item) {
 #ifdef FFGUI_HAS_GES
     if (use_d3d_scene_graph_) {
         connect(videoItem, &VideoPreviewItem::d3d11DeviceReady, this, [this](quintptr device) {
+            if (!use_d3d_scene_graph_ || cpu_preview_fallback_) return;
             player_->set_d3d11_device(reinterpret_cast<void*>(device));
             preview_applied_generation_.reset();
             if (!preview_snapshot_.empty()) queuePreviewOperation(true);
@@ -2794,7 +2887,10 @@ void EditorController::togglePlayback() {
         playhead_ns_ = 0;
         emit playheadChanged();
     }
-    if (preview_should_play_) pending_preview_seek_ = playhead_ns_;
+    // A normal-rate seek is also required when pausing a reverse shuttle. Without it,
+    // GStreamer can remain in the completed negative-rate segment and time out while
+    // trying to enter PAUSED.
+    pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
 #endif
 }
@@ -2857,6 +2953,8 @@ void EditorController::shuttleStop() {
         return;
     }
     preview_should_play_ = false;
+    // Reset a negative-rate shuttle segment before asking the pipeline to pause.
+    pending_preview_seek_ = playhead_ns_;
     queuePreviewOperation(false);
 #endif
 }
@@ -3182,8 +3280,8 @@ void EditorController::recoverCpuPreview() {
     use_d3d_scene_graph_ = false;
     cpu_preview_fallback_ = true;
 #ifdef FFGUI_HAS_GES
-    player_->set_d3d11_device(nullptr);
-    player_->set_video_sink_factory("cpu-appsink");
+    player_->fallback_to_cpu_preview();
+    ++preview_generation_;
     preview_applied_generation_.reset();
     if (!preview_snapshot_.empty()) queuePreviewOperation(true);
 #endif
@@ -3721,6 +3819,10 @@ void EditorController::selectClip(const QString& clipId, int mode) {
     } else {
         setSingleSelection(clipId);
     }
+    // Selection changes synchronously. The QML notification may be coalesced, but
+    // any controller command issued before that timer fires must read the newly
+    // selected clip rather than the previous clip's projected grade list.
+    grade_nodes_cache_.reset();
     selection_update_timer_.start();
 }
 
@@ -3732,15 +3834,14 @@ void EditorController::skim(qint64 timelinePosition, bool active) {
     if (active) {
         skim_target_ns_ = target;
         if (!submitFloatScrubFrame(target)) submitCachedScrubFrame(target);
-        requestAudioSkim(target);
         return;
     }
     skim_target_ns_.reset();
-    stopAudioSkim(true);
-    // Do not flash an ungraded cache thumbnail over the program monitor. Image
-    // sequences keep the last graded float frame; ordinary video is restored by
-    // the audio-skim stop seek.
-    submitFloatScrubFrame(playhead_ns_);
+    // Passive pointer movement must never start/stop the GES pipeline. Alternating
+    // cached CPU frames with D3D playback textures on every hover tick corrupted
+    // presentation of the entire Qt Quick window. Restore from the same isolated
+    // frame path used for the hover instead.
+    if (!submitFloatScrubFrame(playhead_ns_)) submitCachedScrubFrame(playhead_ns_);
 }
 
 void EditorController::skimAsset(const QString& assetId, qint64 sourceTime, bool active) {
@@ -3753,9 +3854,6 @@ void EditorController::skimAsset(const QString& assetId, qint64 sourceTime, bool
     if (asset == nullptr || asset->duration() <= 0) return;
     const auto clamped = std::clamp<qint64>(sourceTime, 0, asset->duration());
     submitCachedAssetFrame(assetId, clamped, playhead_ns_);
-    if (const auto timelineTime = timelineTimeForAssetSource(assetId, clamped)) {
-        requestAudioSkim(*timelineTime);
-    }
 }
 
 std::optional<qint64> EditorController::timelineTimeForAssetSource(
@@ -4154,9 +4252,11 @@ void EditorController::closeSourceViewer() {
 void EditorController::seekSource(qint64 sourcePosition) {
     const auto* asset = timeline_.asset(selected_source_asset_id_.toStdString());
     if (asset == nullptr) return;
+    const bool wasPlaying = source_playing_;
     stopSourcePlayback();
     source_position_ns_ = std::clamp<qint64>(sourcePosition, 0, asset->duration());
     updateSourcePreview();
+    if (wasPlaying) setStatus(QStringLiteral("소스 일시 정지"));
     emit sourceViewerChanged();
 }
 
@@ -4480,7 +4580,7 @@ void EditorController::setSelectedClipBrightness(int percent) {
         std::vector<std::string> ids;
         for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
         timeline_.set_clips_color(ids, color);
-        publishColorPreview();
+        publishColorPreview(false);
         setStatus(QStringLiteral("밝기 · %1").arg(percent));
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
@@ -4496,7 +4596,7 @@ void EditorController::setSelectedClipContrast(int percent) {
         std::vector<std::string> ids;
         for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
         timeline_.set_clips_color(ids, color);
-        publishColorPreview();
+        publishColorPreview(false);
         setStatus(QStringLiteral("대비 · %1%").arg(percent));
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
@@ -4512,7 +4612,7 @@ void EditorController::setSelectedClipSaturation(int percent) {
         std::vector<std::string> ids;
         for (const auto& id : selected_clip_ids_) ids.push_back(id.toStdString());
         timeline_.set_clips_color(ids, color);
-        publishColorPreview();
+        publishColorPreview(false);
         setStatus(QStringLiteral("채도 · %1%").arg(percent));
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
@@ -5760,11 +5860,13 @@ void EditorController::applyHdrDisplayPath() {
             mode = HdrWindowMode::rec2020_pq;
             status = QStringLiteral("HDR 표시 · Rec.2020 PQ");
         } else {
-            apply_window_color_space(window, HdrWindowMode::sdr, probe.monitor_icc_path);
+            static_cast<void>(
+                apply_window_color_space(window, HdrWindowMode::sdr, probe.monitor_icc_path));
             status = QStringLiteral("HDR 창 색공간을 열지 못해 SDR로 표시합니다");
         }
     } else {
-        apply_window_color_space(window, HdrWindowMode::sdr, probe.monitor_icc_path);
+        static_cast<void>(
+            apply_window_color_space(window, HdrWindowMode::sdr, probe.monitor_icc_path));
         status = probe.monitor_icc_path.isEmpty()
             ? QStringLiteral("SDR 표시")
             : QStringLiteral("SDR 표시 · 모니터 ICC 연결");
@@ -6024,7 +6126,7 @@ QUrl EditorController::uniqueOutputUrl(const QUrl& url) const {
 }
 
 void EditorController::exportTimeline() {
-    if (exporting_) {
+    if (exporting_ || deferred_export_url_.has_value()) {
         setStatus("이미 내보내는 중입니다");
         return;
     }
@@ -6042,7 +6144,7 @@ void EditorController::exportTimeline() {
 }
 
 void EditorController::exportTimelineUrl(const QUrl& url) {
-    if (exporting_) {
+    if (exporting_ || deferred_export_url_.has_value()) {
         setStatus("이미 내보내는 중입니다");
         return;
     }
@@ -6076,15 +6178,21 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
     }
 #ifdef FFGUI_HAS_GES
     // GES timeline rebuilds mutate a shared native graph. Never let a delayed preview
-    // rebuild race export preparation or process teardown.
-    preview_suspended_for_export_ = true;
-    preview_update_timer_.stop();
-    preview_operation_pending_ = false;
-    pending_preview_seek_.reset();
-    pending_live_seek_.reset();
-    preview_should_play_ = false;
-    if (preview_watcher_.isRunning()) preview_watcher_.waitForFinished();
-    player_->stop();
+    // rebuild race export preparation. Draining and stopping the native player can take
+    // hundreds of milliseconds on real files, so neither operation may block the UI thread.
+    if (!deferred_export_preview_drained_) {
+        preview_suspended_for_export_ = true;
+        preview_update_timer_.stop();
+        preview_operation_pending_ = false;
+        pending_preview_seek_.reset();
+        pending_live_seek_.reset();
+        preview_should_play_ = false;
+        deferred_export_url_ = QUrl::fromLocalFile(output);
+        setStatus(QStringLiteral("미리보기 정리 후 내보내기를 시작합니다"));
+        drainPreviewForDeferredExport();
+        return;
+    }
+    deferred_export_preview_drained_ = false;
 #endif
     ffgui::ExportRequest request;
     request.output_path = std::filesystem::path(output.toStdWString());
@@ -6308,6 +6416,24 @@ void EditorController::exportTimelineUrl(const QUrl& url) {
             : ffgui::ExportVideoEncoder::h264_nvenc);
     }
 }
+
+#ifdef FFGUI_HAS_GES
+void EditorController::drainPreviewForDeferredExport() {
+    if (!deferred_export_url_.has_value() || export_preview_stop_watcher_.isRunning() ||
+        preview_watcher_.isRunning() || live_seek_watcher_.isRunning()) {
+        return;
+    }
+    auto* player = player_.get();
+    export_preview_stop_watcher_.setFuture(QtConcurrent::run([player] {
+        try {
+            if (player != nullptr) player->stop();
+            return QString{};
+        } catch (const std::exception& error) {
+            return QString::fromUtf8(error.what());
+        }
+    }));
+}
+#endif
 
 void EditorController::startExportProcess(ffgui::ExportVideoEncoder encoder) {
     try {
@@ -6564,6 +6690,7 @@ void EditorController::startPreviewOperation() {
             result.generation = generation;
             result.rebuilt = rebuild;
             result.color_only = colorOnly;
+            result.seek_target = seekTarget;
             QElapsedTimer elapsed;
             elapsed.start();
             qInfo().noquote() << "preview operation started"
@@ -6655,7 +6782,10 @@ void EditorController::startPreviewOperation() {
 void EditorController::publishTimeline(bool resetPlayhead) {
     QElapsedTimer publishElapsed;
     publishElapsed.start();
+    QElapsedTimer phaseElapsed;
+    phaseElapsed.start();
     endCoalescedGradeEdit();
+    const auto gradeFinalizeMs = phaseElapsed.restart();
 #ifdef FFGUI_HAS_GES
     const bool keepPlaying = playing_ || preview_should_play_;
     stopFloatPlayback();
@@ -6668,6 +6798,7 @@ void EditorController::publishTimeline(bool resetPlayhead) {
         color_pipeline_, ffgui::resolved_color_output_space(color_pipeline_));
     player_->set_float_output_enabled(requiresFloatVideoPreview());
 #endif
+    const auto playbackConfigMs = phaseElapsed.restart();
     if (resetPlayhead) {
         playhead_ns_ = 0;
     } else {
@@ -6676,11 +6807,17 @@ void EditorController::publishTimeline(bool resetPlayhead) {
     preview_snapshot_ = timeline_.snapshot();
     preview_revision_ = timeline_.revision();
     ++preview_generation_;
+    const auto snapshotMs = phaseElapsed.restart();
     clips_cache_.reset();
     clip_index_by_id_.clear();
     grade_nodes_cache_.reset();
     media_assets_cache_.reset();
     captions_cache_.reset();
+    // Media cards are a long-lived ListView. Their QVariantMap delegates can retain
+    // the old useCount until the coalesced model reset is processed, which leaves
+    // destructive edits visibly reporting the previous timeline state. Publish a
+    // cheap, synchronous revision signal so the usage label is always authoritative.
+    emit mediaUsageChanged();
     const auto previousIn = in_point_ns_;
     const auto previousOut = out_point_ns_;
     if (in_point_ns_ > durationNs()) in_point_ns_ = -1;
@@ -6701,20 +6838,34 @@ void EditorController::publishTimeline(bool resetPlayhead) {
             selected_caption_id_.clear();
         }
     }
+    const auto notificationMs = phaseElapsed.restart();
 #ifdef FFGUI_HAS_GES
     preview_update_timer_.start();
     setStatus(timeline_.clips().empty() ? "미디어를 추가하세요" : "미리보기 갱신 중");
 #else
     setStatus(timeline_.clips().empty() ? "미디어를 추가하세요" : "재생 준비 완료");
 #endif
+    const auto schedulingMs = phaseElapsed.elapsed();
     if (publishElapsed.elapsed() >= 50) {
         qWarning().noquote() << "timeline publish blocked the UI"
                              << "elapsed_ms=" << publishElapsed.elapsed()
+                             << "grade_finalize_ms=" << gradeFinalizeMs
+                             << "playback_config_ms=" << playbackConfigMs
+                             << "snapshot_ms=" << snapshotMs
+                             << "notification_ms=" << notificationMs
+                             << "scheduling_ms=" << schedulingMs
                              << "clips=" << timeline_.clips().size();
     }
 }
 
 void EditorController::publishColorPreview(bool refreshGradeUi) {
+    // Model mutations are synchronous even when the expensive QML notification and
+    // preview rebuild are coalesced. Never let a synchronous caller (project save,
+    // undo/redo, smoke tests, or another controller command) observe the pre-edit
+    // QVariant projection while the zero-delay timer is still pending.
+    clips_cache_.reset();
+    clip_index_by_id_.clear();
+    grade_nodes_cache_.reset();
     pending_color_preview_refresh_ui_ = pending_color_preview_refresh_ui_ || refreshGradeUi;
     color_preview_dirty_ = true;
     color_preview_coalesce_timer_.start();
@@ -6727,25 +6878,38 @@ void EditorController::flushColorPreview() {
     pending_color_preview_refresh_ui_ = false;
     QElapsedTimer publishElapsed;
     publishElapsed.start();
+    QElapsedTimer phaseElapsed;
+    phaseElapsed.start();
     preview_snapshot_ = timeline_.snapshot();
     preview_revision_ = timeline_.revision();
+    const auto snapshotMs = phaseElapsed.restart();
     if (refreshGradeUi) {
         clips_cache_.reset();
-    clip_index_by_id_.clear();
-        emit selectedClipChanged();
+        clip_index_by_id_.clear();
+        // A grade-graph edit does not change the selected clip or its basic audio,
+        // speed, and color properties. Notifying selectedClipChanged invalidated the
+        // entire inspector and rebuilt unrelated controls; update only the grade UI.
         emitGradeUiChanged();
     }
     emit historyChanged();
+    const auto notificationMs = phaseElapsed.restart();
 #ifdef FFGUI_HAS_GES
     submitFloatScrubFrame(playhead_ns_);
+    const auto floatSubmitMs = phaseElapsed.restart();
     preview_color_only_pending_ = true;
     preview_update_timer_.start();
 #else
+    const qint64 floatSubmitMs = 0;
     if (refreshGradeUi) setStatus(QStringLiteral("컬러 변경 적용"));
 #endif
+    const auto schedulingMs = phaseElapsed.elapsed();
     if (publishElapsed.elapsed() >= 50) {
         qWarning().noquote() << "color preview publish blocked the UI"
                              << "elapsed_ms=" << publishElapsed.elapsed()
+                             << "snapshot_ms=" << snapshotMs
+                             << "notification_ms=" << notificationMs
+                             << "float_submit_ms=" << floatSubmitMs
+                             << "scheduling_ms=" << schedulingMs
                              << "clips=" << timeline_.clips().size();
     }
 }

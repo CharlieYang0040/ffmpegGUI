@@ -277,6 +277,14 @@ try {
     }
     Write-Output "D3D11 presentation passed: decoded GPU frames reached the exposed Qt scene graph"
 
+    $deviceRemoval = Start-Process -FilePath $application `
+        -ArgumentList @("--offscreen-presentation-smoke", "--device-removal-smoke", $clipA, $clipB, $clipVfr) `
+        -WindowStyle Hidden -Wait -PassThru
+    if ($deviceRemoval.ExitCode -ne 0) {
+        throw "D3D11 device-removal CPU recovery failed with code $($deviceRemoval.ExitCode)"
+    }
+    Write-Output "D3D11 device-removal recovery passed: preview rebuilt on CPU and resumed frame delivery"
+
     $env:FFGUI_FORCE_CPU_PREVIEW = "1"
     $cpuPlayback = Start-Process -FilePath $application `
         -ArgumentList @("--offscreen-presentation-smoke", "--playback-smoke", $clipA, $clipB, $clipVfr) `

@@ -42,7 +42,17 @@ ApplicationWindow {
             EditorController.selectedClipBrightness !== 0 ||
             EditorController.selectedClipContrast !== 100 ||
             EditorController.selectedClipSaturation !== 100)
-    readonly property var gradeNodes: EditorController.selectedGradeNodes
+    readonly property var gradeNodes: {
+        const revision = EditorController.gradeUiRevision
+        return EditorController.selectedGradeNodes.map(function(node) {
+            // Repeater delegates backed by QVariantMap can otherwise retain their
+            // previous modelData when undo changes a node without changing the
+            // stack length. Include the authoritative revision in each projection.
+            const projected = Object.assign({}, node)
+            projected.uiRevision = revision
+            return projected
+        })
+    }
     readonly property var activeWindowNode: {
         for (let i = 0; i < gradeNodes.length; ++i)
             if (gradeNodes[i].type === 9)
@@ -136,8 +146,8 @@ ApplicationWindow {
         }
         MouseArea {
             anchors.fill: wheelCanvas
-            onPressed: updateValues(mouse)
-            onPositionChanged: if (pressed) updateValues(mouse)
+            onPressed: function(mouse) { updateValues(mouse) }
+            onPositionChanged: function(mouse) { if (pressed) updateValues(mouse) }
             function updateValues(mouse) {
                 const dx = Math.max(-1, Math.min(1, (mouse.x - width / 2) / (width * 0.42)))
                 const dy = Math.max(-1, Math.min(1, (mouse.y - height / 2) / (height * 0.42)))
@@ -779,7 +789,11 @@ ApplicationWindow {
                                     }
                                     Label {
                                         text: root.durationText(mediaCard.modelData.durationNs)
-                                              + "  ·  " + mediaCard.modelData.useCount + "회 사용"
+                                              // Depend on the synchronous usage revision instead of
+                                              // a possibly retained QVariantMap delegate value.
+                                              + "  ·  " + (EditorController.mediaUsageRevision,
+                                                           EditorController.mediaAssetUseCount(
+                                                               mediaCard.assetId)) + "회 사용"
                                               + (mediaCard.modelData.sequenceRange.length > 0
                                                  ? "  ·  " + mediaCard.modelData.sequenceRange : "")
                                         color: "#8994a3"
@@ -961,8 +975,8 @@ ApplicationWindow {
                                 font.pixelSize: 11
                             }
                             Label {
-                                visible: EditorController.cpuPreviewFallback
-                                text: "CPU 복구"
+                                visible: !EditorController.gpuSceneGraphPreview
+                                text: EditorController.cpuPreviewFallback ? "CPU 복구" : "CPU 안전"
                                 color: "#f5b942"
                                 font.pixelSize: 10
                             }
@@ -1051,6 +1065,7 @@ ApplicationWindow {
                             active: EditorController.inProcessPreview
                             sourceComponent: VideoPreviewItem {
                                 id: inProcessVideoPreview
+                                objectName: "inProcessVideoPreview"
                                 Component.onCompleted:
                                     EditorController.attachVideoItem(inProcessVideoPreview)
                                 MouseArea {
@@ -2412,7 +2427,9 @@ ApplicationWindow {
                                     return []
                                 }
                                 Layout.fillWidth: true
-                                implicitHeight: gradeHeader.implicitHeight + (gradeBody.visible ? gradeBody.implicitHeight + 12 : 0)
+                                implicitHeight: gradeHeader.implicitHeight +
+                                                (gradeBodyLoader.active
+                                                 ? gradeBodyLoader.implicitHeight + 12 : 0)
                                 radius: 7
                                 color: "#141a20"
                                 border.color: root.expandedGradeNode === modelData.id ? "#6682a6" : "#303b47"
@@ -2446,12 +2463,16 @@ ApplicationWindow {
                                         AppButton { text: "↓"; compact: true; onClicked: EditorController.moveGradeNode(gradeNode.modelData.id, 1) }
                                         AppButton { text: "×"; compact: true; danger: true; onClicked: EditorController.removeGradeNode(gradeNode.modelData.id) }
                                     }
-                                    GridLayout {
-                                        id: gradeBody
+                                    Loader {
+                                        id: gradeBodyLoader
                                         Layout.fillWidth: true
-                                        Layout.leftMargin: 10; Layout.rightMargin: 10; Layout.bottomMargin: 8
-                                        columns: 2
-                                        visible: root.expandedGradeNode === gradeNode.modelData.id
+                                        active: root.expandedGradeNode === gradeNode.modelData.id
+                                        visible: active
+                                        sourceComponent: Component {
+                                            GridLayout {
+                                                id: gradeBody
+                                                width: gradeBodyLoader.width
+                                                columns: 2
                                         Label { text: "이름"; color: "#9aa7b7" }
                                         TextField {
                                             Layout.fillWidth: true
@@ -2931,6 +2952,8 @@ ApplicationWindow {
                                                      gradeNode.modelData.type === 4
                                             text: "중앙점 조절은 공통 float 렌더와 GPU LUT에 즉시 반영됩니다."
                                             color: "#7f8c9c"; font.pixelSize: 11
+                                        }
+                                            }
                                         }
                                     }
                                 }

@@ -12,7 +12,8 @@ Primary, Log Wheels, RGB/Hue Curves, HDR Zones, Color Warper와 Cube/3DL/CLF/CTF
 LUT/Look까지 동작합니다. 공유 그레이드와 원본 시간 기준 파라미터 키프레임은
 이미지 시퀀스와 일반 영상 미리보기·출력에 모두 연결됩니다. 프로그램 모니터는 OCIO
 Display/View, 표시 변환 우회, 적용 전후 비교, 스코프 기준점, gamut/false color와 픽셀
-검사를 제공합니다. D3D11 장치가 제거되면 CPU 미리보기로 복구합니다. 타임라인 드래그
+검사를 제공합니다. 릴리스 기본값은 CPU 안전 미리보기이며, 실험적 D3D11 경로에서 오류가
+발생하면 같은 세션에서 CPU 미리보기로 복구합니다. 타임라인 드래그
 탐색은 캐시 썸네일과 키프레임 미리보기를 함께 갱신하고, 재생 중 그레이드 인스펙터는
 매 프레임 다시 그리지 않습니다. HDR 모니터가 있으면 창 색공간을 scRGB 또는 Rec.2020 PQ로
 맞추고, HDR 출력은 Rec.2100 PQ 메타데이터를 HEVC에 넣습니다. 창작 Look은 33³/65³ Cube와
@@ -28,7 +29,7 @@ Unreal OCIO 2.2 `.ocioz` 패키지로 내보낼 수 있고, qualifier·power win
 - 전체 타임라인 연속 재생
 - 나노초 시간축과 VFR 원본 프레임 매핑
 - 트림·분할·삭제 시 빈 공간이 생기지 않는 마그네틱 단일 트랙
-- GPU 디코딩에서 화면 출력까지 D3D11 제로카피
+- 안정성을 우선한 CPU BGRA 기본 미리보기와 선택형 D3D11 제로카피
 - 키프레임 정렬 컷의 무손실 스트림 복사와 NVENC 빠른 출력
 - 미리보기와 최종 출력이 공유하는 하나의 편집 모델
 
@@ -55,6 +56,7 @@ cmake --preset windows-msvc
 cmake --build --preset windows-debug
 ctest --preset windows-debug
 .\scripts\run_ges_smoke.ps1
+.\scripts\run_core_workflow_smoke.ps1 -Iterations 3
 .\scripts\run_4k_seek_benchmark.ps1
 .\scripts\run_playback_soak.ps1 -Seconds 60
 .\out\build\windows-msvc\Debug\ffgui_core_benchmark.exe
@@ -69,22 +71,23 @@ Debug 빌드는 Qt와 필요한 GStreamer 런타임을 실행 폴더에 자동 �
 않습니다. 실행 가능한 배포본은 다음 명령으로 생성합니다.
 
 ```powershell
-.\scripts\package_release.ps1 -Version 0.1.1
-.\scripts\test_release_package.ps1 -Version 0.1.1
+.\scripts\package_release.ps1 -Version 0.1.2
+.\scripts\test_release_package.ps1 -Version 0.1.2
 ```
 
-배포용 EXE는 `out/release-v0.1.1/ffmpegGUI-next-v0.1.1-win-x64`에 있으며 Qt DLL,
+배포용 EXE는 `out/release-v0.1.2/ffmpegGUI-next-v0.1.2-win-x64`에 있으며 Qt DLL,
 QML 모듈과 필요한 GStreamer 런타임을 함께 포함합니다.
 
 `run_ges_smoke.ps1`은 CFR MP4, CFR MKV, VFR MKV를 생성해 트림된 4개 샷을 하나의
 타임라인으로 연속 재생하고 1280x720 CPU BGRA 미리보기 프레임을 검증합니다.
 `run_desktop_smoke.ps1`은 같은 파일로 인프로세스 미리보기, 프로젝트 왕복과 타임라인
 썸네일 캐시 생성을 검사합니다. D3D11 제로카피와 CPU 폴백 모두 실제 Qt Scene Graph
-표시까지 확인합니다. 기본 미리보기는 D3D11이며 드라이버 호환성 진단이 필요하면
-`FFGUI_FORCE_CPU_PREVIEW=1`로 CPU BGRA 경로를 강제할 수 있습니다. 기본
+표시까지 확인합니다. 기본 미리보기는 CPU BGRA 안전 경로입니다. 검증 목적으로만
+`FFGUI_ENABLE_D3D_PREVIEW=1`을 지정하면 D3D11 제로카피를 사용할 수 있고,
+`FFGUI_FORCE_CPU_PREVIEW=1`은 이 opt-in보다 우선합니다. 기본
 `run_4k_seek_benchmark.ps1`은 실제 3840x2160 H.264/HEVC 개발용 영상을 만들고
 D3D11 하드웨어 디코더의 임의 탐색 후 첫 GPU 프레임 도착 시간을 검사합니다.
-지원 GPU에서는 GES 합성도 D3D11 compositor를 기본 사용하며, 클립별 alpha·위치·크기 메타를
+실험적 D3D 경로를 켠 지원 GPU에서는 GES 합성에 D3D11 compositor를 사용하며, 클립별 alpha·위치·크기 메타를
 보존해 컬러 처리된 디졸브를 합성합니다. 관리형 컬러와 GradeGraph의 source shader 출력은
 중간 CPU download 없이 D3D11 texture 상태로 compositor에 전달됩니다. 드라이버 진단이 필요하면
 `FFGUI_FORCE_SYSTEM_COMPOSITOR=1`로 기존 시스템 메모리 합성기를 강제할 수 있습니다.
@@ -137,8 +140,8 @@ GIF는 영상 코덱 설정과 분리된 전용 출력입니다. 기본 `균형`
 아니라 원본 VFR PTS를 사용합니다. `Ctrl+D`는 선택 샷을 바로 뒤에 마그네틱하게
 복제하며 한 번의 Undo로 되돌릴 수 있습니다.
 마우스로 트림하거나 분할한 결과도 가장 가까운 실제 원본 프레임 경계로 확정됩니다.
-타임라인과 미디어 보관함을 훑으면 캐시 영상과 함께 140ms 오디오 구간을 재생하며,
-빠른 이동은 75ms 디바운스로 병합되고 실제 재생 헤드는 그대로 유지됩니다.
+타임라인과 미디어 보관함을 훑으면 파이프라인 상태를 바꾸지 않고 캐시 영상만 표시하며,
+마우스가 나가면 실제 재생 헤드의 캐시 프레임으로 복원됩니다.
 왼쪽 미디어 보관함의 `+`는 샷을 타임라인 끝에 추가합니다. 미디어를 더블클릭하면
 소스 모니터에서 타임라인과 독립된 I/O 구간을 정하고 재생할 수 있습니다. 소스의
 `끌기` 핸들을 타임라인에 놓으면 끝에 추가·삽입·덮어쓰기 오버레이가 표시됩니다.
