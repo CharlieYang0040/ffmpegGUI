@@ -32,6 +32,20 @@ void TimelineModel::replace_asset(MediaAsset asset_value) {
     ++revision_;
 }
 
+void TimelineModel::erase_asset(const std::string& asset_id) {
+    const auto found = assets_.find(asset_id);
+    if (found == assets_.end()) {
+        throw std::invalid_argument("unknown asset id: " + asset_id);
+    }
+    if (std::ranges::any_of(clips_, [&asset_id](const Clip& clip) {
+            return clip.asset_id == asset_id;
+        })) {
+        throw std::invalid_argument("cannot erase an asset referenced by timeline clips: " + asset_id);
+    }
+    assets_.erase(found);
+    ++revision_;
+}
+
 const MediaAsset* TimelineModel::asset(const std::string& asset_id) const noexcept {
     const auto found = assets_.find(asset_id);
     return found == assets_.end() ? nullptr : &found->second;

@@ -1,7 +1,7 @@
 # 안정화 감사 기준선
 
-최종 갱신: 2026-08-25
-기준 커밋: `daea229` + 안정화 작업 트리
+최종 갱신: 2026-08-27
+기준 커밋: `446a660` + 0.1.4 안정화 작업 트리
 
 ## 판정 원칙
 
@@ -59,7 +59,7 @@ HDR, 스코프와 Unreal 전달은 핵심 흐름을 깨뜨리지 않는지만 �
 | P1 | grade 모델 변경 뒤 0ms 타이머 전까지 이전 `selectedGradeNodes`가 반환됨 | 수정·전체 데스크톱 스모크 통과 |
 | P1 | 클립 선택 직후 이전 클립의 grade 캐시가 반환됨 | 수정·공유 grade/keyframe 왕복 통과 |
 | P1 | grade 인스펙터 QML 재구성이 구조적 컬러 편집에서 UI를 89–294ms 차단 | 접힌 노드는 header만 만들고 펼친 노드 하나의 본문만 Loader로 생성하도록 수정 |
-| P1 | 강제 D3D11 장치 제거 복구에서 접근 위반 이력이 있음 | QSG 래퍼→native texture→device 순으로 폐기, CPU backend 원자 전환 및 자동 회귀 통과 |
+| P1 | 강제 D3D11 장치 제거 복구에서 접근 위반 이력이 있음 | 직접 D3D compositor를 진단 opt-in으로 격리하고, 렌더 스레드 자원 폐기 확인→CPU decoder/appsink 전환→첫 CPU 프레임 순서의 자동 회귀 통과 |
 | P1 | `bootstrap_windows.ps1`만으로 vcpkg를 준비하지 못함 | vcpkg 커밋 고정·clone·checkout·bootstrap 경로 추가 및 기존 환경 no-op 검증 |
 | P2 | 단일 데스크톱 스모크가 여러 기능을 묶어 실패 위치가 불명확함 | 라운드트립 단계 로그 추가, 나머지 분할 필요 |
 | P2 | `EditorController`가 상태·비동기·저장·출력을 한 클래스에 집중함 | 안정화 후 경계별 추출 검토 |
@@ -80,6 +80,15 @@ HDR, 스코프와 Unreal 전달은 핵심 흐름을 깨뜨리지 않는지만 �
 ## 이번 안정화 검증
 
 자동 smoke/soak 통과는 아래 이력으로만 보존하며 실제 UI 안정성의 완료 판정으로 사용하지 않는다.
+
+- 2026-08-27 Computer Use로 Debug 실제 창에서 `test_001.mp4`를 파일 대화상자로 추가했다.
+  미디어 카드, 프로그램 모니터와 타임라인 썸네일이 표시됐고 Hover 미리보기를 끈 상태에서
+  타임라인 눈금 7.5초 부근을 클릭하자 재생헤드가 `00:00:07.543`/F159로 이동했다. 컬러
+  작업 공간에서는 Primary 노드를 열어 Shadow, Midtone, Highlight, Master 네 휠과 영역
+  범위 슬라이더를 확인했다.
+- 격리형 직접 D3D11의 4-slot fence 풀은 offscreen 실제 Qt Scene Graph 표시 3회 연속,
+  EOS 반복 재생, 강제 장치 제거 후 CPU 복구와 전체 데스크톱 smoke를 통과했다. 이는 현재
+  RTX/드라이버 조합의 자동·UI 증거이며 물리 TDR 및 다른 GPU 검증을 대체하지 않는다.
 
 - 2026-08-25 실제 Release 창에서 `cfr_30fps_audio.mp4`를 직접 추가한 뒤 썸네일 두 위치
   hover, 재생/정지, 컬러 노드 추가·펼치기·휠 조작, 편집 복귀와 타임라인 seek를 수행했다.
@@ -107,10 +116,11 @@ HDR, 스코프와 Unreal 전달은 핵심 흐름을 깨뜨리지 않는지만 �
   조기 종료는 없었다. 10분 완료 증거로 간주하지 않는다.
 - 접힌 grade 본문 Loader 적용 뒤 동일 프로젝트 왕복에서 89ms 이상 color-preview UI 차단
   경고가 재발하지 않았고 단축 핵심 왕복을 통과했다.
-- D3D11 장치 손실 신호 주입 뒤 backend 전체를 CPU로 전환하고 프레임 전달이 재개되는
-  8초 자동 회귀를 통과했다. QSG texture wrapper를 native texture와 device보다 먼저 폐기하고,
-  손실 직후 동일 GPU device가 재등록되지 않도록 막았다. 실제 드라이버·GPU별 물리 장치 제거
-  검증은 별도 게이트다.
+- 직접 D3D compositor에서 장치 손실을 재현했고, system compositor와 CPU color 강제 경로에서는
+  같은 손실이 재현되지 않아 직접 compositor를 명시적 진단 opt-in으로 격리했다. 장치 제거
+  시뮬레이션은 QSG texture wrapper를 native texture와 device보다 먼저 렌더 스레드에서 폐기한 뒤
+  D3D decoder를 비활성화하고 CPU appsink 첫 프레임까지 복구하는 반복 회귀 3/3을 통과했다.
+  실제 드라이버·GPU별 물리 TDR/장치 제거 검증은 별도 게이트다.
 - lazy grade UI 적용 뒤 60초 단축 편집 soak 통과: 239작업, 구조 편집 16회, 최대 구조 편집
   8ms, 최대 UI 지연 140ms, 전달 프레임 642개, preview 오류 0.
 - Release 전체 빌드와 CTest 2/2를 통과했고, Release 핵심 프로젝트 왕복과 CPU H.264 출력

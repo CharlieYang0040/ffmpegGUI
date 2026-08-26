@@ -163,6 +163,11 @@ struct PrimaryState final {
     std::array<float, 3> inverse_gamma{};
     std::array<float, 3> gain{};
     std::array<float, 3> offset{};
+    std::array<float, 3> shadow{};
+    std::array<float, 3> midtone{};
+    std::array<float, 3> highlight{};
+    float low_range{};
+    float high_range{};
 };
 
 PrimaryState compile_primary(const GradeNode& node) {
@@ -175,13 +180,21 @@ PrimaryState compile_primary(const GradeNode& node) {
     const std::array<const char*, 3> gamma{"gammaR", "gammaG", "gammaB"};
     const std::array<const char*, 3> gain{"gainR", "gainG", "gainB"};
     const std::array<const char*, 3> offset{"offsetR", "offsetG", "offsetB"};
+    const std::array<const char*, 3> shadow{"shadowR", "shadowG", "shadowB"};
+    const std::array<const char*, 3> midtone{"midtoneR", "midtoneG", "midtoneB"};
+    const std::array<const char*, 3> highlight{"highlightR", "highlightG", "highlightB"};
     for (std::size_t channel = 0; channel < 3; ++channel) {
         state.lift[channel] = static_cast<float>(parameter(node, lift[channel], 0.0));
         state.inverse_gamma[channel] = static_cast<float>(
             1.0 / std::max(0.001, parameter(node, gamma[channel], 1.0)));
         state.gain[channel] = static_cast<float>(parameter(node, gain[channel], 1.0));
         state.offset[channel] = static_cast<float>(parameter(node, offset[channel], 0.0));
+        state.shadow[channel] = static_cast<float>(parameter(node, shadow[channel], 0.0));
+        state.midtone[channel] = static_cast<float>(parameter(node, midtone[channel], 0.0));
+        state.highlight[channel] = static_cast<float>(parameter(node, highlight[channel], 0.0));
     }
+    state.low_range = static_cast<float>(parameter(node, "lowRange", 0.25));
+    state.high_range = static_cast<float>(parameter(node, "highRange", 0.75));
     return state;
 }
 
@@ -193,6 +206,16 @@ void apply_primary(float* rgb, const PrimaryState& state) {
         value = std::copysign(std::pow(std::abs(value), state.inverse_gamma[channel]), value);
         value = value * state.gain[channel] + state.offset[channel];
         rgb[channel] = value;
+    }
+    const auto tonalLuma = std::max(0.0F, luminance(rgb));
+    const auto normalized = tonalLuma / (1.0F + tonalLuma);
+    const auto shadowWeight = 1.0F - smoothstep(0.0F, state.low_range, normalized);
+    const auto highlightWeight = smoothstep(state.high_range, 1.0F, normalized);
+    const auto midtoneWeight = std::max(0.0F, 1.0F - shadowWeight - highlightWeight);
+    for (std::size_t channel = 0; channel < 3; ++channel) {
+        rgb[channel] += state.shadow[channel] * shadowWeight +
+            state.midtone[channel] * midtoneWeight +
+            state.highlight[channel] * highlightWeight;
     }
     const auto luma = luminance(rgb);
     for (std::size_t channel = 0; channel < 3; ++channel) {

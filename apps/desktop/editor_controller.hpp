@@ -82,6 +82,7 @@ class EditorController final : public QObject {
     Q_PROPERTY(bool selectedClipVideoMuted READ selectedClipVideoMuted NOTIFY selectedClipChanged)
     Q_PROPERTY(int timelineToolMode READ timelineToolMode WRITE setTimelineToolMode NOTIFY editUiChanged)
     Q_PROPERTY(bool timelineSnapping READ timelineSnapping WRITE setTimelineSnapping NOTIFY editUiChanged)
+    Q_PROPERTY(bool timelineHoverPreviewEnabled READ timelineHoverPreviewEnabled WRITE setTimelineHoverPreviewEnabled NOTIFY editUiChanged)
     Q_PROPERTY(QString selectedCaptionId READ selectedCaptionId NOTIFY captionSelectionChanged)
     Q_PROPERTY(QString selectedCaptionText READ selectedCaptionText NOTIFY captionSelectionChanged)
     Q_PROPERTY(int selectedCaptionDurationMs READ selectedCaptionDurationMs NOTIFY captionSelectionChanged)
@@ -213,6 +214,9 @@ public:
     [[nodiscard]] bool selectedClipVideoMuted() const noexcept;
     [[nodiscard]] int timelineToolMode() const noexcept { return timeline_tool_mode_; }
     [[nodiscard]] bool timelineSnapping() const noexcept { return timeline_snapping_; }
+    [[nodiscard]] bool timelineHoverPreviewEnabled() const noexcept {
+        return timeline_hover_preview_enabled_;
+    }
     [[nodiscard]] QString selectedCaptionId() const { return selected_caption_id_; }
     [[nodiscard]] QString selectedCaptionText() const;
     [[nodiscard]] int selectedCaptionDurationMs() const noexcept;
@@ -333,6 +337,7 @@ public:
     [[nodiscard]] std::uint64_t sourceColorLutBindings() const noexcept;
     [[nodiscard]] std::uint64_t sourceGpuColorLutBindings() const noexcept;
     [[nodiscard]] bool directD3dCompositorEnabled() const noexcept;
+    [[nodiscard]] bool isolatedFencePoolEnabled() const noexcept;
     [[nodiscard]] std::uint64_t d3dCompositorInstances() const noexcept;
     [[nodiscard]] std::uint64_t d3dDownloadInstances() const noexcept;
     [[nodiscard]] std::uint64_t systemCompositorInstances() const noexcept;
@@ -342,6 +347,7 @@ public:
 
     void loadFiles(const QStringList& paths);
     void setVideoWindow(QWindow* window);
+    void simulateGpuDeviceRemovalForTest();
 
 public slots:
     void seek(qint64 timelinePosition);
@@ -374,6 +380,7 @@ public slots:
     void setTimelineRange(qint64 timelineIn, qint64 timelineOut);
     void setTimelineToolMode(int mode);
     void setTimelineSnapping(bool enabled);
+    void setTimelineHoverPreviewEnabled(bool enabled);
     void setPreviewQuality(int quality);
     void beginDynamicRoll(const QString& leftClipId, const QString& rightClipId);
     void endDynamicTrim();
@@ -399,6 +406,7 @@ public slots:
         const QString& part,
         const QString& view,
         const QString& layer);
+    void removeMediaAsset(const QString& assetId, bool removeTimelineClips);
     void setAssetInputColorSpace(const QString& assetId, const QString& colorSpace);
     void splitAtPlayhead();
     void duplicateSelectedClip();
@@ -614,6 +622,10 @@ private:
     void restorePlayheadPreview();
     [[nodiscard]] QSize previewSourceSizeAt(qint64 timeline_position) const;
     void recoverCpuPreview();
+    void beginCpuPreviewRecovery(bool retireAsDeviceLost, bool resetSceneGraph,
+                                 const QString& reason);
+    void continueCpuPreviewRecovery();
+    void completeCpuPreviewRecovery();
     void syncOutputSpaceFromDisplayView();
     void applyHdrDisplayPath();
     bool selectHdrDisplayView();
@@ -706,6 +718,7 @@ private:
     int persistent_timeline_tool_mode_{};
     int temporary_tool_key_{};
     bool timeline_snapping_{true};
+    bool timeline_hover_preview_enabled_{true};
     int preview_quality_{1};
     int preview_displayed_quality_{1};
     int preview_requested_quality_{1};
@@ -740,6 +753,11 @@ private:
     bool hdr_display_override_{};
     bool use_d3d_scene_graph_{};
     bool cpu_preview_fallback_{};
+    bool cpu_preview_recovery_pending_{};
+    bool cpu_preview_gpu_resources_retired_{};
+    bool cpu_preview_backend_configured_{};
+    bool cpu_preview_reset_scene_graph_{};
+    std::atomic_bool accept_gpu_preview_frames_{true};
     bool in_process_preview_{};
     bool scopes_visible_{};
     int scope_mode_{};

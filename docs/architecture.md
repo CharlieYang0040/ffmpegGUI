@@ -113,10 +113,15 @@ Qt와 GStreamer가 같은 장치를 쓰고 멀티스레드 보호를 켠 상태�
 직접 전달한다. 실제 노출 창 회귀에서 CFR MP4·CFR MKV·VFR MKV는 수신 139·전달 139·
 표시 138프레임, 4K H.264/HEVC는 수신·전달·표시 122프레임을 확인했다.
 
+직접 GPU 합성의 차기 구조는 Qt와 GStreamer device를 분리하고 같은 adapter의 공유 texture
+slot과 GPU fence로 최종 프레임만 전달한다. 구체적인 소유권, 재구축 상태 머신과 승격 게이트는
+[`direct_d3d_preview_redesign.md`](direct_d3d_preview_redesign.md)에 정의한다.
+
 CPU BGRA는 드라이버·원격 데스크톱을 포함한 릴리스 안전 경로다.
 실제 노출 창에서 CPU 프레임 표시를 별도로 확인한다. opt-in 런타임에 D3D11 장치가
-제거되면 Scene Graph가 `GetDeviceRemovedReason`을 보고 CPU appsink로 파이프라인을 다시
-만들어 미리보기를 이어 간다.
+제거되면 Scene Graph 렌더 스레드에서 QSG wrapper, native texture와 device를 순서대로
+폐기한다. 폐기 완료 신호 뒤 D3D decoder rank를 내리고 CPU decoder와 BGRA appsink로
+파이프라인을 다시 만든다. 첫 CPU 프레임이 제출된 뒤에만 복구 완료로 전환한다.
 
 GradeGraph 또는 관리형 컬러가 필요한 일반 영상은 입력→working space→GradeGraph→표시 변환을
 소스별 `RGBA64_LE` top effect에서 수행한다. 관리형 GPU 경로는 OCIO 2.5가 생성한 입력·출력
@@ -129,8 +134,9 @@ alpha는 shader 밖에서 보존한다. 이후 source alpha 디졸브가 수행�
 시스템 합성 경로의 Legacy 밝기·대비·채도는 `GESClip`의 안정적인 top `videobalance` effect로
 적용한다. D3D11 합성 경로에서는 같은 조절을 `compose_clip_grade()`에 합쳐 source GPU LUT에서
 처리하므로 CPU 전용 effect로 되돌아가지 않는다.
-영상 트랙은 GES의 고정 system compositor 대신 전용 `FfguiD3DVideoTrack`과
-`d3d11compositor`를 기본 사용한다. 전용 mixer는 각 입력 버퍼의 GES frame-composition
+안정 GPU opt-in도 영상 트랙 합성에는 GES system compositor를 사용한다. 전용
+`FfguiD3DVideoTrack`과 `d3d11compositor`는 `FFGUI_ENABLE_DIRECT_D3D_COMPOSITOR=1`을
+추가한 진단 실행에서만 사용한다. 전용 mixer는 각 입력 버퍼의 GES frame-composition
 메타데이터를 D3D11 sink pad의 alpha·위치·크기·z-order에 적용한다. GPU 색처리 도중 손실될 수
 있는 이 메타데이터는 `ffguid3dcolor` bin이 입력 PTS별로 보존했다가 shader 출력에 복원하므로
 서로 다른 그레이드의 두 샷도 디졸브 값이 유지된다.
@@ -143,10 +149,10 @@ upload와 shader만 포함하고 그 출력 texture를 compositor에 직접 전�
 `d3d11download` 인스턴스는 0개다. 시스템 compositor 또는 CPU color를 강제하면 기존
 `GESEffect`와 download 경로로 자동 복귀한다.
 
-컷 사이의 짧은 공백에는 D3D11 black gap source를 공급해 NLE mixing operation이 자식 없이
+직접 compositor 진단 경로에서 컷 사이의 짧은 공백에는 D3D11 black gap source를 공급해 NLE mixing operation이 자식 없이
 seek되는 오류를 막는다. 문구와 스탬프는 현재 Qt overlay에서 미리보고 FFmpeg 공통 출력 그래프에서
-렌더하므로 GES title source를 D3D 트랙에 혼합하지 않는다. 문제가 있는 드라이버에서는
-`FFGUI_FORCE_SYSTEM_COMPOSITOR=1`로 기존 합성기를 강제할 수 있다.
+렌더하므로 GES title source를 D3D 트랙에 혼합하지 않는다. `FFGUI_FORCE_SYSTEM_COMPOSITOR=1`은
+직접 compositor 진단 opt-in보다 우선한다.
 
 GradeGraph의 공간 비의존 기준 렌더는 `apply_grade_graph_rgba32f()` 하나로 유지한다. 현재
 Primary exposure/LGG/temperature/tint/contrast/pivot/saturation/hue/color boost, Log Wheels,

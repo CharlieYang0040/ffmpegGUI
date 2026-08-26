@@ -1,5 +1,9 @@
 #include "d3d11_video_item.hpp"
 
+#ifdef _WIN32
+#include <d3d11_1.h>
+#endif
+
 #include <QMetaObject>
 #include <QImage>
 #include <QDebug>
@@ -105,6 +109,122 @@ bool VideoPreviewItem::noteDeviceRemoved(long status) {
     return true;
 }
 
+long VideoPreviewItem::deviceRemovedReason() const noexcept {
+    std::scoped_lock lock(device_mutex_);
+    return device_ != nullptr
+        ? static_cast<long>(device_->GetDeviceRemovedReason())
+        : static_cast<long>(S_OK);
+}
+
+bool VideoPreviewItem::waitForPooledFrame(
+    ffgui::PreviewVideoFrame& frame, ID3D11Texture2D** texture) {
+    if (texture == nullptr || frame.shared_ready_fence_handle == 0 ||
+        frame.shared_release_fence_handle == 0 || frame.shared_fence_value == 0 ||
+        frame.shared_pool_slot >= pooled_resources_.size()) {
+        return false;
+    }
+    auto* qtDevice = reinterpret_cast<ID3D11Device*>(devicePointer());
+    if (qtDevice == nullptr || device_context4_ == nullptr) return false;
+    auto& pooled = pooled_resources_[frame.shared_pool_slot];
+    const bool samePool = pooled.texture_handle == frame.shared_texture_handle &&
+        pooled.ready_fence_handle == frame.shared_ready_fence_handle &&
+        pooled.release_fence_handle == frame.shared_release_fence_handle;
+    if (!samePool) {
+        if (pooled.texture != nullptr) pooled.texture->Release();
+        if (pooled.ready_fence != nullptr) pooled.ready_fence->Release();
+        if (pooled.release_fence != nullptr) pooled.release_fence->Release();
+        pooled = {};
+    }
+    ID3D11Device5* device5 = nullptr;
+    const auto deviceResult = qtDevice->QueryInterface(
+        __uuidof(ID3D11Device5), reinterpret_cast<void**>(&device5));
+    HRESULT openResult = deviceResult;
+    if (SUCCEEDED(deviceResult) && device5 != nullptr && !samePool) {
+        openResult = device5->OpenSharedResource1(
+            reinterpret_cast<HANDLE>(frame.shared_texture_handle),
+            __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&pooled.texture));
+        if (SUCCEEDED(openResult)) {
+            openResult = device5->OpenSharedFence(
+                reinterpret_cast<HANDLE>(frame.shared_ready_fence_handle),
+                __uuidof(ID3D11Fence), reinterpret_cast<void**>(&pooled.ready_fence));
+        }
+        if (SUCCEEDED(openResult)) {
+            openResult = device5->OpenSharedFence(
+                reinterpret_cast<HANDLE>(frame.shared_release_fence_handle),
+                __uuidof(ID3D11Fence), reinterpret_cast<void**>(&pooled.release_fence));
+        }
+        if (SUCCEEDED(openResult)) {
+            pooled.texture_handle = frame.shared_texture_handle;
+            pooled.ready_fence_handle = frame.shared_ready_fence_handle;
+            pooled.release_fence_handle = frame.shared_release_fence_handle;
+        }
+    } else if (samePool) {
+        openResult = S_OK;
+    }
+    if (device5 != nullptr) device5->Release();
+    if (FAILED(openResult) || pooled.texture == nullptr || pooled.ready_fence == nullptr ||
+        pooled.release_fence == nullptr) {
+        static_cast<void>(noteDeviceRemoved(static_cast<long>(openResult)));
+        return false;
+    }
+    const auto waitResult = device_context4_->Wait(
+        pooled.ready_fence, frame.shared_fence_value);
+    if (FAILED(waitResult)) {
+        static_cast<void>(noteDeviceRemoved(static_cast<long>(waitResult)));
+        return false;
+    }
+    *texture = pooled.texture;
+    return true;
+}
+
+void VideoPreviewItem::releasePooledFrame(ffgui::PreviewVideoFrame& frame) noexcept {
+    if (frame.shared_release_fence_handle == 0 || frame.shared_fence_value == 0 ||
+        frame.shared_release_committed == nullptr ||
+        frame.shared_release_committed->load(std::memory_order_acquire)) {
+        return;
+    }
+    auto* qtDevice = reinterpret_cast<ID3D11Device*>(devicePointer());
+    if (qtDevice == nullptr || device_context4_ == nullptr) return;
+    if (frame.shared_pool_slot >= pooled_resources_.size()) return;
+    auto& pooled = pooled_resources_[frame.shared_pool_slot];
+    if (pooled.release_fence_handle != frame.shared_release_fence_handle ||
+        pooled.release_fence == nullptr) {
+        return;
+    }
+    const auto signalResult = device_context4_->Signal(
+        pooled.release_fence, frame.shared_fence_value);
+    if (SUCCEEDED(signalResult)) {
+        // The signal is queued after Qt's prior draws on the same immediate context.
+        // The producer cannot reuse this slot until that GPU work reaches the fence.
+        frame.shared_release_committed->store(true, std::memory_order_release);
+    } else {
+        static_cast<void>(noteDeviceRemoved(static_cast<long>(signalResult)));
+    }
+}
+
+void VideoPreviewItem::clearPooledResources() noexcept {
+    for (auto& pooled : pooled_resources_) {
+        if (pooled.texture != nullptr) pooled.texture->Release();
+        if (pooled.ready_fence != nullptr) pooled.ready_fence->Release();
+        if (pooled.release_fence != nullptr) pooled.release_fence->Release();
+        pooled = {};
+    }
+}
+
+void VideoPreviewItem::retireGpuResources(bool markDeviceLost) {
+    if (markDeviceLost) {
+        retirement_marks_device_lost_.store(true, std::memory_order_release);
+    }
+    retirement_requested_.store(true, std::memory_order_release);
+    if (resources_retired_.load(std::memory_order_acquire)) {
+        QMetaObject::invokeMethod(this, [this, markDeviceLost] {
+            emit gpuResourcesRetired(markDeviceLost || deviceLost());
+        }, Qt::QueuedConnection);
+        return;
+    }
+    update();
+}
+
 QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     auto* root = oldNode != nullptr ? oldNode : new QSGNode();
     auto* node = static_cast<QSGSimpleTextureNode*>(root->firstChild());
@@ -127,6 +247,15 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
         }
         invalidateGraphics();
     };
+    if (retirement_requested_.load(std::memory_order_acquire)) {
+        const auto markDeviceLost = retirement_marks_device_lost_.exchange(
+            false, std::memory_order_acq_rel);
+        if (markDeviceLost) {
+            device_lost_.store(true, std::memory_order_release);
+        }
+        discardRemovedDevice();
+        return root;
+    }
     ffgui::PreviewVideoFrame next;
     {
         std::scoped_lock lock(frame_mutex_);
@@ -135,6 +264,12 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
         }
     }
     if (next.serial != 0 && window() != nullptr) {
+        if ((rendered_pipeline_generation_ != 0 &&
+             next.pipeline_generation < rendered_pipeline_generation_) ||
+            (rendered_device_epoch_ != 0 && next.device_epoch != 0 &&
+             next.device_epoch < rendered_device_epoch_)) {
+            return root;
+        }
         if (rendered_serial_ == 0) {
             qInfo().noquote() << "first in-process preview render attempt"
                               << "serial=" << next.serial
@@ -159,8 +294,37 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
                 discardRemovedDevice();
                 return root;
             }
-            if (next.device != qtDevice || qtDevice == nullptr) return root;
+            if (qtDevice == nullptr) return root;
+            ID3D11Texture2D* openedSharedTexture = nullptr;
             auto* sourceTexture = static_cast<ID3D11Texture2D*>(next.texture);
+            if (next.shared_texture_handle != 0) {
+                if (next.shared_ready_fence_handle != 0) {
+                    if (!waitForPooledFrame(next, &openedSharedTexture)) return root;
+                    sourceTexture = openedSharedTexture;
+                } else {
+                    ID3D11Device1* qtDevice1 = nullptr;
+                    if (FAILED(qtDevice->QueryInterface(
+                            __uuidof(ID3D11Device1), reinterpret_cast<void**>(&qtDevice1))) ||
+                        qtDevice1 == nullptr) {
+                        return root;
+                    }
+                    const auto openResult = qtDevice1->OpenSharedResource1(
+                        reinterpret_cast<HANDLE>(next.shared_texture_handle),
+                        __uuidof(ID3D11Texture2D),
+                        reinterpret_cast<void**>(&openedSharedTexture));
+                    qtDevice1->Release();
+                    if (noteDeviceRemoved(static_cast<long>(openResult)) ||
+                        FAILED(openResult) || openedSharedTexture == nullptr) {
+                        return root;
+                    }
+                    next.display_texture_owner = std::shared_ptr<void>(
+                        openedSharedTexture,
+                        [](void* value) { static_cast<ID3D11Texture2D*>(value)->Release(); });
+                    sourceTexture = openedSharedTexture;
+                }
+            } else if (next.device != qtDevice) {
+                return root;
+            }
             D3D11_TEXTURE2D_DESC sourceDescription{};
             sourceTexture->GetDesc(&sourceDescription);
             const bool directlyShareable =
@@ -231,6 +395,10 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
             }
         }
         if (texture != nullptr || reusedBridgeTexture) {
+            // updatePaintNode runs on the render thread. This release signal is placed
+            // after the previous frame's scene-graph work and before the replacement,
+            // preserving the currently displayed slot until Qt is finished with it.
+            releasePooledFrame(render_frame_);
             if (node == nullptr) {
                 node = new QSGSimpleTextureNode();
                 node->setTexture(texture);
@@ -258,6 +426,8 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
                 }
                 render_frame_ = std::move(next);
                 rendered_serial_ = render_frame_.serial;
+                rendered_pipeline_generation_ = render_frame_.pipeline_generation;
+                rendered_device_epoch_ = render_frame_.device_epoch;
             }
             emit framePresented(rendered_serial_);
             if (rendered_serial_ <= 2) {
@@ -297,10 +467,13 @@ QSGNode* VideoPreviewItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData
 }
 
 void VideoPreviewItem::releaseResources() {
+    releasePooledFrame(render_frame_);
     std::scoped_lock lock(frame_mutex_);
     pending_frame_ = {};
     render_frame_ = {};
     rendered_serial_ = 0;
+    rendered_pipeline_generation_ = 0;
+    rendered_device_epoch_ = 0;
     layout_width_ = 0;
     layout_height_ = 0;
 }
@@ -315,6 +488,9 @@ void VideoPreviewItem::initializeGraphics() {
     auto* device = static_cast<ID3D11Device*>(itemWindow->rendererInterface()->getResource(
         itemWindow, QSGRendererInterface::DeviceResource));
     if (device == nullptr) return;
+    auto* context = static_cast<ID3D11DeviceContext*>(
+        itemWindow->rendererInterface()->getResource(
+            itemWindow, QSGRendererInterface::DeviceContextResource));
     ID3D11Multithread* multithread = nullptr;
     if (SUCCEEDED(device->QueryInterface(
             __uuidof(ID3D11Multithread), reinterpret_cast<void**>(&multithread))) &&
@@ -326,11 +502,28 @@ void VideoPreviewItem::initializeGraphics() {
     }
     {
         std::scoped_lock lock(device_mutex_);
-        if (device_ == device) return;
+        if (device_ == device) {
+            if (device_context4_ == nullptr && context != nullptr) {
+                context->QueryInterface(
+                    __uuidof(ID3D11DeviceContext4),
+                    reinterpret_cast<void**>(&device_context4_));
+            }
+            return;
+        }
+        if (device_context4_ != nullptr) {
+            device_context4_->Release();
+            device_context4_ = nullptr;
+        }
         if (device_ != nullptr) device_->Release();
         device_ = device;
         device_->AddRef();
+        if (context != nullptr) {
+            context->QueryInterface(
+                __uuidof(ID3D11DeviceContext4),
+                reinterpret_cast<void**>(&device_context4_));
+        }
         device_lost_.store(false, std::memory_order_release);
+        resources_retired_.store(false, std::memory_order_release);
     }
     QMetaObject::invokeMethod(this, [this, device] {
         emit gpuReadyChanged();
@@ -339,6 +532,13 @@ void VideoPreviewItem::initializeGraphics() {
 }
 
 void VideoPreviewItem::invalidateGraphics() {
+    const auto requested = retirement_requested_.exchange(false, std::memory_order_acq_rel);
+    const auto markDeviceLost = retirement_marks_device_lost_.exchange(
+        false, std::memory_order_acq_rel);
+    if (markDeviceLost) device_lost_.store(true, std::memory_order_release);
+    if (!device_lost_.load(std::memory_order_acquire)) {
+        releasePooledFrame(render_frame_);
+    }
     if (display_texture_ != nullptr) {
         display_texture_->Release();
         display_texture_ = nullptr;
@@ -348,5 +548,20 @@ void VideoPreviewItem::invalidateGraphics() {
         std::scoped_lock lock(device_mutex_);
         oldDevice = std::exchange(device_, nullptr);
     }
+    clearPooledResources();
+    if (device_context4_ != nullptr) {
+        device_context4_->Release();
+        device_context4_ = nullptr;
+    }
     if (oldDevice != nullptr) oldDevice->Release();
+    const auto retired = requested || markDeviceLost ||
+        device_lost_.load(std::memory_order_acquire);
+    const auto firstRetirement = !resources_retired_.exchange(true, std::memory_order_acq_rel);
+    if (retired && firstRetirement) {
+        QMetaObject::invokeMethod(this, [this] {
+            emit gpuReadyChanged();
+            if (deviceLost()) emit deviceLostChanged();
+            emit gpuResourcesRetired(deviceLost());
+        }, Qt::QueuedConnection);
+    }
 }

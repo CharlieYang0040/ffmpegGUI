@@ -71,11 +71,11 @@ Debug 빌드는 Qt와 필요한 GStreamer 런타임을 실행 폴더에 자동 �
 않습니다. 실행 가능한 배포본은 다음 명령으로 생성합니다.
 
 ```powershell
-.\scripts\package_release.ps1 -Version 0.1.3
-.\scripts\test_release_package.ps1 -Version 0.1.3
+.\scripts\package_release.ps1 -Version 0.1.4
+.\scripts\test_release_package.ps1 -Version 0.1.4
 ```
 
-배포용 EXE는 `out/release-v0.1.3/ffmpegGUI-next-v0.1.3-win-x64`에 있으며 Qt DLL,
+배포용 EXE는 `out/release-v0.1.4/ffmpegGUI-next-v0.1.4-win-x64`에 있으며 Qt DLL,
 QML 모듈과 필요한 GStreamer 런타임을 함께 포함합니다.
 
 `run_ges_smoke.ps1`은 CFR MP4, CFR MKV, VFR MKV를 생성해 트림된 4개 샷을 하나의
@@ -87,10 +87,16 @@ QML 모듈과 필요한 GStreamer 런타임을 함께 포함합니다.
 `FFGUI_FORCE_CPU_PREVIEW=1`은 이 opt-in보다 우선합니다. 기본
 `run_4k_seek_benchmark.ps1`은 실제 3840x2160 H.264/HEVC 개발용 영상을 만들고
 D3D11 하드웨어 디코더의 임의 탐색 후 첫 GPU 프레임 도착 시간을 검사합니다.
-실험적 D3D 경로를 켠 지원 GPU에서는 GES 합성에 D3D11 compositor를 사용하며, 클립별 alpha·위치·크기 메타를
-보존해 컬러 처리된 디졸브를 합성합니다. 관리형 컬러와 GradeGraph의 source shader 출력은
-중간 CPU download 없이 D3D11 texture 상태로 compositor에 전달됩니다. 드라이버 진단이 필요하면
-`FFGUI_FORCE_SYSTEM_COMPOSITOR=1`로 기존 시스템 메모리 합성기를 강제할 수 있습니다.
+실험적 D3D 표시 경로를 켜도 안정 기본값은 GES system compositor입니다. D3D11 decoder에서 받은
+texture는 Qt Scene Graph까지 GPU 프레임으로 전달됩니다. source shader 출력부터 전용
+`d3d11compositor`까지 texture를 직접 유지하는 경로는 장치 손실 원인 분리를 위한 진단 기능이며,
+`FFGUI_ENABLE_DIRECT_D3D_COMPOSITOR=1`을 추가로 지정한 경우에만 사용합니다.
+Qt와 GStreamer device를 분리한 차기 직접 합성 경로는
+`FFGUI_ENABLE_ISOLATED_DIRECT_D3D_PREVIEW=1`로 별도 시험할 수 있습니다. 기본 격리 경로는 매
+프레임 immutable 공유 texture를 만들며, `FFGUI_ENABLE_ISOLATED_D3D_FENCE_POOL=1`을 함께 지정하면
+4개의 고정 공유 texture와 양방향 `ID3D11Fence`를 사용하는 실험적 풀을 시험합니다. Qt 쪽에서도
+각 slot의 texture와 fence를 한 번만 열어 재사용합니다. 풀을 지원하지 않는 장치에서는 immutable
+경로로 복귀하며, 장시간·다양한 드라이버 검증 전까지 두 직접 경로 모두 opt-in입니다.
 `run_playback_soak.ps1`은 같은 영상이 섞인 타임라인에서 PTS 기반 seek와
 pause/play/stop, 파이프라인 재구축을 반복하며 지연과 private memory 증가를 검사합니다.
 기본

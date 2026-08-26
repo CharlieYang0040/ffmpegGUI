@@ -172,6 +172,7 @@ int main(int argc, char* argv[]) {
     bool loopSmoke = false;
     bool offscreenPresentationSmoke = false;
     bool deviceRemovalSmoke = false;
+    bool isolatedDirectD3dSmoke = false;
     bool hevcExportSmoke = false;
     bool gifExportSmoke = false;
     bool floatExportSmoke = false;
@@ -200,6 +201,11 @@ int main(int argc, char* argv[]) {
         }
         if (arguments[index] == "--device-removal-smoke") {
             deviceRemovalSmoke = true;
+            playbackSmoke = true;
+            continue;
+        }
+        if (arguments[index] == "--isolated-direct-d3d-smoke") {
+            isolatedDirectD3dSmoke = true;
             playbackSmoke = true;
             continue;
         }
@@ -637,9 +643,18 @@ int main(int argc, char* argv[]) {
             const bool sourceAudioDelivered = controller.audioBuffersReceived() > audioBefore;
             const bool sourcePlaybackPassed = sourceAdvanced && timelineHeadStable &&
                 sourceAudioDelivered;
+            const auto mediaCountBeforeRemoval = controller.mediaAssets().size();
+            const auto referencedBeforeRemoval = controller.mediaAssetUseCount(sourceId);
+            controller.removeMediaAsset(sourceId, true);
+            const auto removedClips = controller.clips();
+            const bool mediaRemovalPassed = referencedBeforeRemoval > 0 &&
+                controller.mediaAssets().size() == mediaCountBeforeRemoval - 1 &&
+                std::ranges::none_of(removedClips, [&sourceId](const auto& value) {
+                    return value.toMap().value("assetId").toString() == sourceId;
+                });
             const bool passed = appendPassed && appendUndoPassed && insertPassed &&
                 insertUndoPassed && overwritePassed && overwriteUndoPassed &&
-                replacePassed && replaceUndoPassed && sourcePlaybackPassed &&
+                replacePassed && replaceUndoPassed && sourcePlaybackPassed && mediaRemovalPassed &&
                 !controller.previewFailed();
             qInfo().noquote() << "source edit smoke"
                               << "append=" << appendPassed << appendUndoPassed
@@ -653,6 +668,7 @@ int main(int argc, char* argv[]) {
                               << "source_delta=" << controller.sourcePositionNs() - sourceStart
                               << "source_audio=" << sourceAudioDelivered
                               << "audio_delta=" << controller.audioBuffersReceived() - audioBefore
+                              << "media_removal=" << mediaRemovalPassed
                               << "passed=" << passed;
             application.exit(passed ? EXIT_SUCCESS : EXIT_FAILURE);
         });
@@ -1350,25 +1366,17 @@ int main(int argc, char* argv[]) {
         QTimer::singleShot(850, &controller, [&controller] { controller.scrub(500'000'000, true); });
         QTimer::singleShot(1100, &controller, &EditorController::togglePlayback);
         if (deviceRemovalSmoke) {
-            QTimer::singleShot(2200, &controller, [&application, &controller,
-                                                   &engine, &deliveredAtDeviceRemoval] {
+            QTimer::singleShot(2200, &controller, [&controller, &deliveredAtDeviceRemoval] {
                 deliveredAtDeviceRemoval = controller.videoFramesDelivered();
-                auto* previewItem = engine.rootObjects().isEmpty()
-                    ? nullptr
-                    : engine.rootObjects().front()->findChild<QObject*>(
-                          QStringLiteral("inProcessVideoPreview"));
-                if (previewItem == nullptr ||
-                    !QMetaObject::invokeMethod(
-                        previewItem, "gpuDeviceRemoved", Qt::QueuedConnection)) {
-                    application.exit(20);
-                }
+                controller.simulateGpuDeviceRemovalForTest();
             });
         }
         QTimer::singleShot(
             loopSmoke ? 9000 : (deviceRemovalSmoke ? 8000 : 5000),
             &application,
             [&application, &controller, &deliveredAtDeviceRemoval,
-             offscreenPresentationSmoke, loopSmoke, deviceRemovalSmoke] {
+             offscreenPresentationSmoke, loopSmoke, deviceRemovalSmoke,
+             isolatedDirectD3dSmoke] {
                 qInfo().noquote() << "playback smoke counters"
                                   << "received=" << controller.videoFramesReceived()
                                   << "delivered=" << controller.videoFramesDelivered()
@@ -1385,6 +1393,15 @@ int main(int argc, char* argv[]) {
                 else if (deviceRemovalSmoke &&
                          controller.videoFramesDelivered() <= deliveredAtDeviceRemoval + 2) {
                     application.exit(21);
+                }
+                else if (isolatedDirectD3dSmoke &&
+                         (!controller.directD3dCompositorEnabled() ||
+                          (qEnvironmentVariableIsSet("FFGUI_ENABLE_ISOLATED_D3D_FENCE_POOL") &&
+                           !controller.isolatedFencePoolEnabled()) ||
+                          controller.d3dCompositorInstances() == 0 ||
+                          controller.systemCompositorInstances() != 0 ||
+                          controller.cpuPreviewFallback())) {
+                    application.exit(22);
                 }
                 else if (loopSmoke &&
                          (!controller.playing() || controller.playheadNs() >= controller.durationNs())) {

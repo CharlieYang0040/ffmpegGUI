@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.1.4 Preview - 2026-08-27
+
+- 타임라인 Hover 미리보기를 켜고 끌 수 있게 했으며, 비활성 상태에서도 눈금과 트랙을
+  클릭하면 재생헤드가 해당 위치로 정확히 이동한다.
+- 미디어 목록에서 사용하지 않는 자산을 제거할 수 있게 하고, 좁은 패널에서도 추가·제거
+  버튼과 미디어 정보가 잘리지 않도록 레이아웃을 정리했다.
+- Primary Wheels를 Shadow, Midtone, Highlight, Master로 분리하고 어두움·중간·밝음 영역
+  경계를 조절하는 범위 슬라이더를 연결했다. Log Wheels와 독립된 Primary 보정이다.
+- Qt와 GStreamer가 서로 다른 D3D11 장치를 사용하는 격리형 직접 GPU 미리보기를 추가했다.
+  실험적 4-slot 경로는 공유 texture와 양방향 `ID3D11Fence`를 재사용하며, 지원하지 않는
+  장치에서는 프레임별 immutable 공유 texture로 복귀한다.
+- GPU 장치 제거 시 Scene Graph 자원을 렌더 스레드에서 먼저 폐기한 뒤 D3D decoder를
+  비활성화하고 CPU decoder/appsink의 첫 프레임으로 복구하도록 전환 순서를 고정했다.
+- 실제 Windows UI에서 MP4 가져오기, 프로그램 모니터·타임라인 표시, Hover 비활성 상태의
+  재생헤드 클릭 이동, Primary S/M/H/M 휠과 영역 범위 노출을 확인했다.
+
 ## 0.1.3 Preview - 2026-08-26
 
 - 탐색하지 않을 때 프로그램 모니터를 현재 재생헤드의 원본 해상도로 복원하고, hover가

@@ -96,6 +96,25 @@ ApplicationWindow {
             EditorController.exportTimeline()
     }
 
+    function revealPrimaryWheels() {
+        if (EditorController.selectedClipIds.length !== 1)
+            return
+        const revealExisting = function() {
+            const nodes = EditorController.selectedGradeNodes
+            for (let i = 0; i < nodes.length; ++i) {
+                if (nodes[i].type === 0) {
+                    root.expandedGradeNode = nodes[i].id
+                    return true
+                }
+            }
+            return false
+        }
+        if (!revealExisting()) {
+            EditorController.addGradeNode(0)
+            Qt.callLater(revealExisting)
+        }
+    }
+
     component ColorWheel: Item {
         property string nodeId
         property string label
@@ -565,6 +584,26 @@ ApplicationWindow {
                   + "개 있습니다. 미리보기의 MISSING FRAME 화면 대신 시간상 가장 가까운 정상 프레임으로 대체해 출력합니다."
         }
     }
+    Dialog {
+        id: removeMediaDialog
+        property string assetId: ""
+        property string assetName: ""
+        property int useCount: 0
+        anchors.centerIn: parent
+        modal: true
+        title: "미디어 제거"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onAccepted: EditorController.removeMediaAsset(assetId, true)
+        Label {
+            width: 420
+            wrapMode: Text.WordWrap
+            text: removeMediaDialog.useCount > 0
+                  ? "'" + removeMediaDialog.assetName + "'을 보관함에서 제거하면 타임라인에서 사용 중인 클립 " +
+                    removeMediaDialog.useCount + "개도 함께 제거됩니다. 이 작업은 실행 취소할 수 없습니다."
+                  : "'" + removeMediaDialog.assetName + "'을 미디어 보관함에서 제거합니다. " +
+                    "원본 파일은 삭제하지 않습니다."
+        }
+    }
 
     DropArea {
         id: externalFileDrop
@@ -715,8 +754,8 @@ ApplicationWindow {
                 orientation: Qt.Horizontal
 
             Frame {
-                SplitView.preferredWidth: 300
-                SplitView.minimumWidth: 240
+                SplitView.preferredWidth: 330
+                SplitView.minimumWidth: 300
                 background: Rectangle { color: "#151a20" }
 
                 ColumnLayout {
@@ -794,7 +833,8 @@ ApplicationWindow {
 
                                 Image {
                                     id: mediaThumbnail
-                                    Layout.preferredWidth: mediaBin.filmstripMode ? 142 : 76
+                                    Layout.preferredWidth: mediaBin.filmstripMode ? 108 : 64
+                                    Layout.minimumWidth: mediaBin.filmstripMode ? 108 : 64
                                     Layout.fillHeight: true
                                     source: mediaCard.modelData.thumbnailAtlas.length > 0
                                         ? "file:///" + mediaCard.modelData.thumbnailAtlas.replace(/\\/g, "/")
@@ -866,6 +906,7 @@ ApplicationWindow {
                                         ComboBox {
                                             id: inputColorSpaceBox
                                             Layout.fillWidth: true
+                                            Layout.minimumWidth: 72
                                             implicitHeight: 25
                                             enabled: !EditorController.importing
                                             editable: true
@@ -941,14 +982,39 @@ ApplicationWindow {
                                         }
                                     }
                                 }
-                                AppButton {
-                                    text: "+"
-                                    implicitWidth: 30
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: "타임라인 끝에 추가  E"
-                                    onClicked: {
-                                        EditorController.openSourceAsset(mediaCard.assetId)
-                                        EditorController.appendSelectedSource()
+                                ColumnLayout {
+                                    Layout.preferredWidth: 32
+                                    Layout.minimumWidth: 32
+                                    spacing: 5
+                                    AppButton {
+                                        text: "+"
+                                        implicitWidth: 30
+                                        Layout.preferredWidth: 30
+                                        Layout.minimumWidth: 30
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: "타임라인 끝에 추가  E"
+                                        onClicked: {
+                                            EditorController.openSourceAsset(mediaCard.assetId)
+                                            EditorController.appendSelectedSource()
+                                        }
+                                    }
+                                    AppButton {
+                                        text: "×"
+                                        implicitWidth: 30
+                                        Layout.preferredWidth: 30
+                                        Layout.minimumWidth: 30
+                                        compact: true
+                                        danger: true
+                                        enabled: !EditorController.importing && !EditorController.exporting
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: "미디어 보관함에서 제거"
+                                        onClicked: {
+                                            removeMediaDialog.assetId = mediaCard.assetId
+                                            removeMediaDialog.assetName = mediaCard.modelData.name
+                                            removeMediaDialog.useCount = EditorController.mediaAssetUseCount(
+                                                mediaCard.assetId)
+                                            removeMediaDialog.open()
+                                        }
                                     }
                                 }
                             }
@@ -2416,11 +2482,36 @@ ApplicationWindow {
                             ComboBox {
                                 id: gradeNodePicker
                                 Layout.fillWidth: true
-                                model: ["Primary Wheels", "Log Wheels", "RGB Mixer", "RGB Curves", "Hue Curves", "HDR Zones", "Color Warper"]
+                                model: ["Primary Wheels · Shadow / Midtone / Highlight", "Log Wheels", "RGB Mixer", "RGB Curves", "Hue Curves", "HDR Zones", "Color Warper"]
                             }
                             AppButton {
                                 text: "노드 추가"
                                 onClicked: EditorController.addGradeNode(gradeNodePicker.currentIndex)
+                            }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: logWheelsShortcut.implicitHeight + 14
+                            radius: 6
+                            color: "#1c2732"
+                            border.color: "#42566d"
+                            RowLayout {
+                                id: logWheelsShortcut
+                                anchors.fill: parent
+                                anchors.margins: 7
+                                Label {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    text: "Primary Wheels에서 Shadow · Midtone · Highlight를 각각 조절하고 영역 경계도 정할 수 있습니다."
+                                    color: "#b8c9db"
+                                    font.pixelSize: 10
+                                }
+                                AppButton {
+                                    text: "Primary S / M / H 열기"
+                                    enabled: EditorController.selectedClipIds.length === 1
+                                    highlighted: true
+                                    onClicked: root.revealPrimaryWheels()
+                                }
                             }
                         }
                         RowLayout {
@@ -2571,6 +2662,7 @@ ApplicationWindow {
                                         sourceComponent: Component {
                                             GridLayout {
                                                 id: gradeBody
+                                                property bool showLegacyPrimaryWheels: false
                                                 width: gradeBodyLoader.width
                                                 columns: 2
                                         Label { text: "이름"; color: "#9aa7b7" }
@@ -2604,49 +2696,16 @@ ApplicationWindow {
                                                 }
                                             }
                                         }
-                                        RowLayout {
+                                        GridLayout {
                                             Layout.columnSpan: 2
                                             Layout.fillWidth: true
                                             visible: gradeNode.modelData.type === 0
+                                            columns: 2
+                                            columnSpacing: 8
+                                            rowSpacing: 6
                                             ColorWheel {
-                                                nodeId: gradeNode.modelData.id; label: "Lift"
-                                                redKey: "liftR"; greenKey: "liftG"; blueKey: "liftB"
-                                                redValue: gradeNode.modelData.parameters.liftR || 0
-                                                greenValue: gradeNode.modelData.parameters.liftG || 0
-                                                blueValue: gradeNode.modelData.parameters.liftB || 0
-                                                neutralValue: 0; range: 0.5
-                                            }
-                                            ColorWheel {
-                                                nodeId: gradeNode.modelData.id; label: "Gamma"
-                                                redKey: "gammaR"; greenKey: "gammaG"; blueKey: "gammaB"
-                                                redValue: gradeNode.modelData.parameters.gammaR || 1
-                                                greenValue: gradeNode.modelData.parameters.gammaG || 1
-                                                blueValue: gradeNode.modelData.parameters.gammaB || 1
-                                                neutralValue: 1; range: 0.5
-                                            }
-                                            ColorWheel {
-                                                nodeId: gradeNode.modelData.id; label: "Gain"
-                                                redKey: "gainR"; greenKey: "gainG"; blueKey: "gainB"
-                                                redValue: gradeNode.modelData.parameters.gainR || 1
-                                                greenValue: gradeNode.modelData.parameters.gainG || 1
-                                                blueValue: gradeNode.modelData.parameters.gainB || 1
-                                                neutralValue: 1; range: 0.5
-                                            }
-                                            ColorWheel {
-                                                nodeId: gradeNode.modelData.id; label: "Offset"
-                                                redKey: "offsetR"; greenKey: "offsetG"; blueKey: "offsetB"
-                                                redValue: gradeNode.modelData.parameters.offsetR || 0
-                                                greenValue: gradeNode.modelData.parameters.offsetG || 0
-                                                blueValue: gradeNode.modelData.parameters.offsetB || 0
-                                                neutralValue: 0; range: 0.5
-                                            }
-                                        }
-                                        RowLayout {
-                                            Layout.columnSpan: 2
-                                            Layout.fillWidth: true
-                                            visible: gradeNode.modelData.type === 1
-                                            ColorWheel {
-                                                nodeId: gradeNode.modelData.id; label: "Shadow"
+                                                Layout.fillWidth: true
+                                                nodeId: gradeNode.modelData.id; label: "Shadow (어두움)"
                                                 redKey: "shadowR"; greenKey: "shadowG"; blueKey: "shadowB"
                                                 redValue: gradeNode.modelData.parameters.shadowR || 0
                                                 greenValue: gradeNode.modelData.parameters.shadowG || 0
@@ -2654,7 +2713,8 @@ ApplicationWindow {
                                                 neutralValue: 0; range: 0.5
                                             }
                                             ColorWheel {
-                                                nodeId: gradeNode.modelData.id; label: "Midtone"
+                                                Layout.fillWidth: true
+                                                nodeId: gradeNode.modelData.id; label: "Midtone (중간)"
                                                 redKey: "midtoneR"; greenKey: "midtoneG"; blueKey: "midtoneB"
                                                 redValue: gradeNode.modelData.parameters.midtoneR || 0
                                                 greenValue: gradeNode.modelData.parameters.midtoneG || 0
@@ -2662,7 +2722,8 @@ ApplicationWindow {
                                                 neutralValue: 0; range: 0.5
                                             }
                                             ColorWheel {
-                                                nodeId: gradeNode.modelData.id; label: "Highlight"
+                                                Layout.fillWidth: true
+                                                nodeId: gradeNode.modelData.id; label: "Highlight (밝음)"
                                                 redKey: "highlightR"; greenKey: "highlightG"; blueKey: "highlightB"
                                                 redValue: gradeNode.modelData.parameters.highlightR || 0
                                                 greenValue: gradeNode.modelData.parameters.highlightG || 0
@@ -2670,7 +2731,8 @@ ApplicationWindow {
                                                 neutralValue: 0; range: 0.5
                                             }
                                             ColorWheel {
-                                                nodeId: gradeNode.modelData.id; label: "Master"
+                                                Layout.fillWidth: true
+                                                nodeId: gradeNode.modelData.id; label: "Master (전체)"
                                                 redKey: "offsetR"; greenKey: "offsetG"; blueKey: "offsetB"
                                                 redValue: gradeNode.modelData.parameters.offsetR || 0
                                                 greenValue: gradeNode.modelData.parameters.offsetG || 0
@@ -2678,13 +2740,99 @@ ApplicationWindow {
                                                 neutralValue: 0; range: 0.5
                                             }
                                         }
-                                        ColumnLayout {
+                                        GridLayout {
                                             Layout.columnSpan: 2
                                             Layout.fillWidth: true
                                             visible: gradeNode.modelData.type === 1
+                                            columns: 2
+                                            columnSpacing: 8
+                                            rowSpacing: 6
+                                            ColorWheel {
+                                                Layout.fillWidth: true
+                                                nodeId: gradeNode.modelData.id; label: "Shadow (어두움)"
+                                                redKey: "shadowR"; greenKey: "shadowG"; blueKey: "shadowB"
+                                                redValue: gradeNode.modelData.parameters.shadowR || 0
+                                                greenValue: gradeNode.modelData.parameters.shadowG || 0
+                                                blueValue: gradeNode.modelData.parameters.shadowB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                Layout.fillWidth: true
+                                                nodeId: gradeNode.modelData.id; label: "Midtone (중간)"
+                                                redKey: "midtoneR"; greenKey: "midtoneG"; blueKey: "midtoneB"
+                                                redValue: gradeNode.modelData.parameters.midtoneR || 0
+                                                greenValue: gradeNode.modelData.parameters.midtoneG || 0
+                                                blueValue: gradeNode.modelData.parameters.midtoneB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                Layout.fillWidth: true
+                                                nodeId: gradeNode.modelData.id; label: "Highlight (밝음)"
+                                                redKey: "highlightR"; greenKey: "highlightG"; blueKey: "highlightB"
+                                                redValue: gradeNode.modelData.parameters.highlightR || 0
+                                                greenValue: gradeNode.modelData.parameters.highlightG || 0
+                                                blueValue: gradeNode.modelData.parameters.highlightB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                Layout.fillWidth: true
+                                                nodeId: gradeNode.modelData.id; label: "Master (전체)"
+                                                redKey: "offsetR"; greenKey: "offsetG"; blueKey: "offsetB"
+                                                redValue: gradeNode.modelData.parameters.offsetR || 0
+                                                greenValue: gradeNode.modelData.parameters.offsetG || 0
+                                                blueValue: gradeNode.modelData.parameters.offsetB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                        }
+                                        AppButton {
+                                            Layout.columnSpan: 2
+                                            visible: gradeNode.modelData.type === 0
+                                            compact: true
+                                            text: gradeBody.showLegacyPrimaryWheels
+                                                  ? "기존 Lift / Gamma / Gain 접기"
+                                                  : "기존 Lift / Gamma / Gain 호환 조절"
+                                            onClicked: gradeBody.showLegacyPrimaryWheels =
+                                                       !gradeBody.showLegacyPrimaryWheels
+                                        }
+                                        RowLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 0 &&
+                                                     gradeBody.showLegacyPrimaryWheels
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Lift (기존)"
+                                                redKey: "liftR"; greenKey: "liftG"; blueKey: "liftB"
+                                                redValue: gradeNode.modelData.parameters.liftR || 0
+                                                greenValue: gradeNode.modelData.parameters.liftG || 0
+                                                blueValue: gradeNode.modelData.parameters.liftB || 0
+                                                neutralValue: 0; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Gamma (기존)"
+                                                redKey: "gammaR"; greenKey: "gammaG"; blueKey: "gammaB"
+                                                redValue: gradeNode.modelData.parameters.gammaR || 1
+                                                greenValue: gradeNode.modelData.parameters.gammaG || 1
+                                                blueValue: gradeNode.modelData.parameters.gammaB || 1
+                                                neutralValue: 1; range: 0.5
+                                            }
+                                            ColorWheel {
+                                                nodeId: gradeNode.modelData.id; label: "Gain (기존)"
+                                                redKey: "gainR"; greenKey: "gainG"; blueKey: "gainB"
+                                                redValue: gradeNode.modelData.parameters.gainR || 1
+                                                greenValue: gradeNode.modelData.parameters.gainG || 1
+                                                blueValue: gradeNode.modelData.parameters.gainB || 1
+                                                neutralValue: 1; range: 0.5
+                                            }
+                                        }
+                                        ColumnLayout {
+                                            Layout.columnSpan: 2
+                                            Layout.fillWidth: true
+                                            visible: gradeNode.modelData.type === 0 ||
+                                                     gradeNode.modelData.type === 1
                                             spacing: 3
                                             Label {
-                                                text: "Log 영역 범위 · Shadow / Midtone / Highlight"
+                                                text: (gradeNode.modelData.type === 0 ? "Primary" : "Log") +
+                                                      " 영역 범위 · Shadow / Midtone / Highlight"
                                                 color: "#9aa7b7"; font.pixelSize: 10
                                             }
                                             Canvas {
@@ -3363,6 +3511,20 @@ ApplicationWindow {
                         ToolTip.visible: hovered
                         ToolTip.text: "스냅 켜기/끄기"
                     }
+                    AppButton {
+                        implicitWidth: 104
+                        Layout.preferredWidth: 104
+                        Layout.minimumWidth: 104
+                        text: "Hover 미리보기"
+                        compact: true
+                        highlighted: EditorController.timelineHoverPreviewEnabled
+                        onClicked: EditorController.timelineHoverPreviewEnabled =
+                            !EditorController.timelineHoverPreviewEnabled
+                        ToolTip.visible: hovered
+                        ToolTip.text: EditorController.timelineHoverPreviewEnabled
+                                      ? "타임라인 마우스오버 미리보기 끄기"
+                                      : "타임라인 마우스오버 미리보기 켜기"
+                    }
                     ComboBox {
                         Layout.preferredWidth: 105
                         model: ["필름+파형", "필름스트립", "파형", "이름만"]
@@ -3678,7 +3840,8 @@ ApplicationWindow {
                         anchors.fill: parent
                         durationNs: EditorController.durationNs
                         playheadNs: EditorController.playheadNs
-                        skimmingEnabled: !EditorController.playing
+                        skimmingEnabled: !EditorController.playing &&
+                                         EditorController.timelineHoverPreviewEnabled
                         inPointNs: EditorController.inPointNs
                         outPointNs: EditorController.outPointNs
                         clips: EditorController.clips

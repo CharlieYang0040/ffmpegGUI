@@ -79,12 +79,17 @@ void GradeNode::validate() const {
             throw std::invalid_argument("grade parameter keyframes are invalid");
         }
     }
-    if (type == GradeNodeType::log_wheels) {
+    if (type == GradeNodeType::primary || type == GradeNodeType::log_wheels) {
         const auto low = parameters.find("lowRange");
         const auto high = parameters.find("highRange");
-        if (low == parameters.end() || high == parameters.end() || low->second < 0.01 ||
+        // Primary nodes from projects created before S/M/H wheels do not carry
+        // range keys and continue to use the default 0.25/0.75 crossover.
+        if (type == GradeNodeType::primary && low == parameters.end() &&
+            high == parameters.end()) {
+            // Backward-compatible legacy Primary node.
+        } else if (low == parameters.end() || high == parameters.end() || low->second < 0.01 ||
             high->second > 0.99 || high->second - low->second < 0.02) {
-            throw std::invalid_argument("log wheel tonal ranges are invalid");
+            throw std::invalid_argument("primary/log wheel tonal ranges are invalid");
         }
     }
     if (type == GradeNodeType::lut && external_path.empty()) {
@@ -221,7 +226,11 @@ GradeNode make_default_grade_node(GradeNodeType type, std::string id) {
             {"hue", 0.0}, {"colorBoost", 0.0}, {"liftR", 0.0}, {"liftG", 0.0},
             {"liftB", 0.0}, {"gammaR", 1.0}, {"gammaG", 1.0}, {"gammaB", 1.0},
             {"gainR", 1.0}, {"gainG", 1.0}, {"gainB", 1.0},
-            {"offsetR", 0.0}, {"offsetG", 0.0}, {"offsetB", 0.0}};
+            {"offsetR", 0.0}, {"offsetG", 0.0}, {"offsetB", 0.0},
+            {"shadowR", 0.0}, {"shadowG", 0.0}, {"shadowB", 0.0},
+            {"midtoneR", 0.0}, {"midtoneG", 0.0}, {"midtoneB", 0.0},
+            {"highlightR", 0.0}, {"highlightG", 0.0}, {"highlightB", 0.0},
+            {"lowRange", 0.25}, {"highRange", 0.75}};
     } else if (type == GradeNodeType::log_wheels) {
         node.parameters = {
             {"shadowR", 0.0}, {"shadowG", 0.0}, {"shadowB", 0.0},

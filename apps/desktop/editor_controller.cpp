@@ -40,6 +40,7 @@
 #include <QtConcurrentRun>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -48,6 +49,7 @@
 #include <ranges>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef FFGUI_HAS_GES
@@ -296,6 +298,8 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     QSettings settings;
     preview_quality_ = std::clamp(settings.value(
         QStringLiteral("preview/adaptiveMaximum"), 2).toInt(), 0, 2);
+    timeline_hover_preview_enabled_ = settings.value(
+        QStringLiteral("timeline/hoverPreviewEnabled"), true).toBool();
     output_directory_ = settings.value(QStringLiteral("output/lastDirectory")).toString();
     if (output_directory_.isEmpty()) {
         output_directory_ = QDir(
@@ -500,6 +504,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     use_d3d_scene_graph_ =
         qEnvironmentVariableIntValue("FFGUI_ENABLE_D3D_PREVIEW") == 1 &&
         qEnvironmentVariableIntValue("FFGUI_FORCE_CPU_PREVIEW") != 1;
+    accept_gpu_preview_frames_.store(use_d3d_scene_graph_, std::memory_order_release);
     in_process_preview_ = true;
     player_ = std::make_unique<ffgui::GesSequencePlayer>(
         use_d3d_scene_graph_ ? "d3d11-appsink" : "cpu-appsink",
@@ -511,6 +516,10 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
     }
     player_->set_preview_resolution(1280, 720);
     player_->set_video_frame_callback([this](ffgui::PreviewVideoFrame frame) {
+        if (frame.texture != nullptr &&
+            !accept_gpu_preview_frames_.load(std::memory_order_acquire)) {
+            return;
+        }
         if (frame.cpu_format == ffgui::PreviewCpuFormat::rgba16le) {
             QMetaObject::invokeMethod(this, [this, frame = std::move(frame)]() mutable {
                 submitFloatVideoFrame(std::move(frame));
@@ -640,6 +649,7 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
             [this, message = std::move(message)] {
                 qWarning().noquote() << "GStreamer playback error:"
                                      << QString::fromUtf8(message);
+                if (cpu_preview_recovery_pending_) return;
                 if (use_d3d_scene_graph_ && !cpu_preview_fallback_) {
                     // Any native preview error is enough to retire the experimental
                     // GPU graph for this session.  Rebuilding the same failed D3D
@@ -736,6 +746,14 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
         this,
         [this] {
             const auto result = preview_watcher_.result();
+            if (cpu_preview_recovery_pending_ && !cpu_preview_backend_configured_) {
+                if (preview_busy_) {
+                    preview_busy_ = false;
+                    emit previewBusyChanged();
+                }
+                continueCpuPreviewRecovery();
+                return;
+            }
             const bool generationAdvanced = result.generation != preview_generation_;
             const bool retryPending = preview_operation_pending_ || generationAdvanced;
             const bool recoverableSeekFailure =
@@ -760,6 +778,14 @@ EditorController::EditorController(QObject* parent) : QObject(parent) {
                 // before Qt invalidates its scene graph, so also fall back at the
                 // operation boundary where the failure is deterministic.
                 recoverCpuPreview();
+            }
+            if (cpu_preview_recovery_pending_ && !cpu_preview_backend_configured_) {
+                if (preview_busy_) {
+                    preview_busy_ = false;
+                    emit previewBusyChanged();
+                }
+                continueCpuPreviewRecovery();
+                return;
             }
             if (result.success) {
                 preview_seek_retry_used_ = false;
@@ -1438,6 +1464,14 @@ QVariantList EditorController::mediaAssets() const {
                              << "assets=" << media_assets_cache_->size();
     }
     return media_assets_cache_.value();
+}
+
+bool EditorController::isolatedFencePoolEnabled() const noexcept {
+#ifdef FFGUI_HAS_GES
+    return player_ && player_->isolated_fence_pool_enabled();
+#else
+    return false;
+#endif
 }
 
 int EditorController::mediaAssetUseCount(const QString& assetId) const {
@@ -2178,16 +2212,44 @@ void EditorController::setGradeParameters(
     const auto sourceTime = selectedClipSourceTime();
     bool changed = false;
     bool editsAnimation = false;
+    if (node->type == ffgui::GradeNodeType::primary) {
+        static constexpr std::array primaryTonalKeys{
+            "shadowR", "shadowG", "shadowB", "midtoneR", "midtoneG", "midtoneB",
+            "highlightR", "highlightG", "highlightB", "lowRange", "highRange"};
+        const auto requestsPrimaryTonalEdit = std::ranges::any_of(
+            primaryTonalKeys, [&parameters](const char* key) {
+                return parameters.contains(QString::fromLatin1(key));
+            });
+        if (requestsPrimaryTonalEdit) {
+            for (const auto* key : primaryTonalKeys) {
+                const auto defaultValue = std::string_view(key) == "lowRange" ? 0.25
+                    : std::string_view(key) == "highRange" ? 0.75 : 0.0;
+                changed = node->parameters.emplace(key, defaultValue).second || changed;
+            }
+        }
+    }
     for (auto iterator = parameters.cbegin(); iterator != parameters.cend(); ++iterator) {
         const auto key = iterator.key().toStdString();
-        if (key.empty() || !node->parameters.contains(key)) continue;
+        if (key.empty()) continue;
+        const bool primaryTonalParameter = node->type == ffgui::GradeNodeType::primary &&
+            (key == "shadowR" || key == "shadowG" || key == "shadowB" ||
+             key == "midtoneR" || key == "midtoneG" || key == "midtoneB" ||
+             key == "highlightR" || key == "highlightG" || key == "highlightB" ||
+             key == "lowRange" || key == "highRange");
+        if (!node->parameters.contains(key)) {
+            if (!primaryTonalParameter) continue;
+            node->parameters[key] = key == "lowRange" ? 0.25
+                : key == "highRange" ? 0.75 : 0.0;
+        }
         auto value = iterator.value().toDouble();
         if (!std::isfinite(value)) continue;
-        if (node->type == ffgui::GradeNodeType::log_wheels && key == "lowRange") {
+        const bool tonalWheels = node->type == ffgui::GradeNodeType::primary ||
+            node->type == ffgui::GradeNodeType::log_wheels;
+        if (tonalWheels && key == "lowRange") {
             const auto high = node->parameters.contains("highRange")
                 ? node->parameters["highRange"] : 0.75;
             value = std::clamp(value, 0.01, high - 0.02);
-        } else if (node->type == ffgui::GradeNodeType::log_wheels && key == "highRange") {
+        } else if (tonalWheels && key == "highRange") {
             const auto low = node->parameters.contains("lowRange")
                 ? node->parameters["lowRange"] : 0.25;
             value = std::clamp(value, low + 0.02, 0.99);
@@ -2214,7 +2276,8 @@ void EditorController::setGradeParameters(
     }
     if (!changed) return;
     node->validate();
-    if (node->type == ffgui::GradeNodeType::log_wheels &&
+    if ((node->type == ffgui::GradeNodeType::primary ||
+         node->type == ffgui::GradeNodeType::log_wheels) &&
         pixel_inspector_trace_.value(QStringLiteral("nodeId")).toString() == nodeId) {
         const auto normalized = std::max(0.0, pixel_inspector_trace_.value(
             QStringLiteral("luma")).toDouble());
@@ -2224,8 +2287,12 @@ void EditorController::setGradeParameters(
                 std::max(0.0001, second - first), 0.0, 1.0);
             return amount * amount * (3.0 - 2.0 * amount);
         };
-        const auto shadow = 1.0 - smooth(0.0, node->parameters["lowRange"], luma);
-        const auto highlight = smooth(node->parameters["highRange"], 1.0, luma);
+        const auto lowRange = node->parameters.contains("lowRange")
+            ? node->parameters.at("lowRange") : 0.25;
+        const auto highRange = node->parameters.contains("highRange")
+            ? node->parameters.at("highRange") : 0.75;
+        const auto shadow = 1.0 - smooth(0.0, lowRange, luma);
+        const auto highlight = smooth(highRange, 1.0, luma);
         pixel_inspector_trace_[QStringLiteral("shadowWeight")] = shadow;
         pixel_inspector_trace_[QStringLiteral("midtoneWeight")] =
             std::max(0.0, 1.0 - shadow - highlight);
@@ -2327,6 +2394,14 @@ void EditorController::attachVideoItem(QObject* item) {
     });
     connect(videoItem, &VideoPreviewItem::gpuDeviceRemoved, this, [this] {
         recoverCpuPreview();
+    });
+    connect(videoItem, &VideoPreviewItem::gpuResourcesRetired, this,
+            [this](bool deviceLost) {
+        if (!cpu_preview_recovery_pending_) return;
+        cpu_preview_gpu_resources_retired_ = true;
+        qInfo().noquote() << "GPU preview resources retired"
+                          << "device_lost=" << deviceLost;
+        continueCpuPreviewRecovery();
     });
 #ifdef FFGUI_HAS_GES
     if (use_d3d_scene_graph_) {
@@ -2501,6 +2576,51 @@ void EditorController::loadUrls(const QList<QUrl>& urls) {
         }
     }
     loadFiles(paths);
+}
+
+void EditorController::removeMediaAsset(const QString& assetId, bool removeTimelineClips) {
+    if (importing_ || exporting_) {
+        setStatus(QStringLiteral("가져오기 또는 출력이 끝난 후 미디어를 제거하세요"));
+        return;
+    }
+    const auto id = assetId.toStdString();
+    if (timeline_.asset(id) == nullptr) return;
+    std::vector<std::string> referencedClips;
+    for (const auto& clip : timeline_.clips()) {
+        if (clip.asset_id == id) referencedClips.push_back(clip.id);
+    }
+    if (!referencedClips.empty() && !removeTimelineClips) {
+        setStatus(QStringLiteral("타임라인에서 사용 중인 미디어입니다"));
+        return;
+    }
+    try {
+        if (selected_source_asset_id_ == assetId) closeSourceViewer();
+        if (!referencedClips.empty()) timeline_.erase_clips(referencedClips);
+        timeline_.erase_asset(id);
+        // Asset removal is deliberately not undoable: retaining an edit snapshot
+        // that points to an erased source would make a later undo invalid.
+        timeline_.clear_history();
+        source_ranges_.remove(assetId);
+        thumbnail_atlases_.remove(assetId);
+        thumbnail_images_.remove(assetId);
+        media_source_sizes_.remove(assetId);
+        waveform_cache_.remove(assetId);
+        const auto selectedStillExists = std::ranges::any_of(
+            timeline_.clips(), [this](const auto& clip) {
+                return clip.id == selected_clip_id_.toStdString();
+            });
+        if (!selectedStillExists) {
+            setSingleSelection(timeline_.clips().empty()
+                ? QString{} : QString::fromStdString(timeline_.clips().front().id));
+        }
+        publishTimeline(false);
+        setStatus(referencedClips.empty()
+            ? QStringLiteral("미디어 보관함에서 제거했습니다")
+            : QStringLiteral("미디어와 사용 중이던 타임라인 클립 %1개를 제거했습니다")
+                  .arg(static_cast<qulonglong>(referencedClips.size())));
+    } catch (const std::exception& error) {
+        setStatus(QString::fromUtf8(error.what()));
+    }
 }
 
 void EditorController::updateExrSelection(
@@ -3315,6 +3435,10 @@ void EditorController::presentPreviewFrame(ffgui::PreviewVideoFrame frame) {
     }
     auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
     if (item == nullptr) return;
+    const auto cpuFrame = frame.cpu_pixels != nullptr;
+    if (cpuFrame && cpu_preview_recovery_pending_ && cpu_preview_backend_configured_) {
+        completeCpuPreviewRecovery();
+    }
     const bool liveSkim = playing_ || skim_target_ns_.has_value() || audio_skimming_ || scrubbing_;
     if (!liveSkim && grade_matte_mode_ > 0 && !grade_matte_node_id_.isEmpty() &&
         frame.cpu_pixels != nullptr && frame.cpu_format == ffgui::PreviewCpuFormat::bgra8) {
@@ -3379,17 +3503,106 @@ void EditorController::presentPreviewFrame(ffgui::PreviewVideoFrame frame) {
 }
 
 void EditorController::recoverCpuPreview() {
-    if (cpu_preview_fallback_ || !use_d3d_scene_graph_) return;
+    if (cpu_preview_recovery_pending_ || cpu_preview_fallback_ || !use_d3d_scene_graph_) return;
+    auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
+    const auto removedReason = item != nullptr
+        ? item->deviceRemovedReason() : static_cast<long>(0);
+    const auto deviceLost = (item != nullptr && item->deviceLost()) || removedReason < 0;
+    beginCpuPreviewRecovery(
+        deviceLost, deviceLost,
+        deviceLost
+            ? QStringLiteral("D3D11 장치 제거 0x%1").arg(
+                  static_cast<quint32>(removedReason), 8, 16, QLatin1Char('0'))
+            : QStringLiteral("GPU 미리보기 파이프라인 오류"));
+}
+
+void EditorController::simulateGpuDeviceRemovalForTest() {
+    if (cpu_preview_recovery_pending_ || cpu_preview_fallback_ || !use_d3d_scene_graph_) return;
+    beginCpuPreviewRecovery(
+        true, false, QStringLiteral("테스트 장치 손실 신호"));
+}
+
+void EditorController::beginCpuPreviewRecovery(
+    bool retireAsDeviceLost, bool resetSceneGraph, const QString& reason) {
+    if (cpu_preview_recovery_pending_ || cpu_preview_fallback_ || !use_d3d_scene_graph_) return;
+    qWarning().noquote() << "CPU preview recovery started"
+                         << "reason=" << reason
+                         << "retire_device=" << retireAsDeviceLost
+                         << "reset_scene_graph=" << resetSceneGraph
+                         << "generation=" << preview_generation_;
+    cpu_preview_recovery_pending_ = true;
+    cpu_preview_gpu_resources_retired_ = false;
+    cpu_preview_backend_configured_ = false;
+    cpu_preview_reset_scene_graph_ = resetSceneGraph;
+    accept_gpu_preview_frames_.store(false, std::memory_order_release);
     use_d3d_scene_graph_ = false;
     cpu_preview_fallback_ = true;
 #ifdef FFGUI_HAS_GES
-    player_->fallback_to_cpu_preview();
     ++preview_generation_;
     preview_applied_generation_.reset();
-    if (!preview_snapshot_.empty()) queuePreviewOperation(true);
+    preview_update_timer_.stop();
+    preview_operation_pending_ = false;
+    preview_color_only_pending_ = false;
+    pending_live_seek_.reset();
+    {
+        std::scoped_lock lock(pending_video_frame_mutex_);
+        pending_video_frame_.reset();
+    }
 #endif
     emit previewPathChanged();
-    setStatus(QStringLiteral("GPU 장치가 제거되어 CPU 미리보기로 복구했습니다"));
+    setStatus(QStringLiteral("GPU 미리보기 정리 중 · %1").arg(reason));
+    if (auto* item = qobject_cast<VideoPreviewItem*>(video_item_)) {
+        item->retireGpuResources(retireAsDeviceLost);
+    } else {
+        cpu_preview_gpu_resources_retired_ = true;
+        continueCpuPreviewRecovery();
+    }
+}
+
+void EditorController::continueCpuPreviewRecovery() {
+    if (!cpu_preview_recovery_pending_ || !cpu_preview_gpu_resources_retired_ ||
+        cpu_preview_backend_configured_) {
+        return;
+    }
+#ifdef FFGUI_HAS_GES
+    if (preview_watcher_.isRunning() || live_seek_watcher_.isRunning()) {
+        QTimer::singleShot(25, this, &EditorController::continueCpuPreviewRecovery);
+        return;
+    }
+#endif
+    if (cpu_preview_reset_scene_graph_) {
+        auto* item = qobject_cast<VideoPreviewItem*>(video_item_);
+        auto* previewWindow = item != nullptr ? item->window() : nullptr;
+        if (previewWindow != nullptr) {
+            previewWindow->setPersistentGraphics(false);
+            previewWindow->setPersistentSceneGraph(false);
+            previewWindow->releaseResources();
+            previewWindow->update();
+            qWarning().noquote() << "Qt Quick scene graph reset requested after device loss";
+        }
+    }
+#ifdef FFGUI_HAS_GES
+    player_->fallback_to_cpu_preview();
+    pending_preview_seek_ = playhead_ns_;
+    cpu_preview_backend_configured_ = true;
+    setStatus(QStringLiteral("CPU 미리보기 재구축 중"));
+    if (!preview_snapshot_.empty()) queuePreviewOperation(true);
+    else completeCpuPreviewRecovery();
+#else
+    cpu_preview_backend_configured_ = true;
+    completeCpuPreviewRecovery();
+#endif
+}
+
+void EditorController::completeCpuPreviewRecovery() {
+    if (!cpu_preview_recovery_pending_ || !cpu_preview_backend_configured_) return;
+    cpu_preview_recovery_pending_ = false;
+    cpu_preview_reset_scene_graph_ = false;
+    emit previewPathChanged();
+    setStatus(QStringLiteral("GPU 미리보기를 중단하고 CPU 미리보기로 복구했습니다"));
+    qInfo().noquote() << "CPU preview recovery completed"
+                      << "generation=" << preview_generation_
+                      << "delivered=" << video_frames_delivered_;
 }
 
 void EditorController::inspectPreviewPixel(qreal x, qreal y, const QString& activeNodeId) {
@@ -3982,6 +4195,7 @@ void EditorController::selectClip(const QString& clipId, int mode) {
 }
 
 void EditorController::skim(qint64 timelinePosition, bool active) {
+    if (!timeline_hover_preview_enabled_) return;
     if (playing_ || durationNs() <= 0) return;
     const auto target = active
         ? std::clamp<qint64>(timelinePosition, 0, durationNs())
@@ -4352,6 +4566,19 @@ void EditorController::setTimelineSnapping(bool enabled) {
     if (timeline_snapping_ == enabled) return;
     timeline_snapping_ = enabled;
     emit editUiChanged();
+}
+
+void EditorController::setTimelineHoverPreviewEnabled(bool enabled) {
+    if (timeline_hover_preview_enabled_ == enabled) return;
+    timeline_hover_preview_enabled_ = enabled;
+    QSettings().setValue(QStringLiteral("timeline/hoverPreviewEnabled"), enabled);
+    if (!enabled && skim_target_ns_.has_value()) {
+        skim_target_ns_.reset();
+        restorePlayheadPreview();
+    }
+    emit editUiChanged();
+    setStatus(enabled ? QStringLiteral("타임라인 Hover 미리보기 켜짐")
+                      : QStringLiteral("타임라인 Hover 미리보기 꺼짐"));
 }
 
 void EditorController::setPreviewQuality(int quality) {
@@ -6842,7 +7069,8 @@ void EditorController::finishExport(bool success) {
 
 void EditorController::queuePreviewOperation(bool restorePosition) {
 #ifdef FFGUI_HAS_GES
-    if (preview_suspended_for_export_) return;
+    if (preview_suspended_for_export_ ||
+        (cpu_preview_recovery_pending_ && !cpu_preview_backend_configured_)) return;
     preview_update_timer_.stop();
     if (restorePosition) pending_preview_seek_ = playhead_ns_;
     preview_operation_pending_ = true;
@@ -6854,7 +7082,7 @@ void EditorController::queuePreviewOperation(bool restorePosition) {
 
 void EditorController::queueLiveSeek(qint64 timelinePosition) {
 #ifdef FFGUI_HAS_GES
-    if (preview_suspended_for_export_ || player_ == nullptr) return;
+    if (preview_suspended_for_export_ || cpu_preview_recovery_pending_ || player_ == nullptr) return;
     pending_live_seek_ = timelinePosition;
     pumpLiveSeek();
 #else
@@ -6864,7 +7092,8 @@ void EditorController::queueLiveSeek(qint64 timelinePosition) {
 
 void EditorController::pumpLiveSeek() {
 #ifdef FFGUI_HAS_GES
-    if (preview_suspended_for_export_ || !pending_live_seek_.has_value()) return;
+    if (preview_suspended_for_export_ || cpu_preview_recovery_pending_ ||
+        !pending_live_seek_.has_value()) return;
     if (preview_watcher_.isRunning() || live_seek_watcher_.isRunning() || player_ == nullptr) {
         return;
     }
@@ -6891,7 +7120,8 @@ void EditorController::pumpLiveSeek() {
 void EditorController::startPreviewOperation() {
 #ifdef FFGUI_HAS_GES
     if (preview_suspended_for_export_ || preview_watcher_.isRunning() ||
-        live_seek_watcher_.isRunning() || !preview_operation_pending_) return;
+        live_seek_watcher_.isRunning() || !preview_operation_pending_ ||
+        (cpu_preview_recovery_pending_ && !cpu_preview_backend_configured_)) return;
 
     const auto generation = preview_generation_;
     const bool rebuild = !preview_applied_generation_.has_value() ||

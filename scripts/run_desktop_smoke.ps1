@@ -253,14 +253,16 @@ $sourceEdit = Start-Process -FilePath $application `
 if ($sourceEdit.ExitCode -ne 0) {
     throw "source viewer and E/W/D edit modes failed with code $($sourceEdit.ExitCode)"
 }
-Write-Output "Source editing passed: source I/O, head-stable playback, append, insert, overwrite, replace and one-step undo"
+Write-Output "Source editing passed: source I/O, head-stable playback, append, insert, overwrite, replace, media removal and one-step undo"
 
 $previousD3dPreview = $env:FFGUI_ENABLE_D3D_PREVIEW
 $previousCpuPreview = $env:FFGUI_FORCE_CPU_PREVIEW
+$previousIsolatedDirectD3d = $env:FFGUI_ENABLE_ISOLATED_DIRECT_D3D_PREVIEW
+$previousIsolatedFencePool = $env:FFGUI_ENABLE_ISOLATED_D3D_FENCE_POOL
 try {
-    # Managed-source color explicitly verifies GPU LUT bindings and the D3D11
-    # compositor. The application release default is deliberately CPU, so the
-    # validation process must opt in instead of depending on the caller's shell.
+    # Managed-source color explicitly verifies GPU LUT bindings with the stable
+    # system compositor. The custom direct-D3D compositor remains a separate
+    # diagnostic opt-in because it can remove the shared Qt Quick device.
     $env:FFGUI_ENABLE_D3D_PREVIEW = "1"
     Remove-Item Env:FFGUI_FORCE_CPU_PREVIEW -ErrorAction SilentlyContinue
     $managedColorPlayback = Start-Process -FilePath $application `
@@ -281,6 +283,16 @@ try {
         throw "D3D11 zero-copy presentation failed with code $($d3dPlayback.ExitCode)"
     }
     Write-Output "D3D11 presentation passed: decoded GPU frames reached the exposed Qt scene graph"
+
+    $env:FFGUI_ENABLE_ISOLATED_DIRECT_D3D_PREVIEW = "1"
+    $env:FFGUI_ENABLE_ISOLATED_D3D_FENCE_POOL = "1"
+    $isolatedDirectPlayback = Start-Process -FilePath $application `
+        -ArgumentList @("--offscreen-presentation-smoke", "--isolated-direct-d3d-smoke", $clipA, $clipB, $clipVfr) `
+        -WindowStyle Hidden -Wait -PassThru
+    if ($isolatedDirectPlayback.ExitCode -ne 0) {
+        throw "isolated direct-D3D presentation failed with code $($isolatedDirectPlayback.ExitCode)"
+    }
+    Write-Output "Isolated direct-D3D passed: a separate producer device shared compositor frames with Qt"
 
     $deviceRemoval = Start-Process -FilePath $application `
         -ArgumentList @("--offscreen-presentation-smoke", "--device-removal-smoke", $clipA, $clipB, $clipVfr) `
@@ -308,6 +320,16 @@ try {
         Remove-Item Env:FFGUI_FORCE_CPU_PREVIEW -ErrorAction SilentlyContinue
     } else {
         $env:FFGUI_FORCE_CPU_PREVIEW = $previousCpuPreview
+    }
+    if ($null -eq $previousIsolatedDirectD3d) {
+        Remove-Item Env:FFGUI_ENABLE_ISOLATED_DIRECT_D3D_PREVIEW -ErrorAction SilentlyContinue
+    } else {
+        $env:FFGUI_ENABLE_ISOLATED_DIRECT_D3D_PREVIEW = $previousIsolatedDirectD3d
+    }
+    if ($null -eq $previousIsolatedFencePool) {
+        Remove-Item Env:FFGUI_ENABLE_ISOLATED_D3D_FENCE_POOL -ErrorAction SilentlyContinue
+    } else {
+        $env:FFGUI_ENABLE_ISOLATED_D3D_FENCE_POOL = $previousIsolatedFencePool
     }
 }
 

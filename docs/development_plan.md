@@ -362,8 +362,8 @@
 #### R1. 네이티브 GPU 프레임 경로 — 완료
 
 - [x] GES의 일반 `GESEffect` converter를 우회하는 asset-backed native effect
-- [x] source OCIO/Grade 결과의 D3D11 texture와 composition meta를 compositor까지 유지
-- [x] D3D11 source download 0회와 D3D compositor frame 증가 검증
+- [x] 진단 opt-in에서 source OCIO/Grade 결과의 D3D11 texture와 composition meta를 compositor까지 유지
+- [x] 진단 opt-in의 D3D11 source download 0회와 D3D compositor frame 증가 검증
 - [x] 디졸브·straight alpha·VFR·2배속·오디오 연속성 회귀
 - [x] system compositor와 CPU color fallback 및 전체 desktop smoke 통과
 
@@ -398,7 +398,8 @@
 #### R3. 검수용 표시와 스코프 — 완료
 
 - [x] D3D11 장치 제거를 감지해 현재 GPU 자원을 폐기하고 CPU preview로 복구하며, 사용자에게
-  복구 상태를 표시한다.
+  복구 상태를 표시한다. 렌더 스레드 폐기 완료 뒤 CPU decoder/appsink로 전환하고 첫 CPU 프레임을
+  복구 완료 조건으로 사용한다. 직접 D3D compositor는 장치 손실 원인으로 분리해 진단 opt-in으로 제한했다.
 - [x] 스코프 입력을 `그레이드 전`, `그레이드 후`, `디스플레이 변환 후`로 명시적으로 선택한다.
 - [x] gamut warning, false color, pixel inspector를 추가하고 장면/디스플레이 단위를 분리한다.
 - [x] OCIO Display/View, 표시 변환 bypass와 적용 전후 비교를 프로그램 모니터에 연결한다.
@@ -503,8 +504,11 @@ D3D11 3D LUT 경로는 반투명 RGBA64 테스트 픽셀과 관리형 4샷 타�
 프로그램 모니터 스코프를 켠 D3D11 데스크톱 회귀에서는 5초 동안 GPU 프레임 117개를
 컨트롤러에 전달하면서 38개를 분석했고 Qt Scene Graph 표시까지 통과했다. 스코프를 닫은
 기본 재생, 스코프를 연 D3D11 표시와 CPU BGRA fallback을 포함한 전체 데스크톱 회귀도 통과했다.
-전용 D3D11 mixer를 기본으로 전환한 뒤 GPU/CPU GES 회귀, 관리형 컬러 데스크톱 회귀,
+전용 D3D11 mixer를 사용한 당시 GPU/CPU GES 회귀, 관리형 컬러 데스크톱 회귀,
 프로젝트·EXR·MP4/GIF/HEVC/stream-copy 출력, D3D11/CPU Qt 표시와 10초 4K 탐색 반복도 통과했다.
+2026-08-26 장치 손실 원인 분석에서는 전용 mixer 경로만 손실을 재현해 이를 진단 opt-in으로
+격리했다. 안정 GPU 표시는 system compositor를 사용하며 전체 데스크톱 스모크와 CPU 복구 반복
+3/3을 통과했다. 물리 TDR/장치 제거는 별도 Windows GPU 실기 게이트로 남는다.
 
 ## 2026-08-21 컬러리스트 UI — 다음 계획
 

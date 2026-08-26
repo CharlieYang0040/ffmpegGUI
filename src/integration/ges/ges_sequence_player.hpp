@@ -31,12 +31,21 @@ enum class PreviewCpuFormat { bgra8, rgba16le };
 struct PreviewVideoFrame final {
     std::shared_ptr<void> sample;
     std::shared_ptr<void> texture_owner;
+    std::shared_ptr<void> display_texture_owner;
     void* texture{};
+    std::uintptr_t shared_texture_handle{};
+    std::uintptr_t shared_ready_fence_handle{};
+    std::uintptr_t shared_release_fence_handle{};
+    std::uint64_t shared_fence_value{};
+    std::uint32_t shared_pool_slot{};
+    std::shared_ptr<std::atomic_bool> shared_release_committed;
     std::uint32_t width{};
     std::uint32_t height{};
     std::uint32_t texture_subresource{};
     TimeNs pts{};
     std::uint64_t serial{};
+    std::uint64_t pipeline_generation{};
+    std::uint64_t device_epoch{};
     void* device{};
     std::shared_ptr<std::vector<std::uint8_t>> cpu_pixels;
     std::uint32_t cpu_stride{};
@@ -106,6 +115,9 @@ public:
     [[nodiscard]] bool direct_d3d_compositor_enabled() const noexcept {
         return direct_d3d_compositor_enabled_;
     }
+    [[nodiscard]] bool isolated_fence_pool_enabled() const noexcept {
+        return isolated_fence_pool_enabled_.load(std::memory_order_acquire);
+    }
     [[nodiscard]] std::uint64_t d3d_compositor_instances() const noexcept {
         return d3d_compositor_instances_.load();
     }
@@ -141,6 +153,7 @@ private:
     std::atomic<bool> preview_resolution_overridden_{false};
     mutable std::mutex mutex_;
     mutable std::mutex callback_mutex_;
+    mutable std::mutex shared_texture_pool_mutex_;
     GESPipeline* pipeline_{};
     GESTimeline* timeline_{};
     GstElement* video_sink_{};
@@ -177,7 +190,12 @@ private:
     std::shared_ptr<const void> source_color_bake_;
     bool d3d11_color_lut_available_{};
     bool direct_d3d_compositor_enabled_{};
+    bool isolated_direct_d3d_enabled_{};
+    std::atomic<bool> isolated_fence_pool_enabled_{false};
+    std::shared_ptr<void> shared_texture_pool_;
     std::uint64_t lut_generation_{};
+    std::atomic<std::uint64_t> pipeline_generation_{0};
+    std::atomic<std::uint64_t> device_epoch_{0};
     std::atomic<TimeNs> duration_ns_{0};
     std::atomic<TimeNs> position_ns_{0};
     std::atomic<PlaybackState> state_{PlaybackState::stopped};

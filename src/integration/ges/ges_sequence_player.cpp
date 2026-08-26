@@ -21,7 +21,13 @@
 #include <gst/controller/gstinterpolationcontrolsource.h>
 #include <gst/controller/gsttimedvaluecontrolsource.h>
 
+#ifdef _WIN32
+#include <d3d11_4.h>
+#include <dxgi1_2.h>
+#endif
+
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -35,6 +41,306 @@
 
 namespace ffgui {
 namespace {
+
+struct SharedD3DFrameResource final {
+    ID3D11Texture2D* texture{};
+    HANDLE handle{};
+
+    ~SharedD3DFrameResource() {
+        if (handle != nullptr) CloseHandle(handle);
+        if (texture != nullptr) texture->Release();
+    }
+};
+
+class SharedD3DFencePool;
+
+struct SharedD3DFenceLease final {
+    std::shared_ptr<SharedD3DFencePool> pool;
+    std::shared_ptr<std::atomic_bool> consumer_release_committed;
+    std::uint32_t slot{};
+    std::uint64_t value{};
+
+    ~SharedD3DFenceLease();
+};
+
+class SharedD3DFencePool final : public std::enable_shared_from_this<SharedD3DFencePool> {
+public:
+    static constexpr std::size_t kSlotCount = 4;
+
+    struct Publication final {
+        std::shared_ptr<SharedD3DFenceLease> lease;
+        ID3D11Texture2D* texture{};
+        HANDLE texture_handle{};
+        HANDLE ready_fence_handle{};
+        HANDLE release_fence_handle{};
+        std::uint32_t slot{};
+        std::uint64_t value{};
+    };
+
+    static std::shared_ptr<SharedD3DFencePool> create(
+        GstD3D11Device* gstDevice,
+        const D3D11_TEXTURE2D_DESC& sourceDescription) {
+        if (gstDevice == nullptr) return {};
+        auto pool = std::shared_ptr<SharedD3DFencePool>(new SharedD3DFencePool());
+        pool->gst_device_ = GST_D3D11_DEVICE(gst_object_ref(gstDevice));
+        pool->width_ = sourceDescription.Width;
+        pool->height_ = sourceDescription.Height;
+        pool->format_ = sourceDescription.Format;
+        auto* device = gst_d3d11_device_get_device_handle(gstDevice);
+        if (device == nullptr || FAILED(device->QueryInterface(
+                __uuidof(ID3D11Device5), reinterpret_cast<void**>(&pool->device5_))) ||
+            pool->device5_ == nullptr) {
+            return {};
+        }
+        auto* context = gst_d3d11_device_get_device_context_handle(gstDevice);
+        if (context == nullptr || FAILED(context->QueryInterface(
+                __uuidof(ID3D11DeviceContext4),
+                reinterpret_cast<void**>(&pool->context4_))) ||
+            pool->context4_ == nullptr) {
+            return {};
+        }
+
+        D3D11_TEXTURE2D_DESC description{};
+        description.Width = pool->width_;
+        description.Height = pool->height_;
+        description.MipLevels = 1;
+        description.ArraySize = 1;
+        description.Format = pool->format_;
+        description.SampleDesc.Count = 1;
+        description.Usage = D3D11_USAGE_DEFAULT;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        description.MiscFlags =
+            D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
+
+        gst_d3d11_device_lock(gstDevice);
+        bool valid = true;
+        for (auto& slot : pool->slots_) {
+            if (FAILED(device->CreateTexture2D(&description, nullptr, &slot.texture)) ||
+                slot.texture == nullptr ||
+                FAILED(pool->device5_->CreateFence(
+                    0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence),
+                    reinterpret_cast<void**>(&slot.ready_fence))) ||
+                slot.ready_fence == nullptr ||
+                FAILED(pool->device5_->CreateFence(
+                    0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence),
+                    reinterpret_cast<void**>(&slot.release_fence))) ||
+                slot.release_fence == nullptr) {
+                valid = false;
+                break;
+            }
+            IDXGIResource1* resource = nullptr;
+            if (FAILED(slot.texture->QueryInterface(
+                    __uuidof(IDXGIResource1), reinterpret_cast<void**>(&resource))) ||
+                resource == nullptr) {
+                valid = false;
+                break;
+            }
+            const auto textureResult = resource->CreateSharedHandle(
+                nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &slot.texture_handle);
+            resource->Release();
+            if (FAILED(textureResult) || slot.texture_handle == nullptr ||
+                FAILED(slot.ready_fence->CreateSharedHandle(
+                    nullptr, GENERIC_ALL, nullptr, &slot.ready_fence_handle)) ||
+                slot.ready_fence_handle == nullptr ||
+                FAILED(slot.release_fence->CreateSharedHandle(
+                    nullptr, GENERIC_ALL, nullptr, &slot.release_fence_handle)) ||
+                slot.release_fence_handle == nullptr) {
+                valid = false;
+                break;
+            }
+        }
+        gst_d3d11_device_unlock(gstDevice);
+        if (!valid) return {};
+        return pool;
+    }
+
+    ~SharedD3DFencePool() {
+        for (auto& slot : slots_) {
+            if (slot.texture_handle != nullptr) CloseHandle(slot.texture_handle);
+            if (slot.ready_fence_handle != nullptr) CloseHandle(slot.ready_fence_handle);
+            if (slot.release_fence_handle != nullptr) CloseHandle(slot.release_fence_handle);
+            if (slot.texture != nullptr) slot.texture->Release();
+            if (slot.ready_fence != nullptr) slot.ready_fence->Release();
+            if (slot.release_fence != nullptr) slot.release_fence->Release();
+        }
+        if (context4_ != nullptr) context4_->Release();
+        if (device5_ != nullptr) device5_->Release();
+        if (gst_device_ != nullptr) gst_object_unref(gst_device_);
+    }
+
+    [[nodiscard]] bool matches(
+        GstD3D11Device* device, const D3D11_TEXTURE2D_DESC& description) const noexcept {
+        return device == gst_device_ && description.Width == width_ &&
+            description.Height == height_ && description.Format == format_;
+    }
+
+    std::optional<Publication> publish(
+        ID3D11Texture2D* source, std::uint32_t sourceSubresource) {
+        if (source == nullptr || context4_ == nullptr || gst_device_ == nullptr) return std::nullopt;
+        std::scoped_lock lock(mutex_);
+        Slot* selected = nullptr;
+        std::uint32_t selectedIndex = 0;
+        for (std::size_t offset = 0; offset < slots_.size(); ++offset) {
+            const auto index = (next_slot_ + offset) % slots_.size();
+            auto& candidate = slots_[index];
+            if (candidate.value == 0 ||
+                candidate.release_fence->GetCompletedValue() >= candidate.value) {
+                selected = &candidate;
+                selectedIndex = static_cast<std::uint32_t>(index);
+                next_slot_ = (index + 1) % slots_.size();
+                break;
+            }
+        }
+        if (selected == nullptr) return std::nullopt;
+        const auto value = selected->value + 1;
+        gst_d3d11_device_lock(gst_device_);
+        context4_->CopySubresourceRegion(
+            selected->texture, 0, 0, 0, 0, source, sourceSubresource, nullptr);
+        const auto signalResult = context4_->Signal(selected->ready_fence, value);
+        context4_->Flush();
+        gst_d3d11_device_unlock(gst_device_);
+        if (FAILED(signalResult)) return std::nullopt;
+        selected->value = value;
+        auto committed = std::make_shared<std::atomic_bool>(false);
+        auto lease = std::make_shared<SharedD3DFenceLease>();
+        lease->pool = shared_from_this();
+        lease->consumer_release_committed = committed;
+        lease->slot = selectedIndex;
+        lease->value = value;
+        return Publication{
+            std::move(lease), selected->texture, selected->texture_handle,
+            selected->ready_fence_handle, selected->release_fence_handle,
+            selectedIndex, value};
+    }
+
+    void release_unpresented(std::uint32_t slotIndex, std::uint64_t value) noexcept {
+        if (slotIndex >= slots_.size() || context4_ == nullptr || gst_device_ == nullptr) return;
+        gst_d3d11_device_lock(gst_device_);
+        const auto result = context4_->Signal(slots_[slotIndex].release_fence, value);
+        context4_->Flush();
+        gst_d3d11_device_unlock(gst_device_);
+        if (FAILED(result)) {
+            g_warning("isolated D3D11 pool failed to release dropped slot %u: 0x%08lx",
+                      slotIndex, static_cast<unsigned long>(result));
+        }
+    }
+
+private:
+    struct Slot final {
+        ID3D11Texture2D* texture{};
+        ID3D11Fence* ready_fence{};
+        ID3D11Fence* release_fence{};
+        HANDLE texture_handle{};
+        HANDLE ready_fence_handle{};
+        HANDLE release_fence_handle{};
+        std::uint64_t value{};
+    };
+
+    SharedD3DFencePool() = default;
+    GstD3D11Device* gst_device_{};
+    ID3D11Device5* device5_{};
+    ID3D11DeviceContext4* context4_{};
+    std::array<Slot, kSlotCount> slots_{};
+    std::size_t next_slot_{};
+    std::uint32_t width_{};
+    std::uint32_t height_{};
+    DXGI_FORMAT format_{DXGI_FORMAT_UNKNOWN};
+    std::mutex mutex_;
+};
+
+SharedD3DFenceLease::~SharedD3DFenceLease() {
+    if (pool != nullptr && consumer_release_committed != nullptr &&
+        !consumer_release_committed->exchange(true, std::memory_order_acq_rel)) {
+        pool->release_unpresented(slot, value);
+    }
+}
+
+std::shared_ptr<SharedD3DFrameResource> make_immutable_shared_preview_texture(
+    GstD3D11Device* gstDevice,
+    ID3D11Texture2D* source,
+    std::uint32_t sourceSubresource,
+    const D3D11_TEXTURE2D_DESC& sourceDescription) {
+    if (gstDevice == nullptr || source == nullptr) return {};
+    auto* device = gst_d3d11_device_get_device_handle(gstDevice);
+    auto* context = gst_d3d11_device_get_device_context_handle(gstDevice);
+    if (device == nullptr || context == nullptr) return {};
+
+    D3D11_TEXTURE2D_DESC sharedDescription{};
+    sharedDescription.Width = sourceDescription.Width;
+    sharedDescription.Height = sourceDescription.Height;
+    sharedDescription.MipLevels = 1;
+    sharedDescription.ArraySize = 1;
+    sharedDescription.Format = sourceDescription.Format;
+    sharedDescription.SampleDesc.Count = 1;
+    sharedDescription.Usage = D3D11_USAGE_DEFAULT;
+    sharedDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    sharedDescription.MiscFlags =
+        D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
+
+    auto resource = std::make_shared<SharedD3DFrameResource>();
+    bool copyComplete = false;
+    gst_d3d11_device_lock(gstDevice);
+    const auto createResult = device->CreateTexture2D(
+        &sharedDescription, nullptr, &resource->texture);
+    if (SUCCEEDED(createResult) && resource->texture != nullptr) {
+        context->CopySubresourceRegion(
+            resource->texture, 0, 0, 0, 0, source, sourceSubresource, nullptr);
+        D3D11_QUERY_DESC queryDescription{};
+        queryDescription.Query = D3D11_QUERY_EVENT;
+        ID3D11Query* completion = nullptr;
+        if (SUCCEEDED(device->CreateQuery(&queryDescription, &completion)) && completion != nullptr) {
+            context->End(completion);
+            context->Flush();
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+            while (std::chrono::steady_clock::now() < deadline) {
+                const auto queryResult = context->GetData(completion, nullptr, 0, 0);
+                if (queryResult == S_OK) {
+                    copyComplete = true;
+                    break;
+                }
+                if (FAILED(queryResult)) break;
+                std::this_thread::yield();
+            }
+            completion->Release();
+        }
+    }
+    gst_d3d11_device_unlock(gstDevice);
+    if (FAILED(createResult) || resource->texture == nullptr || !copyComplete) return {};
+
+    IDXGIResource1* dxgiResource = nullptr;
+    if (FAILED(resource->texture->QueryInterface(
+            __uuidof(IDXGIResource1), reinterpret_cast<void**>(&dxgiResource))) ||
+        dxgiResource == nullptr) {
+        return {};
+    }
+    const auto handleResult = dxgiResource->CreateSharedHandle(
+        nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &resource->handle);
+    dxgiResource->Release();
+    if (FAILED(handleResult) || resource->handle == nullptr) return {};
+    return resource;
+}
+
+std::optional<gint64> adapter_luid_for_device(ID3D11Device* device) {
+    if (device == nullptr) return std::nullopt;
+    IDXGIDevice* dxgiDevice = nullptr;
+    if (FAILED(device->QueryInterface(
+            __uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice))) ||
+        dxgiDevice == nullptr) {
+        return std::nullopt;
+    }
+    IDXGIAdapter* adapter = nullptr;
+    const auto adapterResult = dxgiDevice->GetAdapter(&adapter);
+    dxgiDevice->Release();
+    if (FAILED(adapterResult) || adapter == nullptr) return std::nullopt;
+    DXGI_ADAPTER_DESC description{};
+    const auto descriptionResult = adapter->GetDesc(&description);
+    adapter->Release();
+    if (FAILED(descriptionResult)) return std::nullopt;
+    const auto high = static_cast<std::uint64_t>(
+        static_cast<std::uint32_t>(description.AdapterLuid.HighPart));
+    const auto low = static_cast<std::uint64_t>(description.AdapterLuid.LowPart);
+    return static_cast<gint64>((high << 32U) | low);
+}
 
 typedef struct _FfguiD3DMixer FfguiD3DMixer;
 typedef struct _FfguiD3DMixerClass FfguiD3DMixerClass;
@@ -713,8 +1019,16 @@ GesSequencePlayer::GesSequencePlayer(
     }
     d3d11_color_lut_available_ = g_getenv("FFGUI_FORCE_CPU_COLOR") == nullptr &&
         gst_d3d11_color_lut_available();
+    isolated_direct_d3d_enabled_ = d3d11_color_lut_available_ &&
+        video_sink_factory_ == "d3d11-appsink" &&
+        g_getenv("FFGUI_ENABLE_ISOLATED_DIRECT_D3D_PREVIEW") != nullptr &&
+        g_getenv("FFGUI_FORCE_SYSTEM_COMPOSITOR") == nullptr;
+    isolated_fence_pool_enabled_ = isolated_direct_d3d_enabled_ &&
+        g_getenv("FFGUI_ENABLE_ISOLATED_D3D_FENCE_POOL") != nullptr;
     direct_d3d_compositor_enabled_ = d3d11_color_lut_available_ &&
         video_sink_factory_ == "d3d11-appsink" &&
+        (isolated_direct_d3d_enabled_ ||
+         g_getenv("FFGUI_ENABLE_DIRECT_D3D_COMPOSITOR") != nullptr) &&
         g_getenv("FFGUI_FORCE_SYSTEM_COMPOSITOR") == nullptr;
     if (direct_d3d_compositor_enabled_) {
         auto* compositor = gst_element_factory_find("d3d11compositor");
@@ -1026,6 +1340,35 @@ void GesSequencePlayer::fallback_to_cpu_preview() {
     d3d11_device_handle_.store(nullptr, std::memory_order_release);
     d3d11_color_lut_available_ = false;
     direct_d3d_compositor_enabled_ = false;
+    isolated_direct_d3d_enabled_ = false;
+    isolated_fence_pool_enabled_ = false;
+    {
+        std::scoped_lock poolLock(shared_texture_pool_mutex_);
+        shared_texture_pool_.reset();
+    }
+    // A CPU appsink alone does not guarantee a CPU decoder: decodebin can keep
+    // selecting d3d11*dec and download from the same removed adapter. Retire all
+    // D3D11 decoder factories for the remainder of this process and prefer libav.
+    static constexpr std::array d3dDecoders{
+        "d3d11h264dec", "d3d11h265dec", "d3d11vp9dec", "d3d11av1dec",
+        "d3d11mpeg2dec"};
+    for (const auto* name : d3dDecoders) {
+        if (auto* feature = gst_registry_find_feature(
+                gst_registry_get(), name, GST_TYPE_ELEMENT_FACTORY)) {
+            gst_plugin_feature_set_rank(feature, GST_RANK_NONE);
+            gst_object_unref(feature);
+        }
+    }
+    static constexpr std::array cpuDecoders{
+        "avdec_h264", "avdec_h265", "avdec_hevc", "avdec_vp9", "avdec_av1",
+        "avdec_mpeg2video"};
+    for (const auto* name : cpuDecoders) {
+        if (auto* feature = gst_registry_find_feature(
+                gst_registry_get(), name, GST_TYPE_ELEMENT_FACTORY)) {
+            gst_plugin_feature_set_rank(feature, GST_RANK_PRIMARY + 100);
+            gst_object_unref(feature);
+        }
+    }
 }
 
 void GesSequencePlayer::set_video_sink_factory(std::string factory) {
@@ -1190,6 +1533,8 @@ GstFlowReturn GesSequencePlayer::deliver_video_sample(GstSample* sample, void* u
 
     PreviewVideoFrame frame;
     frame.sample = std::move(holder);
+    frame.pipeline_generation = player->pipeline_generation_.load(std::memory_order_acquire);
+    frame.device_epoch = player->device_epoch_.load(std::memory_order_acquire);
     frame.pts = GST_BUFFER_PTS_IS_VALID(buffer)
         ? static_cast<TimeNs>(GST_BUFFER_PTS(buffer))
         : 0;
@@ -1226,6 +1571,64 @@ GstFlowReturn GesSequencePlayer::deliver_video_sample(GstSample* sample, void* u
         frame.height = description.Height;
         frame.texture_subresource = gst_d3d11_memory_get_subresource_index(d3dMemory);
         frame.device = gst_d3d11_device_get_device_handle(d3dMemory->device);
+        if (player->isolated_direct_d3d_enabled_) {
+            bool pooled = false;
+            if (player->isolated_fence_pool_enabled_.load(std::memory_order_acquire)) {
+                std::shared_ptr<SharedD3DFencePool> pool;
+                {
+                    std::scoped_lock poolLock(player->shared_texture_pool_mutex_);
+                    pool = std::static_pointer_cast<SharedD3DFencePool>(
+                        player->shared_texture_pool_);
+                    if (pool == nullptr || !pool->matches(d3dMemory->device, description)) {
+                        pool = SharedD3DFencePool::create(d3dMemory->device, description);
+                        player->shared_texture_pool_ = pool;
+                        if (pool == nullptr) {
+                            player->isolated_fence_pool_enabled_.store(
+                                false, std::memory_order_release);
+                            g_warning("isolated D3D11 fence pool unavailable; using immutable shared frames");
+                        } else {
+                            g_info("isolated D3D11 fence pool created slots=%zu size=%ux%u",
+                                   SharedD3DFencePool::kSlotCount,
+                                   description.Width, description.Height);
+                        }
+                    }
+                }
+                if (pool != nullptr) {
+                    auto publication = pool->publish(texture, frame.texture_subresource);
+                    if (!publication.has_value()) {
+                        // All four textures can legitimately still be owned by Qt. Drop this
+                        // newest sample rather than blocking the streaming thread or overwriting
+                        // a texture the scene graph may still sample.
+                        return GST_FLOW_OK;
+                    }
+                    frame.texture_owner = publication->lease;
+                    frame.texture = publication->texture;
+                    frame.shared_texture_handle = reinterpret_cast<std::uintptr_t>(
+                        publication->texture_handle);
+                    frame.shared_ready_fence_handle = reinterpret_cast<std::uintptr_t>(
+                        publication->ready_fence_handle);
+                    frame.shared_release_fence_handle = reinterpret_cast<std::uintptr_t>(
+                        publication->release_fence_handle);
+                    frame.shared_fence_value = publication->value;
+                    frame.shared_pool_slot = publication->slot;
+                    frame.shared_release_committed =
+                        publication->lease->consumer_release_committed;
+                    frame.texture_subresource = 0;
+                    pooled = true;
+                }
+            }
+            if (!pooled) {
+                auto shared = make_immutable_shared_preview_texture(
+                    d3dMemory->device, texture, frame.texture_subresource, description);
+                if (!shared) return GST_FLOW_OK;
+                frame.texture_owner = shared;
+                frame.texture = shared->texture;
+                frame.shared_texture_handle = reinterpret_cast<std::uintptr_t>(shared->handle);
+                frame.texture_subresource = 0;
+            }
+            // Keep the source sample only until the optional 10 Hz scope copy is made
+            // below. The presentation frame itself releases the compositor pool buffer.
+        }
     } else {
         GstVideoInfo videoInfo{};
         auto* caps = gst_sample_get_caps(sample);
@@ -1273,6 +1676,7 @@ GstFlowReturn GesSequencePlayer::deliver_video_sample(GstSample* sample, void* u
         }
     }
     auto scopeFrame = deliverScope ? frame : PreviewVideoFrame{};
+    if (frame.shared_texture_handle != 0) frame.sample.reset();
     callback(std::move(frame));
     if (deliverScope) scopeCallback(std::move(scopeFrame));
     return GST_FLOW_OK;
@@ -1484,15 +1888,32 @@ void GesSequencePlayer::rebuild_pipeline_locked(
             }
         }
 
+        const auto pipelineGeneration = pipeline_generation_.fetch_add(1) + 1;
         auto* new_pipeline = ges_pipeline_new();
         if (new_pipeline == nullptr) {
             throw std::runtime_error("failed to create GES pipeline");
         }
         gst_object_ref_sink(new_pipeline);
         const auto d3d11DeviceHandle = d3d11_device_handle_.load(std::memory_order_acquire);
-        auto* rawPreviewDevice = d3d11DeviceHandle != nullptr
-            ? gst_d3d11_device_new_wrapped(static_cast<ID3D11Device*>(d3d11DeviceHandle))
-            : (direct_d3d_compositor_enabled_ ? gst_d3d11_device_new(0, 0) : nullptr);
+        GstD3D11Device* rawPreviewDevice = nullptr;
+        if (isolated_direct_d3d_enabled_) {
+            const auto adapterLuid = adapter_luid_for_device(
+                static_cast<ID3D11Device*>(d3d11DeviceHandle));
+            rawPreviewDevice = adapterLuid.has_value()
+                ? gst_d3d11_device_new_for_adapter_luid(*adapterLuid, 0)
+                : gst_d3d11_device_new(0, 0);
+            if (rawPreviewDevice != nullptr) {
+                const auto epoch = device_epoch_.fetch_add(1) + 1;
+                g_info("isolated D3D11 producer created pipeline=%" G_GUINT64_FORMAT
+                       " epoch=%" G_GUINT64_FORMAT " adapter_luid=%" G_GINT64_FORMAT,
+                       pipelineGeneration, epoch, adapterLuid.value_or(0));
+            }
+        } else if (d3d11DeviceHandle != nullptr) {
+            rawPreviewDevice = gst_d3d11_device_new_wrapped(
+                static_cast<ID3D11Device*>(d3d11DeviceHandle));
+        } else if (direct_d3d_compositor_enabled_) {
+            rawPreviewDevice = gst_d3d11_device_new(0, 0);
+        }
         auto previewDevice = std::shared_ptr<GstD3D11Device>(
             rawPreviewDevice, [](GstD3D11Device* value) {
                 if (value != nullptr) gst_object_unref(value);
@@ -1672,6 +2093,10 @@ void GesSequencePlayer::destroy_pipeline_locked() noexcept {
     if (video_sink_ != nullptr) {
         gst_object_unref(video_sink_);
         video_sink_ = nullptr;
+    }
+    {
+        std::scoped_lock poolLock(shared_texture_pool_mutex_);
+        shared_texture_pool_.reset();
     }
     for (const auto& id : registered_lut_ids_) remove_gst_color_lut(id);
     registered_lut_ids_.clear();

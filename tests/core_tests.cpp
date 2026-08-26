@@ -124,6 +124,19 @@ void test_media_asset_separates_original_and_playback_paths() {
             "sequence asset must expose a separate playback proxy");
 }
 
+void test_asset_removal_rejects_references_and_removes_unused_media() {
+    auto timeline = make_timeline();
+    timeline.append_clip(Clip{"clip-a", "asset-a", 0, seconds(2)});
+    require_throws<std::invalid_argument>([&] { timeline.erase_asset("asset-a"); },
+        "asset removal must reject media still referenced by timeline clips");
+    timeline.erase_clip("clip-a");
+    timeline.erase_asset("asset-a");
+    require(timeline.asset("asset-a") == nullptr && timeline.assets().size() == 1,
+        "unused media must be removable from the project asset collection");
+    require_throws<std::invalid_argument>([&] { timeline.erase_asset("missing"); },
+        "removing an unknown media asset must fail explicitly");
+}
+
 void test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes() {
     ffgui::ColorPipelineSettings settings;
     require(settings.mode == ffgui::ColorPipelineMode::legacy,
@@ -400,6 +413,23 @@ void test_advanced_grade_nodes_share_the_float_reference_contract() {
     require(neutral[0] > neutral[1] && neutral[1] > neutral[2] &&
                 std::abs(neutral[3] - 0.25F) < 0.000001F,
             "temperature and tint must execute in the common primary renderer");
+
+    auto primaryTonal = ffgui::make_default_grade_node(ffgui::GradeNodeType::primary,
+                                                        "primary-tonal");
+    primaryTonal.parameters["shadowR"] = 0.2;
+    ffgui::GradeGraph primaryTonalGraph;
+    primaryTonalGraph.add(primaryTonal);
+    float primaryTonalPixels[]{0.02F, 0.02F, 0.02F, 1.0F,
+                               2.0F, 2.0F, 2.0F, 1.0F};
+    ffgui::apply_grade_graph_rgba32f(primaryTonalPixels, 2, primaryTonalGraph);
+    require(primaryTonalPixels[0] - 0.02F >
+                primaryTonalPixels[4] - 2.0F + 0.05F,
+            "primary shadow wheel must protect highlights while changing dark values");
+    auto crossedPrimaryRange = primaryTonal;
+    crossedPrimaryRange.parameters["lowRange"] = 0.74;
+    crossedPrimaryRange.parameters["highRange"] = 0.75;
+    require_throws<std::invalid_argument>([&] { crossedPrimaryRange.validate(); },
+        "primary wheel tonal handles must preserve a visible non-crossing midtone range");
 
     auto log = ffgui::make_default_grade_node(ffgui::GradeNodeType::log_wheels, "log");
     log.parameters["shadowR"] = 0.2;
@@ -2200,6 +2230,7 @@ int main() {
         {"vfr_frame_lookup", test_vfr_frame_lookup},
         {"image_sequence_detection_preserves_gaps_and_negative_frames", test_image_sequence_detection_preserves_gaps_and_negative_frames},
         {"media_asset_separates_original_and_playback_paths", test_media_asset_separates_original_and_playback_paths},
+        {"asset_removal_rejects_references_and_removes_unused_media", test_asset_removal_rejects_references_and_removes_unused_media},
         {"color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes", test_color_pipeline_defaults_to_legacy_and_lut_preflight_rejects_spatial_nodes},
         {"ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube", test_ocio_aces_config_transforms_float_pixels_and_bakes_resolve_cube},
         {"float_grade_pipeline_preserves_alpha_and_node_mix", test_float_grade_pipeline_preserves_alpha_and_node_mix},

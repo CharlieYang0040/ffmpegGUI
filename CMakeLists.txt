@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 project(
     ffmpegGUINext
-    VERSION 0.1.3
+    VERSION 0.1.4
     DESCRIPTION "Native magnetic cut editor for Windows"
     LANGUAGES CXX
 )
